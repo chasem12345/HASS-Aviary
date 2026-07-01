@@ -1,16 +1,41 @@
-"""Route registration + shared Jinja2 templates environment."""
+"""Route registration + shared Jinja2 templates environment.
+
+URL generation for Home Assistant ingress
+------------------------------------------
+HA ingress strips the ``/api/hassio_ingress/<token>`` prefix before forwarding the
+request to the add-on (the add-on sees ``/static/app.css``), and passes the prefix in the
+``X-Ingress-Path`` header. So we must NOT set Starlette's ``root_path`` (that corrupts
+routing on the already-stripped path); instead we build root-relative URLs ourselves by
+prepending the header value. The ``u(name, **params)`` template helper does this. When the
+header is absent (direct access, or local dev) the prefix is empty and URLs still work.
+"""
 
 from __future__ import annotations
 
 import os
 from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.templating import Jinja2Templates
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
 
-templates = Jinja2Templates(directory=_TEMPLATE_DIR)
+
+def _ingress_context(request: Request) -> dict:
+    prefix = request.headers.get("X-Ingress-Path", "").rstrip("/")
+
+    def u(endpoint, /, **params) -> str:
+        """Root-relative URL for a named route, prefixed with the ingress path.
+
+        ``endpoint`` is positional-only so route path params named ``name`` (e.g.
+        ``species_detail``) don't collide with it.
+        """
+        return f"{prefix}{request.app.url_path_for(endpoint, **params)}"
+
+    return {"ingress_path": prefix, "u": u}
+
+
+templates = Jinja2Templates(directory=_TEMPLATE_DIR, context_processors=[_ingress_context])
 
 
 def _fmt_time(epoch) -> str:

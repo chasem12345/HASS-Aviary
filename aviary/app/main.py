@@ -6,9 +6,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import db, proxy
 from .mqtt_client import MqttIngestor
@@ -18,22 +17,11 @@ from .settings import load_settings
 _APP_DIR = os.path.dirname(__file__)
 
 
-class IngressPathMiddleware(BaseHTTPMiddleware):
-    """Set ``root_path`` from the HA ``X-Ingress-Path`` header.
-
-    Home Assistant serves the add-on under a dynamic prefix (e.g.
-    ``/api/hassio_ingress/<token>``) and passes it in this header. Setting
-    ``root_path`` makes ``request.url_for`` emit correctly-prefixed links so the UI works
-    both through ingress and when hit directly (header absent → prefix is empty).
-    """
-
-    async def dispatch(self, request: Request, call_next):
-        ingress_path = request.headers.get("X-Ingress-Path", "")
-        if ingress_path:
-            request.scope["root_path"] = ingress_path
-        return await call_next(request)
-
-
+# NOTE: We deliberately do NOT set Starlette's ``root_path`` from ``X-Ingress-Path``.
+# HA ingress strips its prefix before forwarding, so the add-on receives the real path
+# (e.g. ``/static/app.css``); setting ``root_path`` would make Starlette strip a prefix
+# that isn't in the path and break routing. URLs are prefixed in templates instead
+# (see ``routes/__init__.py`` -> ``u()``).
 def create_app() -> FastAPI:
     settings = load_settings()
 
@@ -62,7 +50,6 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Aviary", lifespan=lifespan)
     app.state.settings = settings
-    app.add_middleware(IngressPathMiddleware)
 
     app.mount(
         "/static",

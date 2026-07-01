@@ -3,7 +3,7 @@
 {% block title %} · {{ species }}{% endblock %}
 {% block content %}
 <div class="species-head">
-  <a class="back" href="{{ url_for('dashboard') }}">← Dashboard</a>
+  <a class="back" href="{{ u('dashboard') }}">← Dashboard</a>
   <h1>{{ species }}</h1>
   <span class="count">{{ detections | length }} recent detections</span>
 </div>

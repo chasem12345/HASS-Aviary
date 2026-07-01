@@ -3,7 +3,7 @@
 {% block title %} · Recent{% endblock %}
 {% block content %}
 <div class="controls">
-  <form method="get" action="{{ url_for('recent') }}">
+  <form method="get" action="{{ u('recent') }}">
     {% if species %}<input type="hidden" name="species" value="{{ species }}">{% endif %}
     <label>Source
       <select name="source" onchange="this.form.submit()">
@@ -13,7 +13,7 @@
       </select>
     </label>
     {% if species %}<span class="filter-chip">{{ species }}
-      <a href="{{ url_for('recent') }}">✕</a></span>{% endif %}
+      <a href="{{ u('recent') }}">✕</a></span>{% endif %}
   </form>
 </div>
 

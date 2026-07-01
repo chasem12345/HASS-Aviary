@@ -4,25 +4,25 @@
     {% if d.source == 'frigate' %}
       {% if d.has_clip %}
         <video controls preload="none"
-               poster="{{ url_for('frigate_snapshot', event_id=d.source_ref) }}?thumbnail=true">
-          <source src="{{ url_for('frigate_clip', event_id=d.source_ref) }}" type="video/mp4">
+               poster="{{ u('frigate_snapshot', event_id=d.source_ref) }}?thumbnail=true">
+          <source src="{{ u('frigate_clip', event_id=d.source_ref) }}" type="video/mp4">
         </video>
       {% elif d.has_snapshot %}
         <img loading="lazy" alt="{{ d.common_name }}"
-             src="{{ url_for('frigate_snapshot', event_id=d.source_ref) }}">
+             src="{{ u('frigate_snapshot', event_id=d.source_ref) }}">
       {% else %}
         <div class="nomedia">no media</div>
       {% endif %}
     {% elif d.source == 'birdnet' %}
       {% if d.has_clip %}
-        <audio controls preload="none" src="{{ url_for('birdnet_clip', det_id=d.id) }}"></audio>
+        <audio controls preload="none" src="{{ u('birdnet_clip', det_id=d.id) }}"></audio>
       {% else %}
         <div class="nomedia">🔊 audio detection</div>
       {% endif %}
     {% endif %}
   </div>
   <div class="det-body">
-    <h3><a href="{{ url_for('species_detail', name=d.common_name) }}">{{ d.common_name }}</a></h3>
+    <h3><a href="{{ u('species_detail', name=d.common_name) }}">{{ d.common_name }}</a></h3>
     {% if d.scientific_name %}<div class="sci">{{ d.scientific_name }}</div>{% endif %}
     <div class="meta">
       <span class="badge badge-{{ d.source }}">{{ 'Frigate' if d.source == 'frigate' else 'BirdNET-Go' }}</span>

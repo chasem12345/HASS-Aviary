@@ -2,7 +2,7 @@
 {% block title %} · Dashboard{% endblock %}
 {% block content %}
 <div class="controls">
-  <form method="get" action="{{ url_for('dashboard') }}">
+  <form method="get" action="{{ u('dashboard') }}">
     <label>Source
       <select name="source" onchange="this.form.submit()">
         <option value="all" {{ 'selected' if source == 'all' }}>All</option>
@@ -40,7 +40,7 @@
     <tbody>
       {% for s in leaders %}
       <tr>
-        <td><a href="{{ url_for('species_detail', name=s.common_name) }}">{{ s.common_name }}</a>
+        <td><a href="{{ u('species_detail', name=s.common_name) }}">{{ s.common_name }}</a>
           {% if s.scientific_name %}<em>{{ s.scientific_name }}</em>{% endif %}</td>
         <td>{{ s.count }}</td>
         <td>{{ s.last_seen | fmt_time }}</td>
@@ -54,7 +54,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', path='/app.js') }}"></script>
+<script src="{{ u('static', path='/app.js') }}"></script>
 <script>
   const SOURCE = {{ ('"' + source + '"') if source != 'all' else 'null' }};
   const DAYS = {{ {'today':1,'7d':7,'30d':30,'all':3650}[range] }};
