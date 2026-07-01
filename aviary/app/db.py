@@ -1,0 +1,229 @@
+"""SQLite storage + analytics queries for Aviary.
+
+A single ``detections`` table holds rows from both sources, tagged by ``source``.
+There is no cross-source correlation. Connections are opened per-operation (SQLite in
+WAL mode handles concurrent readers/one writer well), which keeps the MQTT ingest thread
+and the FastAPI event loop cleanly separated.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS detections (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source          TEXT    NOT NULL,               -- 'frigate' | 'birdnet'
+    source_ref      TEXT    NOT NULL,               -- frigate event id / birdnet detection id
+    common_name     TEXT    NOT NULL DEFAULT 'bird',
+    scientific_name TEXT,
+    species_code    TEXT,
+    confidence      REAL,
+    location        TEXT,                            -- frigate camera / birdnet source node
+    start_time      REAL    NOT NULL,               -- epoch seconds
+    end_time        REAL,
+    has_clip        INTEGER NOT NULL DEFAULT 0,
+    has_snapshot    INTEGER NOT NULL DEFAULT 0,
+    clip_ref        TEXT,
+    snapshot_ref    TEXT,
+    raw_json        TEXT,
+    created_at      REAL    NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_source_ref
+    ON detections (source, source_ref);
+CREATE INDEX IF NOT EXISTS idx_detections_start_time ON detections (start_time);
+CREATE INDEX IF NOT EXISTS idx_detections_common_name ON detections (common_name);
+"""
+
+_db_path: str = ""
+
+
+def init_db(db_path: str) -> None:
+    """Configure the module and create the schema."""
+    global _db_path
+    _db_path = db_path
+    with _connect() as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.executescript(_SCHEMA)
+
+
+@contextmanager
+def _connect() -> Iterator[sqlite3.Connection]:
+    conn = sqlite3.connect(_db_path, timeout=15)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def upsert_detection(row: dict[str, Any]) -> None:
+    """Insert a detection, or update it if (source, source_ref) already exists.
+
+    Frigate sends multiple messages per event (new/update/end); the latest wins so the
+    final species and confidence are kept. COALESCE preserves any media flags/refs that
+    were already captured but are absent from a later message.
+    """
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO detections (
+                source, source_ref, common_name, scientific_name, species_code,
+                confidence, location, start_time, end_time,
+                has_clip, has_snapshot, clip_ref, snapshot_ref, raw_json, created_at
+            ) VALUES (
+                :source, :source_ref, :common_name, :scientific_name, :species_code,
+                :confidence, :location, :start_time, :end_time,
+                :has_clip, :has_snapshot, :clip_ref, :snapshot_ref, :raw_json, :created_at
+            )
+            ON CONFLICT(source, source_ref) DO UPDATE SET
+                common_name     = excluded.common_name,
+                scientific_name = excluded.scientific_name,
+                species_code    = excluded.species_code,
+                confidence      = MAX(detections.confidence, excluded.confidence),
+                location        = excluded.location,
+                end_time        = COALESCE(excluded.end_time, detections.end_time),
+                has_clip        = MAX(detections.has_clip, excluded.has_clip),
+                has_snapshot    = MAX(detections.has_snapshot, excluded.has_snapshot),
+                clip_ref        = COALESCE(excluded.clip_ref, detections.clip_ref),
+                snapshot_ref    = COALESCE(excluded.snapshot_ref, detections.snapshot_ref),
+                raw_json        = excluded.raw_json
+            """,
+            row,
+        )
+
+
+# --------------------------------------------------------------------------- queries
+
+def _source_clause(source: Optional[str], params: list) -> str:
+    if source in ("frigate", "birdnet"):
+        params.append(source)
+        return " AND source = ?"
+    return ""
+
+
+def recent_detections(
+    limit: int = 60,
+    source: Optional[str] = None,
+    species: Optional[str] = None,
+) -> list[dict]:
+    params: list = []
+    where = "WHERE 1=1"
+    where += _source_clause(source, params)
+    if species:
+        where += " AND common_name = ?"
+        params.append(species)
+    params.append(limit)
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM detections {where} ORDER BY start_time DESC LIMIT ?",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def detection_by_id(det_id: int) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM detections WHERE id = ?", (det_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def summary_stats(source: Optional[str] = None, since: Optional[float] = None) -> dict:
+    params: list = []
+    where = "WHERE 1=1"
+    where += _source_clause(source, params)
+    if since is not None:
+        where += " AND start_time >= ?"
+        params.append(since)
+    with _connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT
+                COUNT(*)                     AS total,
+                COUNT(DISTINCT common_name)  AS species,
+                SUM(source = 'frigate')      AS frigate_total,
+                SUM(source = 'birdnet')      AS birdnet_total
+            FROM detections {where}
+            """,
+            params,
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def top_species(
+    limit: int = 10,
+    source: Optional[str] = None,
+    since: Optional[float] = None,
+) -> list[dict]:
+    params: list = []
+    where = "WHERE 1=1"
+    where += _source_clause(source, params)
+    if since is not None:
+        where += " AND start_time >= ?"
+        params.append(since)
+    params.append(limit)
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT common_name, scientific_name,
+                   COUNT(*) AS count, MAX(start_time) AS last_seen
+            FROM detections {where}
+            GROUP BY common_name
+            ORDER BY count DESC, last_seen DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def detections_per_day(
+    days: int = 30,
+    source: Optional[str] = None,
+) -> list[dict]:
+    """Count per local day for the last ``days`` days (uses SQLite localtime)."""
+    params: list = []
+    where = f"WHERE start_time >= strftime('%s', 'now', '-{int(days)} days')"
+    where += _source_clause(source, params)
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT date(start_time, 'unixepoch', 'localtime') AS day,
+                   COUNT(*) AS count
+            FROM detections {where}
+            GROUP BY day
+            ORDER BY day
+            """,
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def hourly_activity(
+    source: Optional[str] = None,
+    since: Optional[float] = None,
+) -> list[dict]:
+    """Count per hour-of-day (0-23), aggregated across all matching detections."""
+    params: list = []
+    where = "WHERE 1=1"
+    where += _source_clause(source, params)
+    if since is not None:
+        where += " AND start_time >= ?"
+        params.append(since)
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT CAST(strftime('%H', start_time, 'unixepoch', 'localtime') AS INTEGER) AS hour,
+                   COUNT(*) AS count
+            FROM detections {where}
+            GROUP BY hour
+            ORDER BY hour
+            """,
+            params,
+        ).fetchall()
+    counts = {int(r["hour"]): r["count"] for r in rows}
+    return [{"hour": h, "count": counts.get(h, 0)} for h in range(24)]

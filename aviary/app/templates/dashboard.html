@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %} · Dashboard{% endblock %}
+{% block content %}
+<div class="controls">
+  <form method="get" action="{{ url_for('dashboard') }}">
+    <label>Source
+      <select name="source" onchange="this.form.submit()">
+        <option value="all" {{ 'selected' if source == 'all' }}>All</option>
+        <option value="frigate" {{ 'selected' if source == 'frigate' }}>Frigate (visual)</option>
+        <option value="birdnet" {{ 'selected' if source == 'birdnet' }}>BirdNET-Go (audio)</option>
+      </select>
+    </label>
+    <label>Range
+      <select name="range" onchange="this.form.submit()">
+        <option value="today" {{ 'selected' if range == 'today' }}>Today</option>
+        <option value="7d" {{ 'selected' if range == '7d' }}>7 days</option>
+        <option value="30d" {{ 'selected' if range == '30d' }}>30 days</option>
+        <option value="all" {{ 'selected' if range == 'all' }}>All time</option>
+      </select>
+    </label>
+  </form>
+</div>
+
+<section class="stats">
+  <div class="stat"><span class="num">{{ stats.total or 0 }}</span><span class="lbl">Detections</span></div>
+  <div class="stat"><span class="num">{{ stats.species or 0 }}</span><span class="lbl">Species</span></div>
+  <div class="stat"><span class="num">{{ stats.frigate_total or 0 }}</span><span class="lbl">Frigate</span></div>
+  <div class="stat"><span class="num">{{ stats.birdnet_total or 0 }}</span><span class="lbl">BirdNET-Go</span></div>
+</section>
+
+<section class="grid2">
+  <div class="card"><h2>Detections per day</h2><canvas id="perDay"></canvas></div>
+  <div class="card"><h2>Activity by hour</h2><canvas id="hourly"></canvas></div>
+</section>
+
+<section class="card">
+  <h2>Top species</h2>
+  <table class="leaders">
+    <thead><tr><th>Species</th><th>Count</th><th>Last seen</th></tr></thead>
+    <tbody>
+      {% for s in leaders %}
+      <tr>
+        <td><a href="{{ url_for('species_detail', name=s.common_name) }}">{{ s.common_name }}</a>
+          {% if s.scientific_name %}<em>{{ s.scientific_name }}</em>{% endif %}</td>
+        <td>{{ s.count }}</td>
+        <td>{{ s.last_seen | fmt_time }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3" class="empty">No detections yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', path='/app.js') }}"></script>
+<script>
+  const SOURCE = {{ ('"' + source + '"') if source != 'all' else 'null' }};
+  const DAYS = {{ {'today':1,'7d':7,'30d':30,'all':3650}[range] }};
+  window.aviaryInitDashboard(SOURCE, DAYS);
+</script>
+{% endblock %}

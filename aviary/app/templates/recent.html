@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% import "_cards.html" as cards with context %}
+{% block title %} · Recent{% endblock %}
+{% block content %}
+<div class="controls">
+  <form method="get" action="{{ url_for('recent') }}">
+    {% if species %}<input type="hidden" name="species" value="{{ species }}">{% endif %}
+    <label>Source
+      <select name="source" onchange="this.form.submit()">
+        <option value="all" {{ 'selected' if source == 'all' }}>All</option>
+        <option value="frigate" {{ 'selected' if source == 'frigate' }}>Frigate (visual)</option>
+        <option value="birdnet" {{ 'selected' if source == 'birdnet' }}>BirdNET-Go (audio)</option>
+      </select>
+    </label>
+    {% if species %}<span class="filter-chip">{{ species }}
+      <a href="{{ url_for('recent') }}">✕</a></span>{% endif %}
+  </form>
+</div>
+
+<div class="cards">
+  {% for d in detections %}
+    {{ cards.detection_card(d) }}
+  {% else %}
+    <p class="empty">No detections yet.</p>
+  {% endfor %}
+</div>
+{% endblock %}

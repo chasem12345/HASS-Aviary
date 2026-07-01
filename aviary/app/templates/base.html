@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aviary{% block title %}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🐦 <span>Aviary</span></div>
+    <nav>
+      <a href="{{ url_for('dashboard') }}" class="{{ 'active' if page == 'dashboard' }}">Dashboard</a>
+      <a href="{{ url_for('recent') }}" class="{{ 'active' if page == 'recent' }}">Recent</a>
+    </nav>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <script src="{{ url_for('static', path='/chart.umd.js') }}"></script>
+  <script>
+    // Base URL respects HA ingress: derive the app root from the served page path.
+    window.AVIARY_API = "{{ url_for('summary') }}".replace(/\/summary$/, "");
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

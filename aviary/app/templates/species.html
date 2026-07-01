@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% import "_cards.html" as cards with context %}
+{% block title %} · {{ species }}{% endblock %}
+{% block content %}
+<div class="species-head">
+  <a class="back" href="{{ url_for('dashboard') }}">← Dashboard</a>
+  <h1>{{ species }}</h1>
+  <span class="count">{{ detections | length }} recent detections</span>
+</div>
+
+<div class="cards">
+  {% for d in detections %}
+    {{ cards.detection_card(d) }}
+  {% else %}
+    <p class="empty">No detections for this species.</p>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local dev data
+_data/
+*.db
+*.db-wal
+*.db-shm
