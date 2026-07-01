@@ -1,14 +1,11 @@
 name: Aviary
-version: "0.1.0"
+version: "0.1.1"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
-url: https://github.com/chase-vgo/HASS-Aviary/tree/main/aviary
+url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
 arch:
   - aarch64
   - amd64
-  - armv7
-  - armhf
-  - i386
 init: false
 ingress: true
 ingress_port: 8099

@@ -14,7 +14,7 @@ or audio (BirdNET-Go) preview proxied from the originating source.
 
 1. In Home Assistant go to **Settings → Add-ons → Add-on Store**.
 2. Open the **⋮** menu (top right) → **Repositories**.
-3. Add this repository URL: `https://github.com/chase-vgo/HASS-Aviary`
+3. Add this repository URL: `https://github.com/chasem12345/HASS-Aviary`
 4. Find **Aviary** in the store, click **Install**.
 5. On the **Configuration** tab, set `frigate_url` and `birdnet_url` (and MQTT overrides if you
    are not using the Mosquitto broker add-on), then **Start** the add-on.
