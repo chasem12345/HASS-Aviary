@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from .. import db, proxy
@@ -32,7 +33,21 @@ async def birdnet_clip(det_id: int, request: Request):
     base = request.app.state.settings.birdnet_url
     if not base:
         return JSONResponse({"error": "birdnet_url not configured"}, status_code=503)
-    det = db.detection_by_id(det_id)
-    if not det or not det.get("clip_ref"):
+    # SQLite access is blocking (up to its lock timeout); keep it off the event loop.
+    det = await run_in_threadpool(db.detection_by_id, det_id)
+    urls = proxy.birdnet_audio_urls(base, det) if det else []
+    if not urls:
         return JSONResponse({"error": "no clip for detection"}, status_code=404)
-    return await proxy.stream_upstream(request, proxy.birdnet_clip_url(base, det["clip_ref"]))
+    return await proxy.stream_upstream(request, urls[0], fallbacks=tuple(urls[1:]))
+
+
+@router.get("/birdnet/{det_id}/spectrogram")
+async def birdnet_spectrogram(det_id: int, request: Request):
+    base = request.app.state.settings.birdnet_url
+    if not base:
+        return JSONResponse({"error": "birdnet_url not configured"}, status_code=503)
+    det = await run_in_threadpool(db.detection_by_id, det_id)
+    urls = proxy.birdnet_spectrogram_urls(base, det) if det else []
+    if not urls:
+        return JSONResponse({"error": "no spectrogram for detection"}, status_code=404)
+    return await proxy.stream_upstream(request, urls[0], fallbacks=tuple(urls[1:]))

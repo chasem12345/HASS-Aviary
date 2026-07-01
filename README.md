@@ -4,8 +4,10 @@
 [Frigate NVR](https://frigate.video) (visual) and [BirdNET-Go](https://github.com/tphakala/birdnet-go)
 (audio) — by subscribing to their MQTT topics. It keeps a running SQLite database of
 species / visits for analytics and presents a dashboard in the Home Assistant sidebar
-(desktop + mobile app, via ingress). Recent detections link to a live clip/snapshot (Frigate)
-or audio (BirdNET-Go) preview proxied from the originating source.
+(desktop + mobile app, via ingress). Recent detections play the live clip/snapshot (Frigate)
+or audio with spectrogram (BirdNET-Go) proxied from the originating source, with per-species
+pages (totals, first/last seen, activity charts), day-grouped browsing with filters and
+pagination, and a live-refreshing Recent feed.
 
 > Aviary does **no** classification of its own. It reads the species that Frigate emits in the
 > event `sub_label` and the species BirdNET-Go emits in its MQTT payload.

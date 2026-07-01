@@ -1,5 +1,5 @@
-{% macro detection_card(d) %}
-<article class="det-card">
+{% macro detection_card(d, highlight_after=None) %}
+<article class="det-card{{ ' new' if highlight_after and d.start_time > highlight_after }}">
   <div class="det-media">
     {% if d.source == 'frigate' %}
       {% if d.has_clip %}
@@ -11,13 +11,18 @@
         <img loading="lazy" alt="{{ d.common_name }}"
              src="{{ u('frigate_snapshot', event_id=d.source_ref) }}">
       {% else %}
-        <div class="nomedia">no media</div>
+        <div class="nomedia"><span class="bird-mark">🐦</span><span>no media</span></div>
       {% endif %}
     {% elif d.source == 'birdnet' %}
       {% if d.has_clip %}
-        <audio controls preload="none" src="{{ u('birdnet_clip', det_id=d.id) }}"></audio>
+        <div class="audio-wrap">
+          <img loading="lazy" class="spectrogram" alt="Spectrogram of {{ d.common_name }}"
+               src="{{ u('birdnet_spectrogram', det_id=d.id) }}"
+               onerror="this.closest('.audio-wrap').classList.add('no-spec')">
+          <audio controls preload="none" src="{{ u('birdnet_clip', det_id=d.id) }}"></audio>
+        </div>
       {% else %}
-        <div class="nomedia">🔊 audio detection</div>
+        <div class="nomedia"><span class="bird-mark">🔊</span><span>audio detection</span></div>
       {% endif %}
     {% endif %}
   </div>
@@ -26,11 +31,16 @@
     {% if d.scientific_name %}<div class="sci">{{ d.scientific_name }}</div>{% endif %}
     <div class="meta">
       <span class="badge badge-{{ d.source }}">{{ 'Frigate' if d.source == 'frigate' else 'BirdNET-Go' }}</span>
-      <span class="conf">{{ d.confidence | fmt_pct }}</span>
+      {% if d.confidence is not none %}
+      <span class="conf conf-{{ d.confidence | conf_class }}" title="confidence {{ d.confidence | fmt_pct }}">
+        <span class="conf-bar"><span style="width: {{ d.confidence | fmt_pct }}"></span></span>
+        {{ d.confidence | fmt_pct }}
+      </span>
+      {% endif %}
     </div>
     <div class="meta sub">
       {% if d.location %}<span>{{ d.location }}</span>{% endif %}
-      <span>{{ d.start_time | fmt_time }}</span>
+      <span title="{{ d.start_time | fmt_time }}">{{ d.start_time | fmt_rel }}</span>
     </div>
   </div>
 </article>

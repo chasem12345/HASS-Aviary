@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -72,18 +74,22 @@ def create_app() -> FastAPI:
         if settings.backfill_on_start:
             # Run in the background so startup isn't blocked by the source APIs.
             backfill_task = asyncio.create_task(backfill.run_backfill(settings))
-        log.info("Aviary started.")
+        # Charts and the "today" boundary use OS localtime; make misconfiguration visible.
+        log.info("Aviary started (timezone: %s, TZ=%s).", time.strftime("%Z"), os.environ.get("TZ", "unset"))
         try:
             yield
         finally:
             if backfill_task is not None:
                 backfill_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await backfill_task
             ingestor.stop()
             await proxy.close_client()
             log.info("Aviary stopped.")
 
     app = FastAPI(title="Aviary", lifespan=lifespan)
     app.state.settings = settings
+    app.state.ingestor = ingestor
     app.add_middleware(IngressStripMiddleware)
 
     app.mount(

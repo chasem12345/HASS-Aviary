@@ -1,18 +1,45 @@
 {% extends "base.html" %}
-{% import "_cards.html" as cards with context %}
 {% block title %} · {{ species }}{% endblock %}
 {% block content %}
 <div class="species-head">
   <a class="back" href="{{ u('dashboard') }}">← Dashboard</a>
-  <h1>{{ species }}</h1>
-  <span class="count">{{ detections | length }} recent detections</span>
 </div>
 
-<div class="cards">
-  {% for d in detections %}
-    {{ cards.detection_card(d) }}
+<section class="card species-hero">
+  {% if thumb %}
+  <img class="hero-thumb" alt="{{ species }}"
+       src="{{ u('frigate_snapshot', event_id=thumb) }}">
   {% else %}
-    <p class="empty">No detections for this species.</p>
-  {% endfor %}
+  <div class="hero-thumb hero-thumb-empty">🐦</div>
+  {% endif %}
+  <div class="hero-body">
+    <h1>{{ species }}</h1>
+    {% if stats.scientific_name %}<div class="sci">{{ stats.scientific_name }}</div>{% endif %}
+    <div class="hero-stats">
+      <div><span class="num">{{ stats.total or 0 }}</span><span class="lbl">Detections</span></div>
+      <div><span class="num" title="{{ stats.first_seen | fmt_time }}">{{ stats.first_seen | fmt_rel }}</span><span class="lbl">First seen</span></div>
+      <div><span class="num" title="{{ stats.last_seen | fmt_time }}">{{ stats.last_seen | fmt_rel }}</span><span class="lbl">Last seen</span></div>
+      <div><span class="num">{{ stats.best_confidence | fmt_pct }}</span><span class="lbl">Best confidence</span></div>
+    </div>
+    <div class="meta">
+      {% if stats.frigate_total %}<span class="badge badge-frigate">Frigate × {{ stats.frigate_total }}</span>{% endif %}
+      {% if stats.birdnet_total %}<span class="badge badge-birdnet">BirdNET-Go × {{ stats.birdnet_total }}</span>{% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="grid2">
+  <div class="card"><h2>Detections per day (30d)</h2><div class="chart-box"><canvas id="perDay"></canvas></div></div>
+  <div class="card"><h2>Activity by hour (all time)</h2><div class="chart-box"><canvas id="hourly"></canvas></div></div>
+</section>
+
+<div id="groups">
+  {% include "_groups.html" %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.aviaryInitSpecies({ species: {{ species | tojson }} });
+</script>
 {% endblock %}

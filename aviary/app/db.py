@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS detections (
     has_snapshot    INTEGER NOT NULL DEFAULT 0,
     clip_ref        TEXT,
     snapshot_ref    TEXT,
+    native_id       TEXT,                            -- source-side id (birdnet DB id / frigate event id)
     raw_json        TEXT,
     created_at      REAL    NOT NULL
 );
@@ -48,6 +49,10 @@ def init_db(db_path: str) -> None:
     with _connect() as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.executescript(_SCHEMA)
+        # Additive migrations for databases created by older versions.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(detections)")}
+        if "native_id" not in cols:
+            conn.execute("ALTER TABLE detections ADD COLUMN native_id TEXT")
 
 
 @contextmanager
@@ -74,23 +79,37 @@ def upsert_detection(row: dict[str, Any]) -> None:
             INSERT INTO detections (
                 source, source_ref, common_name, scientific_name, species_code,
                 confidence, location, start_time, end_time,
-                has_clip, has_snapshot, clip_ref, snapshot_ref, raw_json, created_at
+                has_clip, has_snapshot, clip_ref, snapshot_ref, native_id,
+                raw_json, created_at
             ) VALUES (
                 :source, :source_ref, :common_name, :scientific_name, :species_code,
                 :confidence, :location, :start_time, :end_time,
-                :has_clip, :has_snapshot, :clip_ref, :snapshot_ref, :raw_json, :created_at
+                :has_clip, :has_snapshot, :clip_ref, :snapshot_ref, :native_id,
+                :raw_json, :created_at
             )
             ON CONFLICT(source, source_ref) DO UPDATE SET
-                common_name     = excluded.common_name,
-                scientific_name = excluded.scientific_name,
-                species_code    = excluded.species_code,
-                confidence      = MAX(detections.confidence, excluded.confidence),
+                -- Never downgrade a classified species back to generic 'bird' when a
+                -- later message arrives without a sub_label.
+                common_name     = CASE
+                                      WHEN excluded.common_name = 'bird'
+                                           AND detections.common_name != 'bird'
+                                      THEN detections.common_name
+                                      ELSE excluded.common_name
+                                  END,
+                scientific_name = COALESCE(excluded.scientific_name, detections.scientific_name),
+                species_code    = COALESCE(excluded.species_code, detections.species_code),
+                -- Scalar MAX() is NULL if either side is NULL; keep the best non-NULL score.
+                confidence      = COALESCE(
+                                      MAX(detections.confidence, excluded.confidence),
+                                      detections.confidence, excluded.confidence
+                                  ),
                 location        = excluded.location,
                 end_time        = COALESCE(excluded.end_time, detections.end_time),
                 has_clip        = MAX(detections.has_clip, excluded.has_clip),
                 has_snapshot    = MAX(detections.has_snapshot, excluded.has_snapshot),
                 clip_ref        = COALESCE(excluded.clip_ref, detections.clip_ref),
                 snapshot_ref    = COALESCE(excluded.snapshot_ref, detections.snapshot_ref),
+                native_id       = COALESCE(excluded.native_id, detections.native_id),
                 raw_json        = excluded.raw_json
             """,
             row,
@@ -110,13 +129,22 @@ def recent_detections(
     limit: int = 60,
     source: Optional[str] = None,
     species: Optional[str] = None,
+    before: Optional[float] = None,
+    since: Optional[float] = None,
 ) -> list[dict]:
+    """Newest-first detections. ``before`` is a start_time cursor for pagination."""
     params: list = []
     where = "WHERE 1=1"
     where += _source_clause(source, params)
     if species:
         where += " AND common_name = ?"
         params.append(species)
+    if before is not None:
+        where += " AND start_time < ?"
+        params.append(before)
+    if since is not None:
+        where += " AND start_time >= ?"
+        params.append(since)
     params.append(limit)
     with _connect() as conn:
         rows = conn.execute(
@@ -124,6 +152,71 @@ def recent_detections(
             params,
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def change_marker(source: Optional[str] = None, species: Optional[str] = None) -> dict:
+    """Cheap poll target: row count + newest start_time for the given filters."""
+    params: list = []
+    where = "WHERE 1=1" + _source_clause(source, params)
+    if species:
+        where += " AND common_name = ?"
+        params.append(species)
+    with _connect() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS total, MAX(start_time) AS newest FROM detections {where}",
+            params,
+        ).fetchone()
+    return dict(row) if row else {"total": 0, "newest": None}
+
+
+def species_stats(name: str) -> dict:
+    """Aggregate stats for one species (all-time)."""
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*)                AS total,
+                MIN(start_time)         AS first_seen,
+                MAX(start_time)         AS last_seen,
+                MAX(confidence)         AS best_confidence,
+                SUM(source = 'frigate') AS frigate_total,
+                SUM(source = 'birdnet') AS birdnet_total,
+                MAX(scientific_name)    AS scientific_name
+            FROM detections WHERE common_name = ?
+            """,
+            (name,),
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def distinct_species(source: Optional[str] = None) -> list[str]:
+    params: list = []
+    where = "WHERE 1=1" + _source_clause(source, params)
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT DISTINCT common_name FROM detections {where} ORDER BY common_name",
+            params,
+        ).fetchall()
+    return [r["common_name"] for r in rows]
+
+
+def latest_snapshot_refs(names: list[str]) -> dict[str, str]:
+    """Newest Frigate snapshot event-ref per species, for thumbnails."""
+    if not names:
+        return {}
+    marks = ",".join("?" * len(names))
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT common_name, snapshot_ref, MAX(start_time)
+            FROM detections
+            WHERE source = 'frigate' AND has_snapshot = 1 AND snapshot_ref IS NOT NULL
+              AND common_name IN ({marks})
+            GROUP BY common_name
+            """,
+            names,
+        ).fetchall()
+    return {r["common_name"]: r["snapshot_ref"] for r in rows}
 
 
 def detection_by_id(det_id: int) -> Optional[dict]:
@@ -184,11 +277,22 @@ def top_species(
 def detections_per_day(
     days: int = 30,
     source: Optional[str] = None,
+    species: Optional[str] = None,
+    since: Optional[float] = None,
 ) -> list[dict]:
-    """Count per local day for the last ``days`` days (uses SQLite localtime)."""
+    """Count per local day (SQLite localtime); ``since`` epoch overrides ``days``."""
     params: list = []
-    where = f"WHERE start_time >= strftime('%s', 'now', '-{int(days)} days')"
+    if since is not None:
+        where = "WHERE start_time >= ?"
+        params.append(since)
+    else:
+        days = max(1, min(int(days), 3650))
+        where = "WHERE start_time >= CAST(strftime('%s', 'now', ?) AS REAL)"
+        params.append(f"-{days} days")
     where += _source_clause(source, params)
+    if species:
+        where += " AND common_name = ?"
+        params.append(species)
     with _connect() as conn:
         rows = conn.execute(
             f"""
@@ -206,6 +310,7 @@ def detections_per_day(
 def hourly_activity(
     source: Optional[str] = None,
     since: Optional[float] = None,
+    species: Optional[str] = None,
 ) -> list[dict]:
     """Count per hour-of-day (0-23), aggregated across all matching detections."""
     params: list = []
@@ -214,6 +319,9 @@ def hourly_activity(
     if since is not None:
         where += " AND start_time >= ?"
         params.append(since)
+    if species:
+        where += " AND common_name = ?"
+        params.append(species)
     with _connect() as conn:
         rows = conn.execute(
             f"""

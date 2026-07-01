@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 import paho.mqtt.client as mqtt
@@ -17,6 +18,9 @@ class MqttIngestor:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._client: Optional[mqtt.Client] = None
+        # Read by the UI to distinguish "no birds yet" from "not receiving anything".
+        self.connected: bool = False
+        self.last_message_at: Optional[float] = None
 
     def start(self) -> None:
         s = self._settings
@@ -54,16 +58,19 @@ class MqttIngestor:
         if reason_code != 0:
             log.error("MQTT connect failed: %s", reason_code)
             return
+        self.connected = True
         s = self._settings
         client.subscribe([(s.frigate_topic, 0), (s.birdnet_topic, 0)])
         log.info("Subscribed to '%s' and '%s'", s.frigate_topic, s.birdnet_topic)
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None) -> None:
+        self.connected = False
         log.warning("MQTT disconnected (%s); auto-reconnect will retry.", reason_code)
 
     def _on_message(self, client: mqtt.Client, userdata, message: mqtt.MQTTMessage) -> None:
         topic = message.topic
         s = self._settings
+        self.last_message_at = time.time()
         try:
             if _topic_matches(topic, s.frigate_topic):
                 ingest.handle_frigate(message.payload)

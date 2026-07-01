@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_cards.html" as cards with context %}
 {% block title %} · Dashboard{% endblock %}
 {% block content %}
 <div class="controls">
@@ -21,6 +22,23 @@
   </form>
 </div>
 
+{% if not stats.total and not latest %}
+<section class="card first-run">
+  <div class="empty-icon">🪶</div>
+  <h2>Waiting for the first bird…</h2>
+  {% if not mqtt_enabled %}
+  <p>MQTT is not configured, so Aviary can't receive detections. Set <code>mqtt_host</code>
+     in the add-on options (or install the Mosquitto broker add-on) and restart.</p>
+  {% elif not mqtt_connected %}
+  <p>Not connected to the MQTT broker yet. If this persists, check the broker
+     host/credentials in the add-on options and the add-on log.</p>
+  {% else %}
+  <p>Connected to MQTT and listening. Detections will appear here as soon as Frigate or
+     BirdNET-Go reports a bird.</p>
+  {% endif %}
+</section>
+{% endif %}
+
 <section class="stats">
   <div class="stat"><span class="num">{{ stats.total or 0 }}</span><span class="lbl">Detections</span></div>
   <div class="stat"><span class="num">{{ stats.species or 0 }}</span><span class="lbl">Species</span></div>
@@ -29,35 +47,58 @@
 </section>
 
 <section class="grid2">
-  <div class="card"><h2>Detections per day</h2><canvas id="perDay"></canvas></div>
-  <div class="card"><h2>Activity by hour</h2><canvas id="hourly"></canvas></div>
+  <div class="card"><h2>Detections per day</h2><div class="chart-box"><canvas id="perDay"></canvas></div></div>
+  <div class="card"><h2>Activity by hour</h2><div class="chart-box"><canvas id="hourly"></canvas></div></div>
 </section>
 
-<section class="card">
-  <h2>Top species</h2>
-  <table class="leaders">
-    <thead><tr><th>Species</th><th>Count</th><th>Last seen</th></tr></thead>
-    <tbody>
-      {% for s in leaders %}
-      <tr>
-        <td><a href="{{ u('species_detail', name=s.common_name) }}">{{ s.common_name }}</a>
-          {% if s.scientific_name %}<em>{{ s.scientific_name }}</em>{% endif %}</td>
-        <td>{{ s.count }}</td>
-        <td>{{ s.last_seen | fmt_time }}</td>
-      </tr>
-      {% else %}
-      <tr><td colspan="3" class="empty">No detections yet.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<section class="grid2 grid2-uneven">
+  <div class="card">
+    <h2>Top species</h2>
+    <table class="leaders">
+      <thead><tr><th></th><th>Species</th><th>Count</th><th>Last seen</th></tr></thead>
+      <tbody>
+        {% set max_count = leaders[0].count if leaders else 1 %}
+        {% for s in leaders %}
+        <tr>
+          <td class="thumb-cell">
+            {% if thumbs.get(s.common_name) %}
+            <a href="{{ u('species_detail', name=s.common_name) }}">
+              <img loading="lazy" class="thumb" alt=""
+                   src="{{ u('frigate_snapshot', event_id=thumbs[s.common_name]) }}?thumbnail=true">
+            </a>
+            {% else %}<span class="thumb thumb-empty">🐦</span>{% endif %}
+          </td>
+          <td>
+            <a href="{{ u('species_detail', name=s.common_name) }}">{{ s.common_name }}</a>
+            {% if s.scientific_name %}<em>{{ s.scientific_name }}</em>{% endif %}
+            <span class="count-bar"><span style="width: {{ (100 * s.count / max_count) | round(1) }}%"></span></span>
+          </td>
+          <td>{{ s.count }}</td>
+          <td title="{{ s.last_seen | fmt_time }}">{{ s.last_seen | fmt_rel }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="empty">No detections yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h2>Latest detection</h2>
+    {% if latest %}
+      <div class="hero-card">{{ cards.detection_card(latest) }}</div>
+    {% else %}
+      <p class="empty">Nothing yet.</p>
+    {% endif %}
+  </div>
 </section>
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ u('static', path='/app.js') }}"></script>
 <script>
-  const SOURCE = {{ ('"' + source + '"') if source != 'all' else 'null' }};
-  const DAYS = {{ {'today':1,'7d':7,'30d':30,'all':3650}[range] }};
-  window.aviaryInitDashboard(SOURCE, DAYS);
+  window.aviaryInitDashboard({
+    source: {{ (none if source == 'all' else source) | tojson }},
+    since: {{ (chart_since or none) | tojson }},
+    days: {{ chart_days | tojson }},
+  });
 </script>
 {% endblock %}

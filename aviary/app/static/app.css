@@ -69,15 +69,28 @@ table.leaders th, table.leaders td {
 table.leaders th { color: var(--muted); font-weight: 600; }
 table.leaders em { color: var(--muted); font-style: italic; margin-left: 6px; font-size: 12px; }
 
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-bottom: 18px; }
 .det-card {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   overflow: hidden; display: flex; flex-direction: column;
+  transition: box-shadow .15s ease, transform .15s ease;
 }
+.det-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.10); transform: translateY(-1px); }
+.det-card.new { animation: cardIn .8s ease; box-shadow: 0 0 0 2px var(--accent); }
+@keyframes cardIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; } }
 .det-media { background: #000; aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center; }
 .det-media video, .det-media img { width: 100%; height: 100%; object-fit: contain; }
 .det-media audio { width: 100%; }
-.det-media .nomedia { color: #889; font-size: 13px; }
+.det-media .nomedia {
+  color: #889; font-size: 13px; display: flex; flex-direction: column;
+  align-items: center; gap: 6px;
+}
+.det-media .bird-mark { font-size: 30px; opacity: .55; filter: grayscale(1); }
+.audio-wrap { width: 100%; height: 100%; display: flex; flex-direction: column; }
+.audio-wrap .spectrogram { flex: 1; min-height: 0; width: 100%; object-fit: cover; }
+.audio-wrap.no-spec .spectrogram { display: none; }
+.audio-wrap.no-spec { justify-content: center; }
+.audio-wrap audio { flex: none; }
 .det-body { padding: 12px 14px; }
 .det-body h3 { margin: 0 0 2px; font-size: 15px; }
 .det-body .sci { color: var(--muted); font-style: italic; font-size: 12px; margin-bottom: 8px; }
@@ -97,7 +110,87 @@ table.leaders em { color: var(--muted); font-style: italic; margin-left: 6px; fo
 
 .empty { color: var(--muted); padding: 30px; text-align: center; }
 
+/* ------------------------------------------------------------------ confidence */
+.conf { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.conf-bar {
+  display: inline-block; width: 52px; height: 6px; border-radius: 3px;
+  background: var(--line); overflow: hidden;
+}
+.conf-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--muted); }
+.conf-high .conf-bar > span { background: var(--accent); }
+.conf-mid  .conf-bar > span { background: #d9a441; }
+.conf-low  .conf-bar > span { background: #c4634f; }
+
+/* ----------------------------------------------------------------- day grouping */
+.day-head {
+  font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 22px 0 10px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.day-head:first-child { margin-top: 0; }
+
+.pager { text-align: center; margin: 10px 0 24px; }
+.btn {
+  display: inline-block; padding: 8px 22px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  font-size: 14px;
+}
+.btn:hover { border-color: var(--accent); text-decoration: none; }
+
+.live-note {
+  background: var(--card); border: 1px solid var(--accent); color: var(--ink);
+  border-radius: var(--radius); padding: 10px 14px; margin-bottom: 14px; font-size: 13px;
+}
+
+/* --------------------------------------------------------------------- charts */
+.chart-box { position: relative; height: 220px; }
+.chart-error { color: var(--muted); font-size: 13px; text-align: center; padding: 40px 0; }
+
+/* --------------------------------------------------------------- empty / first run */
+.first-run { text-align: center; padding: 34px 22px; }
+.first-run h2 { margin: 8px 0 6px; }
+.first-run p { color: var(--muted); max-width: 480px; margin: 0 auto; }
+.first-run code { background: var(--line); border-radius: 4px; padding: 1px 5px; }
+.empty-card { text-align: center; padding: 30px 0 10px; }
+.empty-icon { font-size: 38px; opacity: .6; }
+
+/* ------------------------------------------------------------- leaders table extras */
+.thumb-cell { width: 52px; }
+.thumb {
+  width: 44px; height: 44px; border-radius: 8px; object-fit: cover; display: block;
+  background: var(--line);
+}
+.thumb-empty { display: flex; align-items: center; justify-content: center; font-size: 20px; opacity: .5; }
+.count-bar {
+  display: block; height: 4px; border-radius: 2px; background: var(--line);
+  margin-top: 5px; max-width: 220px; overflow: hidden;
+}
+.count-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+
+.grid2-uneven { grid-template-columns: 3fr 2fr; }
+.hero-card .det-card { border: none; }
+.hero-card .det-card:hover { box-shadow: none; transform: none; }
+
+/* ---------------------------------------------------------------- species hero */
+.species-hero { display: flex; gap: 20px; align-items: stretch; }
+.hero-thumb {
+  width: 220px; border-radius: 10px; object-fit: cover; aspect-ratio: 4 / 3;
+  background: var(--line); flex: none;
+}
+.hero-thumb-empty { display: flex; align-items: center; justify-content: center; font-size: 52px; opacity: .5; }
+.hero-body h1 { margin: 0 0 2px; font-size: 24px; }
+.hero-body .sci { color: var(--muted); font-style: italic; margin-bottom: 14px; }
+.hero-stats { display: flex; gap: 26px; flex-wrap: wrap; margin-bottom: 14px; }
+.hero-stats .num { display: block; font-size: 20px; font-weight: 700; }
+.hero-stats .lbl { color: var(--muted); font-size: 12px; }
+
 @media (max-width: 720px) {
   .stats { grid-template-columns: repeat(2, 1fr); }
-  .grid2 { grid-template-columns: 1fr; }
+  .grid2, .grid2-uneven { grid-template-columns: 1fr; }
+  .container { padding: 14px; }
+  .topbar { padding: 10px 14px; gap: 14px; }
+  .controls form { gap: 10px; }
+  .species-hero { flex-direction: column; }
+  .hero-thumb { width: 100%; aspect-ratio: 16 / 9; }
+  .hero-stats { gap: 18px; }
 }

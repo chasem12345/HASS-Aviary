@@ -17,11 +17,13 @@
   <main class="container">
     {% block content %}{% endblock %}
   </main>
-  <script src="{{ u('static', path='/chart.umd.js') }}"></script>
   <script>
-    // Ingress-aware API base (root-relative; X-Ingress-Path prefix already applied).
-    window.AVIARY_API = "{{ u('summary') }}".replace(/\/summary$/, "");
+    // Ingress-aware URL bases (root-relative; X-Ingress-Path prefix already applied).
+    window.AVIARY_BASE = "{{ ingress_path }}";
+    window.AVIARY_API = "{{ ingress_path }}/api";
   </script>
+  <script src="{{ u('static', path='/chart.umd.js') }}"></script>
+  <script src="{{ u('static', path='/app.js') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

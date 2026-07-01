@@ -1,18 +1,20 @@
-// Dashboard charts. Fetches JSON from the ingress-aware API base and renders Chart.js.
+// Charts + live refresh. Fetches JSON from the ingress-aware API base.
 (function () {
   "use strict";
 
-  function apiUrl(path, params) {
-    const base = window.AVIARY_API || "api";
-    const u = new URL(base + path, window.location.href);
+  const API = window.AVIARY_API || "api";
+  const BASE = window.AVIARY_BASE || "";
+
+  function withParams(url, params) {
+    const u = new URL(url, window.location.href);
     Object.entries(params || {}).forEach(([k, v]) => {
-      if (v !== null && v !== undefined) u.searchParams.set(k, v);
+      if (v !== null && v !== undefined && v !== "") u.searchParams.set(k, v);
     });
     return u.toString();
   }
 
   async function getJson(path, params) {
-    const res = await fetch(apiUrl(path, params));
+    const res = await fetch(withParams(API + path, params));
     if (!res.ok) throw new Error("fetch failed: " + path);
     return res.json();
   }
@@ -22,18 +24,30 @@
     return dark ? "#93a1af" : "#6b7785";
   }
 
-  async function initDashboard(source, days) {
-    const common = {
+  function chartError(canvasId) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const div = document.createElement("div");
+    div.className = "chart-error";
+    div.textContent = "Couldn't load chart data.";
+    canvas.replaceWith(div);
+  }
+
+  function commonOptions() {
+    return {
       responsive: true,
+      maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
         x: { ticks: { color: axisColor() }, grid: { display: false } },
-        y: { ticks: { color: axisColor() }, beginAtZero: true },
+        y: { ticks: { color: axisColor(), precision: 0 }, beginAtZero: true },
       },
     };
+  }
 
+  async function perDayChart(params) {
     try {
-      const perDay = await getJson("/per-day", { source, days });
+      const perDay = await getJson("/per-day", params);
       new Chart(document.getElementById("perDay"), {
         type: "line",
         data: {
@@ -44,22 +58,81 @@
             fill: true, tension: 0.3, pointRadius: 2,
           }],
         },
-        options: common,
+        options: commonOptions(),
       });
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); chartError("perDay"); }
+  }
 
+  async function hourlyChart(params) {
     try {
-      const hourly = await getJson("/hourly", { source, days });
+      const hourly = await getJson("/hourly", params);
       new Chart(document.getElementById("hourly"), {
         type: "bar",
         data: {
           labels: hourly.data.map((d) => String(d.hour).padStart(2, "0")),
           datasets: [{ data: hourly.data.map((d) => d.count), backgroundColor: "#3b6ea5" }],
         },
-        options: common,
+        options: commonOptions(),
       });
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); chartError("hourly"); }
   }
 
-  window.aviaryInitDashboard = initDashboard;
+  window.aviaryInitDashboard = function (opts) {
+    perDayChart({ source: opts.source, days: opts.days, since: opts.since });
+    hourlyChart({ source: opts.source, days: opts.days, since: opts.since });
+  };
+
+  window.aviaryInitSpecies = function (opts) {
+    perDayChart({ species: opts.species, days: 30 });
+    hourlyChart({ species: opts.species, days: 3650 });
+  };
+
+  // ------------------------------------------------------------- live refresh
+
+  window.aviaryInitRecent = function (opts) {
+    if (opts.paged) return; // never auto-refresh while browsing older pages
+    const groupsEl = document.getElementById("groups");
+    const note = document.getElementById("live-note");
+    if (!groupsEl) return;
+    let newest = Number(opts.newest) || 0;
+    let refreshing = false;
+
+    function mediaPlaying() {
+      return Array.from(groupsEl.querySelectorAll("video, audio"))
+        .some((el) => !el.paused && !el.ended);
+    }
+
+    async function tick() {
+      if (refreshing || document.hidden) return;
+      refreshing = true;
+      try {
+        const marker = await getJson("/latest", { source: opts.source, species: opts.species });
+        const markerNewest = Number(marker.newest) || 0;
+        if (markerNewest > newest) {
+          if (mediaPlaying()) {
+            if (note) {
+              note.textContent = "New detections available — the list will refresh when playback stops.";
+              note.hidden = false;
+            }
+          } else {
+            const url = withParams(BASE + "/recent/partial", {
+              source: opts.source,
+              species: opts.species,
+              range: opts.range,
+              highlight_after: newest,
+            });
+            const res = await fetch(url);
+            if (res.ok) {
+              groupsEl.innerHTML = await res.text();
+              newest = markerNewest;
+              if (note) note.hidden = true;
+            }
+          }
+        }
+      } catch (e) { /* transient — retry on next tick */ }
+      refreshing = false;
+    }
+
+    setInterval(tick, 30000);
+  };
 })();

@@ -13,6 +13,7 @@ header is absent (direct access, or local dev) the prefix is empty and URLs stil
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime
 
 from fastapi import FastAPI, Request
@@ -21,16 +22,22 @@ from fastapi.templating import Jinja2Templates
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
 
 
+def ingress_url(request: Request, endpoint: str, /, **params) -> str:
+    """Root-relative URL for a named route, prefixed with the ingress path.
+
+    ``endpoint`` is positional-only so route path params named ``name`` (e.g.
+    ``species_detail``) don't collide with it. Usable from views too (e.g. to build
+    pagination links).
+    """
+    prefix = request.headers.get("X-Ingress-Path", "").rstrip("/")
+    return f"{prefix}{request.app.url_path_for(endpoint, **params)}"
+
+
 def _ingress_context(request: Request) -> dict:
     prefix = request.headers.get("X-Ingress-Path", "").rstrip("/")
 
     def u(endpoint, /, **params) -> str:
-        """Root-relative URL for a named route, prefixed with the ingress path.
-
-        ``endpoint`` is positional-only so route path params named ``name`` (e.g.
-        ``species_detail``) don't collide with it.
-        """
-        return f"{prefix}{request.app.url_path_for(endpoint, **params)}"
+        return ingress_url(request, endpoint, **params)
 
     return {"ingress_path": prefix, "u": u}
 
@@ -56,8 +63,40 @@ def _fmt_pct(value) -> str:
         return "—"
 
 
+def _fmt_rel(epoch) -> str:
+    """Compact relative time: 'just now', '5m ago', '3h ago', '2d ago'."""
+    if not epoch:
+        return "—"
+    try:
+        delta = time.time() - float(epoch)
+    except (TypeError, ValueError):
+        return "—"
+    if delta < 0:
+        delta = 0
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    if delta < 86400 * 30:
+        return f"{int(delta // 86400)}d ago"
+    return _fmt_time(epoch)
+
+
+def _fmt_conf_class(value) -> str:
+    """CSS grade for a confidence value: high / mid / low."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "none"
+    return "high" if v >= 0.8 else "mid" if v >= 0.5 else "low"
+
+
 templates.env.filters["fmt_time"] = _fmt_time
 templates.env.filters["fmt_pct"] = _fmt_pct
+templates.env.filters["fmt_rel"] = _fmt_rel
+templates.env.filters["conf_class"] = _fmt_conf_class
 
 
 def register_routes(app: FastAPI) -> None:

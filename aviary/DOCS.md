@@ -18,9 +18,15 @@ dashboard embedded in the Home Assistant sidebar.
   (`GET /api/v2/detections`) still retain — so the database is prepopulated instead of starting
   empty. Backfill runs in the background, is idempotent (safe to re-run every start), and
   dedupes against live MQTT detections. It needs `frigate_url` / `birdnet_url` to be reachable.
-- Clips (Frigate video), snapshots (Frigate image) and audio (BirdNET-Go WAV) are **proxied
+- Clips (Frigate video), snapshots (Frigate image) and audio (BirdNET-Go) are **proxied
   live** from the source when you open a preview — nothing is cached, so previews expire when
-  the source deletes the underlying media.
+  the source deletes the underlying media. BirdNET-Go audio is resolved via its v2
+  by-id API when the detection id is known (with the legacy `/clips/` path as a
+  fallback), and audio cards show the detection's spectrogram when available.
+- The **Recent** page filters by source, date range, and species, groups results by day,
+  paginates with *Load older*, and refreshes itself (~30s) as new detections arrive.
+- **Species pages** show totals, first/last seen, best confidence, and per-day /
+  hour-of-day activity charts for that species.
 
 ## Configuration
 

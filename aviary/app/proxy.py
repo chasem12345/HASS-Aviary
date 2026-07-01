@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 from fastapi import Request
@@ -43,8 +44,12 @@ async def close_client() -> None:
         _client = None
 
 
-async def stream_upstream(request: Request, url: str) -> StreamingResponse:
-    """Proxy ``url``, forwarding Range and relaying media headers as a streaming response."""
+async def stream_upstream(request: Request, url: str, fallbacks: tuple[str, ...] = ()):
+    """Proxy ``url``, forwarding Range and relaying media headers as a streaming response.
+
+    ``fallbacks`` are tried in order when a URL errors or returns >= 400 (used for
+    BirdNET-Go, where the working audio endpoint differs across versions).
+    """
     if _client is None:
         return JSONResponse({"error": "proxy client not initialized"}, status_code=500)
 
@@ -52,11 +57,22 @@ async def stream_upstream(request: Request, url: str) -> StreamingResponse:
     if "range" in request.headers:
         fwd_headers["Range"] = request.headers["range"]
 
-    upstream = _client.build_request("GET", url, headers=fwd_headers)
-    try:
-        resp = await _client.send(upstream, stream=True)
-    except httpx.HTTPError as exc:
-        log.warning("Upstream fetch failed for %s: %s", url, exc)
+    urls = (url, *fallbacks)
+    resp = None
+    for i, candidate in enumerate(urls):
+        upstream = _client.build_request("GET", candidate, headers=fwd_headers)
+        try:
+            attempt = await _client.send(upstream, stream=True)
+        except httpx.HTTPError as exc:
+            log.warning("Upstream fetch failed for %s: %s", candidate, exc)
+            continue
+        if attempt.status_code >= 400 and i < len(urls) - 1:
+            log.debug("Upstream %s returned %s; trying fallback", candidate, attempt.status_code)
+            await attempt.aclose()
+            continue
+        resp = attempt
+        break
+    if resp is None:
         return JSONResponse({"error": "upstream unreachable"}, status_code=502)
 
     out_headers = {
@@ -89,13 +105,36 @@ def frigate_snapshot_url(base: str, event_id: str, thumbnail: bool = False) -> s
     return f"{base}/api/events/{event_id}/{kind}"
 
 
-def birdnet_clip_url(base: str, clip_ref: str) -> str:
-    """Resolve a BirdNET-Go audio clip reference to a URL.
+def birdnet_audio_urls(base: str, det: dict) -> list[str]:
+    """Candidate URLs for a BirdNET-Go detection's audio, best first.
 
-    BirdNET-Go serves exported clips under its ``/clips/`` path. If the stored ref is
-    already an absolute URL we use it as-is; otherwise we treat it as a filename.
+    BirdNET-Go serves audio only through its API (there is no static clips path):
+    nightlies have by-id ``/api/v2/audio/{id}`` (Range-capable) and by-filename
+    ``/api/v2/media/audio/{filename}``; stable v0.6.4 only has
+    ``/api/v1/media/audio?clip={ClipName}``. Try newest first and fall through.
     """
-    if clip_ref.startswith(("http://", "https://")):
-        return clip_ref
-    filename = clip_ref.replace("\\", "/").split("/")[-1]
-    return f"{base}/clips/{filename}"
+    urls: list[str] = []
+    if det.get("native_id"):
+        urls.append(f"{base}/api/v2/audio/{det['native_id']}")
+    clip_ref = det.get("clip_ref")
+    if clip_ref:
+        if clip_ref.startswith(("http://", "https://")):
+            urls.append(clip_ref)
+        else:
+            filename = clip_ref.replace("\\", "/").split("/")[-1]
+            urls.append(f"{base}/api/v2/media/audio/{quote(filename)}")
+            urls.append(f"{base}/api/v1/media/audio?clip={quote(clip_ref, safe='')}")
+    return urls
+
+
+def birdnet_spectrogram_urls(base: str, det: dict) -> list[str]:
+    """Candidate URLs for a detection's spectrogram PNG, best first (see audio note)."""
+    urls: list[str] = []
+    if det.get("native_id"):
+        urls.append(f"{base}/api/v2/spectrogram/{det['native_id']}?size=md")
+    clip_ref = det.get("clip_ref")
+    if clip_ref and not clip_ref.startswith(("http://", "https://")):
+        filename = clip_ref.replace("\\", "/").split("/")[-1]
+        urls.append(f"{base}/api/v2/media/spectrogram/{quote(filename)}")
+        urls.append(f"{base}/api/v1/media/spectrogram?clip={quote(clip_ref, safe='')}")
+    return urls

@@ -64,12 +64,13 @@ def build_frigate_row(obj: dict) -> Optional[dict]:
     common_name = sub_label or "bird"
 
     data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
-    confidence = _as_float(
-        obj.get("top_score")
-        or obj.get("score")
-        or data.get("top_score")
-        or data.get("score")
-    )
+    # First non-None wins (an `or` chain would drop a legitimate 0.0 score).
+    confidence = _as_float(_first_not_none(
+        obj.get("top_score"),
+        obj.get("score"),
+        data.get("top_score"),
+        data.get("score"),
+    ))
 
     has_clip = 1 if obj.get("has_clip") else 0
     has_snapshot = 1 if obj.get("has_snapshot") else 0
@@ -89,7 +90,8 @@ def build_frigate_row(obj: dict) -> Optional[dict]:
         # The proxy resolves these refs back to Frigate API URLs using the event id.
         "clip_ref": str(event_id) if has_clip else None,
         "snapshot_ref": str(event_id) if has_snapshot else None,
-        "raw_json": json.dumps(obj)[:8000],
+        "native_id": str(event_id),
+        "raw_json": _raw_json(obj),
         "created_at": _now(),
     }
 
@@ -118,11 +120,13 @@ def handle_frigate(payload: bytes) -> None:
 def build_birdnet_row(msg: dict) -> Optional[dict]:
     """Build a detections row from a BirdNET-Go detection.
 
-    Expects the MQTT payload shape (PascalCase keys: ``ID``, ``CommonName``,
+    Expects the MQTT payload shape: PascalCase ``datastore.Note`` keys (``CommonName``,
     ``ScientificName``, ``SpeciesCode``, ``Confidence``, ``ClipName``, ``BeginTime``,
-    ``EndTime``, ``Date``, ``Time``, ``SourceNode``). The HTTP-API backfill maps its
-    camelCase response into this shape first (see ``backfill.birdnet_msg_from_api``), so
-    both paths produce identical ``source_ref`` values and dedupe cleanly.
+    ``EndTime``, ``Date``, ``Time``, ``SourceNode``) plus the camelCase ``detectionId``
+    (the database id, present on current builds; older ones sent ``ID``). The HTTP-API
+    backfill maps its camelCase response into this shape first (see
+    ``backfill.birdnet_msg_from_api``), so both paths produce identical ``source_ref``
+    values and dedupe cleanly.
     """
     if not isinstance(msg, dict):
         return None
@@ -130,16 +134,24 @@ def build_birdnet_row(msg: dict) -> Optional[dict]:
     common_name = msg.get("CommonName") or "bird"
     start_time = _birdnet_epoch(msg) or _now()
 
-    # BirdNET-Go's detection id may repeat across restarts; combine with the timestamp
-    # to form a stable-enough dedup key while still collapsing duplicate publishes.
-    raw_id = msg.get("ID")
-    source_ref = f"{raw_id}-{int(start_time)}" if raw_id not in (None, 0) else str(int(start_time * 1000))
+    # The database id arrives as camelCase `detectionId` on current BirdNET-Go builds
+    # (top-level `ID` was removed from the MQTT payload; on v0.6.4 it was always 0).
+    # The HTTP backfill maps its `id` into `ID`. Both therefore key identically here,
+    # so live and backfilled rows dedupe. Without an id, fall back to species+second,
+    # which collapses duplicate publishes of the same detection.
+    raw_id = _first_not_none(msg.get("detectionId"), msg.get("ID"))
+    has_native_id = raw_id not in (None, 0, "", "0")
+    source_ref = (
+        f"{raw_id}-{int(start_time)}" if has_native_id
+        else f"{common_name}-{int(start_time)}"
+    )
 
     # Audio clip locator: BirdNET-Go payloads may include a clip filename under one of a
     # few keys depending on version. Store whatever is present; the proxy resolves it
-    # against birdnet_url. If none is present we simply have no clip.
+    # against birdnet_url. With a native id the by-id audio endpoint works even
+    # without a filename.
     clip_ref = _first(msg, "ClipName", "Clip", "File", "InputFile")
-    has_clip = 1 if clip_ref else 0
+    has_clip = 1 if (clip_ref or has_native_id) else 0
 
     return {
         "source": "birdnet",
@@ -148,14 +160,17 @@ def build_birdnet_row(msg: dict) -> Optional[dict]:
         "scientific_name": msg.get("ScientificName"),
         "species_code": msg.get("SpeciesCode"),
         "confidence": _as_float(msg.get("Confidence")),
-        "location": msg.get("SourceNode"),
+        "location": _first(msg, "SourceNode", "sourceName"),
         "start_time": start_time,
         "end_time": _birdnet_epoch(msg, key="EndTime"),
         "has_clip": has_clip,
         "has_snapshot": 0,
         "clip_ref": clip_ref,
         "snapshot_ref": None,
-        "raw_json": json.dumps(msg)[:8000],
+        # BirdNET-Go's own database id — lets the media proxy use the by-id API
+        # endpoints (audio/spectrogram) instead of guessing clip file paths.
+        "native_id": str(raw_id) if has_native_id else None,
+        "raw_json": _raw_json(msg),
         "created_at": _now(),
     }
 
@@ -173,6 +188,37 @@ def handle_birdnet(payload: bytes) -> None:
 
 
 # ----------------------------------------------------------------------------- helpers
+
+def _first_not_none(*values: Any) -> Any:
+    for v in values:
+        if v is not None:
+            return v
+    return None
+
+
+def _raw_json(obj: Any, limit: int = 8000) -> Optional[str]:
+    """Serialize the source payload for debugging; never store truncated/invalid JSON.
+
+    Oversized payloads (e.g. Frigate events with bulky path/region data) get their
+    largest values dropped until the document fits; if it still doesn't fit, store
+    nothing rather than a sliced document.
+    """
+    try:
+        text = json.dumps(obj)
+    except (TypeError, ValueError):
+        return None
+    if len(text) <= limit:
+        return text
+    if isinstance(obj, dict):
+        slim = dict(obj)
+        # Drop the largest values first until it fits.
+        for k in sorted(slim, key=lambda k: len(str(slim[k])), reverse=True):
+            slim.pop(k)
+            text = json.dumps(slim)
+            if len(text) <= limit:
+                return text
+    return None
+
 
 def _as_float(value: Any) -> Optional[float]:
     if value is None:

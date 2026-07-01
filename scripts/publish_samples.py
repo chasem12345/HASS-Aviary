@@ -41,7 +41,9 @@ def frigate_event(event_id: str, species: str, camera: str, score: float, ts: fl
 def birdnet_event(det_id: int, common: str, sci: str, code: str, conf: float, ts: float) -> dict:
     lt = time.localtime(ts)
     return {
-        "ID": det_id,
+        # Current BirdNET-Go publishes the DB id as camelCase `detectionId`
+        # (older builds sent `ID`, which was always 0 over MQTT).
+        "detectionId": det_id,
         "SourceNode": "BirdNET-Go",
         "Date": time.strftime("%Y-%m-%d", lt),
         "Time": time.strftime("%H:%M:%S", lt),

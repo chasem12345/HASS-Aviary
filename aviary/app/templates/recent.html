@@ -1,10 +1,8 @@
 {% extends "base.html" %}
-{% import "_cards.html" as cards with context %}
 {% block title %} · Recent{% endblock %}
 {% block content %}
 <div class="controls">
   <form method="get" action="{{ u('recent') }}">
-    {% if species %}<input type="hidden" name="species" value="{{ species }}">{% endif %}
     <label>Source
       <select name="source" onchange="this.form.submit()">
         <option value="all" {{ 'selected' if source == 'all' }}>All</option>
@@ -12,16 +10,42 @@
         <option value="birdnet" {{ 'selected' if source == 'birdnet' }}>BirdNET-Go (audio)</option>
       </select>
     </label>
-    {% if species %}<span class="filter-chip">{{ species }}
-      <a href="{{ u('recent') }}">✕</a></span>{% endif %}
+    <label>Range
+      <select name="range" onchange="this.form.submit()">
+        <option value="all" {{ 'selected' if range == 'all' }}>All time</option>
+        <option value="today" {{ 'selected' if range == 'today' }}>Today</option>
+        <option value="7d" {{ 'selected' if range == '7d' }}>7 days</option>
+        <option value="30d" {{ 'selected' if range == '30d' }}>30 days</option>
+      </select>
+    </label>
+    <label>Species
+      <select name="species" onchange="this.form.submit()">
+        <option value="" {{ 'selected' if not species }}>All species</option>
+        {% for s in species_options %}
+        <option value="{{ s }}" {{ 'selected' if species == s }}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if species or source != 'all' or range != 'all' %}
+      <a class="filter-chip" href="{{ u('recent') }}">Clear filters ✕</a>
+    {% endif %}
   </form>
 </div>
 
-<div class="cards">
-  {% for d in detections %}
-    {{ cards.detection_card(d) }}
-  {% else %}
-    <p class="empty">No detections yet.</p>
-  {% endfor %}
+<div id="live-note" class="live-note" hidden></div>
+<div id="groups">
+  {% include "_groups.html" %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.aviaryInitRecent({
+    source: {{ (none if source == 'all' else source) | tojson }},
+    species: {{ (species or none) | tojson }},
+    range: {{ range | tojson }},
+    newest: {{ (newest or 0) | tojson }},
+    paged: {{ paged | tojson }},
+  });
+</script>
 {% endblock %}

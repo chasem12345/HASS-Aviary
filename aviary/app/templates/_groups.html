@@ -1,0 +1,20 @@
+{% import "_cards.html" as cards with context %}
+{% for g in groups %}
+<h2 class="day-head">{{ g.label }}</h2>
+<div class="cards">
+  {% for d in g["items"] %}
+    {{ cards.detection_card(d, highlight_after) }}
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-card">
+  <div class="empty-icon">🪶</div>
+  <p class="empty">No detections{{ ' for this filter' if species or source != 'all' else ' yet' }}.</p>
+</div>
+{% endfor %}
+
+{% if next_before %}
+<div class="pager">
+  <a class="btn" href="{{ older_url }}">Load older</a>
+</div>
+{% endif %}
