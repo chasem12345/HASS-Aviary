@@ -103,6 +103,7 @@ def dashboard(
         "chart_since": since or "",
         "chart_days": _RANGE_DAYS[range_key],
         "stats": db.summary_stats(source=src, since=since),
+        "new_species": db.new_species_count(source=src, since=since),
         "leaders": leaders,
         "thumbs": db.latest_snapshot_refs([s["common_name"] for s in leaders]),
         "latest": latest[0] if latest else None,
@@ -173,6 +174,31 @@ def recent_partial(
     ctx = _recent_ctx(request, source, species, range_key, before)
     ctx["highlight_after"] = highlight_after
     return templates.TemplateResponse("_groups.html", ctx)
+
+
+@router.get("/species", response_class=HTMLResponse)
+def species_index(
+    request: Request,
+    source: Optional[str] = Query(None),
+    range_key: str = Query("all", alias="range"),
+    new: int = Query(0),
+):
+    src = _norm_source(source)
+    range_key = _norm_range(range_key, default="all")
+    since = _since(range_key)
+    only_new = bool(new)
+    species = db.species_list(source=src, since=since, only_new=only_new)
+    ctx = {
+        "request": request,
+        "page": "species",
+        "source": src or "all",
+        "range": range_key,
+        "only_new": only_new,
+        "species": species,
+        "since": since,
+        "thumbs": db.latest_snapshot_refs([s["common_name"] for s in species]),
+    }
+    return templates.TemplateResponse("species_index.html", ctx)
 
 
 @router.get("/species/{name}", response_class=HTMLResponse)

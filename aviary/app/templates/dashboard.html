@@ -39,11 +39,18 @@
 </section>
 {% endif %}
 
+{% set src_q = ('&source=' + source) if source != 'all' else '' %}
 <section class="stats">
-  <div class="stat"><span class="num">{{ stats.total or 0 }}</span><span class="lbl">Detections</span></div>
-  <div class="stat"><span class="num">{{ stats.species or 0 }}</span><span class="lbl">Species</span></div>
-  <div class="stat"><span class="num">{{ stats.frigate_total or 0 }}</span><span class="lbl">Frigate</span></div>
-  <div class="stat"><span class="num">{{ stats.birdnet_total or 0 }}</span><span class="lbl">BirdNET-Go</span></div>
+  <a class="stat" href="{{ u('recent') }}?range={{ range }}{{ src_q }}">
+    <span class="num">{{ stats.total or 0 }}</span><span class="lbl">Detections</span></a>
+  <a class="stat" href="{{ u('species_index') }}?range={{ range }}{{ src_q }}">
+    <span class="num">{{ stats.species or 0 }}</span><span class="lbl">Species</span></a>
+  <a class="stat" href="{{ u('species_index') }}?new=1&range={{ range }}{{ src_q }}">
+    <span class="num">{{ new_species or 0 }}</span><span class="lbl">New species</span></a>
+  <a class="stat" href="{{ u('recent') }}?source=frigate&range={{ range }}">
+    <span class="num">{{ stats.frigate_total or 0 }}</span><span class="lbl">Frigate</span></a>
+  <a class="stat" href="{{ u('recent') }}?source=birdnet&range={{ range }}">
+    <span class="num">{{ stats.birdnet_total or 0 }}</span><span class="lbl">BirdNET-Go</span></a>
 </section>
 
 <section class="grid2">

@@ -189,6 +189,74 @@ def species_stats(name: str) -> dict:
     return dict(row) if row else {}
 
 
+def new_species_count(source: Optional[str] = None, since: Optional[float] = None) -> int:
+    """Number of species whose *first-ever* detection falls at/after ``since``.
+
+    With ``since`` None (all-time), every species is "new", so this returns the distinct
+    species count.
+    """
+    params: list = []
+    src = _source_clause(source, params)
+    if since is None:
+        with _connect() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(DISTINCT common_name) AS c FROM detections WHERE 1=1{src}",
+                params,
+            ).fetchone()
+        return row["c"] if row else 0
+    params.append(since)
+    with _connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS c FROM (
+                SELECT common_name FROM detections WHERE 1=1{src}
+                GROUP BY common_name HAVING MIN(start_time) >= ?
+            )
+            """,
+            params,
+        ).fetchone()
+    return row["c"] if row else 0
+
+
+def species_list(
+    source: Optional[str] = None,
+    since: Optional[float] = None,
+    only_new: bool = False,
+) -> list[dict]:
+    """Per-species aggregates for the species index.
+
+    ``only_new`` keeps just species whose first-ever detection is at/after ``since``
+    (first_seen/count are all-time). Otherwise, when ``since`` is given, results are
+    limited to species active within the window (count is the in-window count).
+    """
+    params: list = []
+    where = "WHERE 1=1" + _source_clause(source, params)
+    having = ""
+    if only_new and since is not None:
+        having = " HAVING MIN(start_time) >= ?"
+    elif since is not None:
+        where += " AND start_time >= ?"
+        params.append(since)
+    order = "first_seen DESC" if only_new else "count DESC, last_seen DESC"
+    sql = f"""
+        SELECT common_name,
+               MAX(scientific_name) AS scientific_name,
+               COUNT(*)             AS count,
+               MIN(start_time)      AS first_seen,
+               MAX(start_time)      AS last_seen,
+               SUM(source = 'frigate') AS frigate_total,
+               SUM(source = 'birdnet') AS birdnet_total
+        FROM detections {where}
+        GROUP BY common_name{having}
+        ORDER BY {order}
+    """
+    if only_new and since is not None:
+        params.append(since)
+    with _connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
 def distinct_species(source: Optional[str] = None) -> list[str]:
     params: list = []
     where = "WHERE 1=1" + _source_clause(source, params)
