@@ -17,11 +17,37 @@ from .settings import load_settings
 _APP_DIR = os.path.dirname(__file__)
 
 
-# NOTE: We deliberately do NOT set Starlette's ``root_path`` from ``X-Ingress-Path``.
-# HA ingress strips its prefix before forwarding, so the add-on receives the real path
-# (e.g. ``/static/app.css``); setting ``root_path`` would make Starlette strip a prefix
-# that isn't in the path and break routing. URLs are prefixed in templates instead
-# (see ``routes/__init__.py`` -> ``u()``).
+class IngressStripMiddleware:
+    """Normalize the request path for Home Assistant ingress.
+
+    Depending on the HA/Supervisor version, ingress may forward either the *stripped*
+    path (``/static/app.css``) or the *full* path including the
+    ``/api/hassio_ingress/<token>`` prefix. We strip the prefix (from ``X-Ingress-Path``)
+    when it's present so routing always sees the real app path, and we do NOT touch
+    ``root_path`` (which would break Starlette routing on an already-stripped path).
+    Outgoing URLs are prefixed separately in templates via ``u()``.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            prefix = ""
+            for key, value in scope.get("headers", []):
+                if key == b"x-ingress-path":
+                    prefix = value.decode("latin-1").rstrip("/")
+                    break
+            if prefix:
+                path = scope.get("path", "")
+                if path.startswith(prefix):
+                    new_path = path[len(prefix):] or "/"
+                    scope = dict(scope)
+                    scope["path"] = new_path
+                    scope["raw_path"] = new_path.encode("latin-1")
+        await self.app(scope, receive, send)
+
+
 def create_app() -> FastAPI:
     settings = load_settings()
 
@@ -50,6 +76,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Aviary", lifespan=lifespan)
     app.state.settings = settings
+    app.add_middleware(IngressStripMiddleware)
 
     app.mount(
         "/static",
