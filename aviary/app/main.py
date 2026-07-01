@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -9,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import db, proxy
+from . import backfill, db, proxy
 from .mqtt_client import MqttIngestor
 from .routes import register_routes
 from .settings import load_settings
@@ -66,10 +67,16 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         proxy.init_client()
         ingestor.start()
+        backfill_task = None
+        if settings.backfill_on_start:
+            # Run in the background so startup isn't blocked by the source APIs.
+            backfill_task = asyncio.create_task(backfill.run_backfill(settings))
         log.info("Aviary started.")
         try:
             yield
         finally:
+            if backfill_task is not None:
+                backfill_task.cancel()
             ingestor.stop()
             await proxy.close_client()
             log.info("Aviary stopped.")

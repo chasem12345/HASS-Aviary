@@ -28,6 +28,7 @@ or audio (BirdNET-Go) preview proxied from the originating source.
 | `birdnet_url` | `http://a0d7b954-birdnet-go:8080` | Base URL of your BirdNET-Go instance (for audio proxying) |
 | `frigate_topic` | `frigate/events` | MQTT topic Frigate publishes events to |
 | `birdnet_topic` | `birdnet` | MQTT topic BirdNET-Go publishes detections to |
+| `backfill_on_start` | `true` | Import existing detections from Frigate/BirdNET-Go HTTP APIs on startup (idempotent) |
 | `mqtt_host` | `""` | Override broker host (leave empty to use the HA `mqtt` service) |
 | `mqtt_port` | `1883` | Override broker port |
 | `mqtt_user` | `""` | Override broker username |

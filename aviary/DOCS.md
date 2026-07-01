@@ -13,6 +13,11 @@ dashboard embedded in the Home Assistant sidebar.
   code, confidence, and timestamp.
 - Detections from both sources are stored side-by-side in one table, tagged by `source`. There
   is **no** cross-source correlation and **no** classification done by Aviary itself.
+- On startup (when `backfill_on_start` is enabled) Aviary also **backfills existing detections**
+  from each source's HTTP API — everything Frigate (`GET /api/events`) and BirdNET-Go
+  (`GET /api/v2/detections`) still retain — so the database is prepopulated instead of starting
+  empty. Backfill runs in the background, is idempotent (safe to re-run every start), and
+  dedupes against live MQTT detections. It needs `frigate_url` / `birdnet_url` to be reachable.
 - Clips (Frigate video), snapshots (Frigate image) and audio (BirdNET-Go WAV) are **proxied
   live** from the source when you open a preview — nothing is cached, so previews expire when
   the source deletes the underlying media.
@@ -25,6 +30,7 @@ dashboard embedded in the Home Assistant sidebar.
 | `birdnet_url` | Base URL of BirdNET-Go, e.g. `http://a0d7b954-birdnet-go:8080`. Used to proxy audio. |
 | `frigate_topic` | MQTT topic Frigate publishes to (default `frigate/events`). |
 | `birdnet_topic` | MQTT topic BirdNET-Go publishes to (default `birdnet`). |
+| `backfill_on_start` | Import existing detections from Frigate/BirdNET-Go HTTP APIs on startup (default `true`). Idempotent. |
 | `mqtt_host` / `mqtt_port` / `mqtt_user` / `mqtt_password` | Optional broker overrides. Leave `mqtt_host` empty to use the HA Mosquitto broker automatically. |
 | `log_level` | Logging verbosity. |
 

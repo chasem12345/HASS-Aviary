@@ -24,6 +24,10 @@ def _options_file(data_dir: str) -> dict:
     return {}
 
 
+def _as_bool(value: str) -> bool:
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _pick(env_key: str, opts: dict, opt_key: str, default: str = "") -> str:
     val = os.environ.get(env_key)
     if val is not None and val != "":
@@ -48,6 +52,8 @@ class Settings:
     birdnet_url: str
     frigate_topic: str
     birdnet_topic: str
+
+    backfill_on_start: bool
 
     log_level: str
 
@@ -77,5 +83,6 @@ def load_settings() -> Settings:
         birdnet_url=_pick("BIRDNET_URL", opts, "birdnet_url", "").rstrip("/"),
         frigate_topic=_pick("FRIGATE_TOPIC", opts, "frigate_topic", "frigate/events"),
         birdnet_topic=_pick("BIRDNET_TOPIC", opts, "birdnet_topic", "birdnet"),
+        backfill_on_start=_as_bool(_pick("BACKFILL_ON_START", opts, "backfill_on_start", "true")),
         log_level=_pick("LOG_LEVEL", opts, "log_level", "info").lower(),
     )

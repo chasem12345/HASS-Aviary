@@ -19,6 +19,56 @@ def _now() -> float:
 
 # --------------------------------------------------------------------------- Frigate
 
+def build_frigate_row(obj: dict) -> Optional[dict]:
+    """Build a detections row from a Frigate object.
+
+    Works for both the MQTT event ``after`` object and an object from the
+    ``GET /api/events`` HTTP API (the fields we use overlap; the HTTP API also nests the
+    score under ``data``). Returns ``None`` for non-bird objects or when there's no id.
+    """
+    if not isinstance(obj, dict) or obj.get("label") != "bird":
+        return None
+    event_id = obj.get("id")
+    if not event_id:
+        return None
+
+    sub_label = obj.get("sub_label")
+    # sub_label can be a plain string or a [name, score] pair depending on Frigate version.
+    if isinstance(sub_label, (list, tuple)):
+        sub_label = sub_label[0] if sub_label else None
+    common_name = sub_label or "bird"
+
+    data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
+    confidence = _as_float(
+        obj.get("top_score")
+        or obj.get("score")
+        or data.get("top_score")
+        or data.get("score")
+    )
+
+    has_clip = 1 if obj.get("has_clip") else 0
+    has_snapshot = 1 if obj.get("has_snapshot") else 0
+
+    return {
+        "source": "frigate",
+        "source_ref": str(event_id),
+        "common_name": common_name,
+        "scientific_name": None,
+        "species_code": None,
+        "confidence": confidence,
+        "location": obj.get("camera"),
+        "start_time": _as_float(obj.get("start_time")) or _now(),
+        "end_time": _as_float(obj.get("end_time")),
+        "has_clip": has_clip,
+        "has_snapshot": has_snapshot,
+        # The proxy resolves these refs back to Frigate API URLs using the event id.
+        "clip_ref": str(event_id) if has_clip else None,
+        "snapshot_ref": str(event_id) if has_snapshot else None,
+        "raw_json": json.dumps(obj)[:8000],
+        "created_at": _now(),
+    }
+
+
 def handle_frigate(payload: bytes) -> None:
     """Handle a ``frigate/events`` message.
 
@@ -33,57 +83,26 @@ def handle_frigate(payload: bytes) -> None:
         return
 
     after = msg.get("after") or msg.get("before") or {}
-    if not isinstance(after, dict):
+    row = build_frigate_row(after)
+    if row is None:
         return
-    if after.get("label") != "bird":
-        return
-
-    event_id = after.get("id")
-    if not event_id:
-        return
-
-    sub_label = after.get("sub_label")
-    # sub_label can be a plain string or a [name, score] pair depending on Frigate version.
-    if isinstance(sub_label, (list, tuple)):
-        sub_label = sub_label[0] if sub_label else None
-    common_name = sub_label or "bird"
-
-    has_clip = 1 if after.get("has_clip") else 0
-    has_snapshot = 1 if after.get("has_snapshot") else 0
-
-    row = {
-        "source": "frigate",
-        "source_ref": str(event_id),
-        "common_name": common_name,
-        "scientific_name": None,
-        "species_code": None,
-        "confidence": _as_float(after.get("top_score") or after.get("score")),
-        "location": after.get("camera"),
-        "start_time": _as_float(after.get("start_time")) or _now(),
-        "end_time": _as_float(after.get("end_time")),
-        "has_clip": has_clip,
-        "has_snapshot": has_snapshot,
-        # The proxy resolves these refs back to Frigate API URLs using the event id.
-        "clip_ref": str(event_id) if has_clip else None,
-        "snapshot_ref": str(event_id) if has_snapshot else None,
-        "raw_json": json.dumps(after)[:8000],
-        "created_at": _now(),
-    }
     db.upsert_detection(row)
-    log.debug("Frigate detection upserted: %s (%s)", common_name, event_id)
+    log.debug("Frigate detection upserted: %s (%s)", row["common_name"], row["source_ref"])
 
 
 # ------------------------------------------------------------------------- BirdNET-Go
 
-def handle_birdnet(payload: bytes) -> None:
-    """Handle a BirdNET-Go detection message on the ``birdnet`` topic."""
-    try:
-        msg = json.loads(payload)
-    except (ValueError, TypeError):
-        log.warning("BirdNET-Go: could not decode payload")
-        return
+def build_birdnet_row(msg: dict) -> Optional[dict]:
+    """Build a detections row from a BirdNET-Go detection.
+
+    Expects the MQTT payload shape (PascalCase keys: ``ID``, ``CommonName``,
+    ``ScientificName``, ``SpeciesCode``, ``Confidence``, ``ClipName``, ``BeginTime``,
+    ``EndTime``, ``Date``, ``Time``, ``SourceNode``). The HTTP-API backfill maps its
+    camelCase response into this shape first (see ``backfill.birdnet_msg_from_api``), so
+    both paths produce identical ``source_ref`` values and dedupe cleanly.
+    """
     if not isinstance(msg, dict):
-        return
+        return None
 
     common_name = msg.get("CommonName") or "bird"
     start_time = _birdnet_epoch(msg) or _now()
@@ -99,7 +118,7 @@ def handle_birdnet(payload: bytes) -> None:
     clip_ref = _first(msg, "ClipName", "Clip", "File", "InputFile")
     has_clip = 1 if clip_ref else 0
 
-    row = {
+    return {
         "source": "birdnet",
         "source_ref": source_ref,
         "common_name": common_name,
@@ -116,8 +135,20 @@ def handle_birdnet(payload: bytes) -> None:
         "raw_json": json.dumps(msg)[:8000],
         "created_at": _now(),
     }
+
+
+def handle_birdnet(payload: bytes) -> None:
+    """Handle a BirdNET-Go detection message on the ``birdnet`` topic."""
+    try:
+        msg = json.loads(payload)
+    except (ValueError, TypeError):
+        log.warning("BirdNET-Go: could not decode payload")
+        return
+    row = build_birdnet_row(msg)
+    if row is None:
+        return
     db.upsert_detection(row)
-    log.debug("BirdNET detection stored: %s (%s)", common_name, source_ref)
+    log.debug("BirdNET detection stored: %s (%s)", row["common_name"], row["source_ref"])
 
 
 # ----------------------------------------------------------------------------- helpers

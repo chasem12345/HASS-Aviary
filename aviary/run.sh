@@ -10,6 +10,7 @@ export FRIGATE_URL="$(bashio::config 'frigate_url')"
 export BIRDNET_URL="$(bashio::config 'birdnet_url')"
 export FRIGATE_TOPIC="$(bashio::config 'frigate_topic')"
 export BIRDNET_TOPIC="$(bashio::config 'birdnet_topic')"
+export BACKFILL_ON_START="$(bashio::config 'backfill_on_start')"
 export LOG_LEVEL="$(bashio::config 'log_level')"
 export DATA_DIR="/data"
 
