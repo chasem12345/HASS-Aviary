@@ -54,6 +54,7 @@ class Settings:
     birdnet_topic: str
 
     backfill_on_start: bool
+    ignore_unclassified: bool
 
     log_level: str
 
@@ -84,5 +85,6 @@ def load_settings() -> Settings:
         frigate_topic=_pick("FRIGATE_TOPIC", opts, "frigate_topic", "frigate/events"),
         birdnet_topic=_pick("BIRDNET_TOPIC", opts, "birdnet_topic", "birdnet"),
         backfill_on_start=_as_bool(_pick("BACKFILL_ON_START", opts, "backfill_on_start", "true")),
+        ignore_unclassified=_as_bool(_pick("IGNORE_UNCLASSIFIED", opts, "ignore_unclassified", "true")),
         log_level=_pick("LOG_LEVEL", opts, "log_level", "info").lower(),
     )

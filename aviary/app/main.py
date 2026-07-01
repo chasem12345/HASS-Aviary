@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import backfill, db, proxy
+from . import backfill, db, ingest, proxy
 from .mqtt_client import MqttIngestor
 from .routes import register_routes
 from .settings import load_settings
@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
 
     os.makedirs(settings.data_dir, exist_ok=True)
     db.init_db(settings.db_path)
+    ingest.configure(ignore_unclassified=settings.ignore_unclassified)
 
     ingestor = MqttIngestor(settings)
 

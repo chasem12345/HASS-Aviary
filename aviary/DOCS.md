@@ -31,6 +31,7 @@ dashboard embedded in the Home Assistant sidebar.
 | `frigate_topic` | MQTT topic Frigate publishes to (default `frigate/events`). |
 | `birdnet_topic` | MQTT topic BirdNET-Go publishes to (default `birdnet`). |
 | `backfill_on_start` | Import existing detections from Frigate/BirdNET-Go HTTP APIs on startup (default `true`). Idempotent. |
+| `ignore_unclassified` | Skip detections with no species — i.e. Frigate `bird` objects with no `sub_label` (default `true`). Set `false` to also record generic "bird" sightings. |
 | `mqtt_host` / `mqtt_port` / `mqtt_user` / `mqtt_password` | Optional broker overrides. Leave `mqtt_host` empty to use the HA Mosquitto broker automatically. |
 | `log_level` | Logging verbosity. |
 

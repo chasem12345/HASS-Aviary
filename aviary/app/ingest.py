@@ -12,6 +12,31 @@ from . import db
 
 log = logging.getLogger("aviary.ingest")
 
+# When True, detections with no species (generic "bird") are dropped. Configured at
+# startup via configure(); applies to both live MQTT ingest and HTTP backfill because
+# both store rows through store_row().
+_ignore_unclassified = False
+
+
+def configure(ignore_unclassified: bool) -> None:
+    global _ignore_unclassified
+    _ignore_unclassified = ignore_unclassified
+
+
+def is_unclassified(row: dict) -> bool:
+    return (row.get("common_name") or "").strip().lower() == "bird"
+
+
+def store_row(row: Optional[dict]) -> bool:
+    """Upsert a built row unless it's filtered out. Returns True if stored."""
+    if row is None:
+        return False
+    if _ignore_unclassified and is_unclassified(row):
+        log.debug("Skipping unclassified %s detection (%s)", row["source"], row["source_ref"])
+        return False
+    db.upsert_detection(row)
+    return True
+
 
 def _now() -> float:
     return time.time()
@@ -84,10 +109,8 @@ def handle_frigate(payload: bytes) -> None:
 
     after = msg.get("after") or msg.get("before") or {}
     row = build_frigate_row(after)
-    if row is None:
-        return
-    db.upsert_detection(row)
-    log.debug("Frigate detection upserted: %s (%s)", row["common_name"], row["source_ref"])
+    if store_row(row):
+        log.debug("Frigate detection upserted: %s (%s)", row["common_name"], row["source_ref"])
 
 
 # ------------------------------------------------------------------------- BirdNET-Go
@@ -145,10 +168,8 @@ def handle_birdnet(payload: bytes) -> None:
         log.warning("BirdNET-Go: could not decode payload")
         return
     row = build_birdnet_row(msg)
-    if row is None:
-        return
-    db.upsert_detection(row)
-    log.debug("BirdNET detection stored: %s (%s)", row["common_name"], row["source_ref"])
+    if store_row(row):
+        log.debug("BirdNET detection stored: %s (%s)", row["common_name"], row["source_ref"])
 
 
 # ----------------------------------------------------------------------------- helpers

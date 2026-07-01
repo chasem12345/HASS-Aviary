@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.1.4"
+version: "0.1.5"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -21,6 +21,7 @@ options:
   frigate_topic: "frigate/events"
   birdnet_topic: "birdnet"
   backfill_on_start: true
+  ignore_unclassified: true
   mqtt_host: ""
   mqtt_port: 1883
   mqtt_user: ""
@@ -32,6 +33,7 @@ schema:
   frigate_topic: "str"
   birdnet_topic: "str"
   backfill_on_start: "bool"
+  ignore_unclassified: "bool"
   mqtt_host: "str?"
   mqtt_port: "port"
   mqtt_user: "str?"

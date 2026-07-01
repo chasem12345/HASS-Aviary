@@ -12,7 +12,7 @@ import logging
 
 import httpx
 
-from . import db, ingest
+from . import ingest
 from .settings import Settings
 
 log = logging.getLogger("aviary.backfill")
@@ -65,9 +65,7 @@ async def _backfill_frigate(client: httpx.AsyncClient, settings: Settings) -> in
 
         min_start = None
         for ev in events:
-            row = ingest.build_frigate_row(ev)
-            if row is not None:
-                db.upsert_detection(row)
+            if ingest.store_row(ingest.build_frigate_row(ev)):
                 imported += 1
             st = ev.get("start_time")
             if st is not None and (min_start is None or st < min_start):
@@ -128,9 +126,7 @@ async def _backfill_birdnet(client: httpx.AsyncClient, settings: Settings) -> in
             break
 
         for d in rows:
-            row = ingest.build_birdnet_row(birdnet_msg_from_api(d))
-            if row is not None:
-                db.upsert_detection(row)
+            if ingest.store_row(ingest.build_birdnet_row(birdnet_msg_from_api(d))):
                 imported += 1
 
         offset += len(rows)

@@ -29,6 +29,7 @@ or audio (BirdNET-Go) preview proxied from the originating source.
 | `frigate_topic` | `frigate/events` | MQTT topic Frigate publishes events to |
 | `birdnet_topic` | `birdnet` | MQTT topic BirdNET-Go publishes detections to |
 | `backfill_on_start` | `true` | Import existing detections from Frigate/BirdNET-Go HTTP APIs on startup (idempotent) |
+| `ignore_unclassified` | `true` | Skip species-less detections (Frigate `bird` with no `sub_label`); set `false` to record generic "bird" too |
 | `mqtt_host` | `""` | Override broker host (leave empty to use the HA `mqtt` service) |
 | `mqtt_port` | `1883` | Override broker port |
 | `mqtt_user` | `""` | Override broker username |
