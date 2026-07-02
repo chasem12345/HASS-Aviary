@@ -3,23 +3,26 @@ blueprint:
   description: >
     Notify a phone when Aviary detects a bird species for the first time.
     Triggered by the aviary_new_species event fired by the Aviary add-on.
-    This blueprint is installed automatically by the add-on — create an
-    automation from it and pick your device.
+    Pick a companion-app device, a notify group/action (e.g. notify.all_phones),
+    or both — at least one is required for anything to happen.
   domain: automation
   homeassistant:
     min_version: "2024.10.0"
   input:
     notify_device:
-      name: Device to notify
-      description: Phone or tablet running the Home Assistant Companion app.
+      name: Device to notify (optional)
+      description: >
+        Phone or tablet running the Home Assistant Companion app. Optional when
+        a notify group/action is set below.
+      default: ""
       selector:
         device:
           integration: mobile_app
     extra_notify_service:
-      name: Additional notify action (optional)
+      name: Notify group or action (optional)
       description: >
-        Full name of an extra notify action to also call, e.g.
-        notify.all_phones. Leave empty to skip.
+        Full name of any notify action to call instead of (or in addition to)
+        the device above, e.g. notify.all_phones. Leave empty to skip.
       default: ""
       selector:
         text:
@@ -42,12 +45,16 @@ variables:
   image: "{{ trigger.event.data.image }}"
 
 actions:
-  - action: "notify.mobile_app_{{ device_attr(notify_device, 'name') | slugify }}"
-    data:
-      title: "{{ title }}"
-      message: "{{ message }}"
-      # `image` works in both the Android and iOS companion apps; omit when null.
-      data: "{{ {'image': image} if image else {} }}"
+  - if:
+      - condition: template
+        value_template: "{{ notify_device | default('') != '' }}"
+    then:
+      - action: "notify.mobile_app_{{ device_attr(notify_device, 'name') | slugify }}"
+        data:
+          title: "{{ title }}"
+          message: "{{ message }}"
+          # `image` works in both the Android and iOS companion apps; omit when null.
+          data: "{{ {'image': image} if image else {} }}"
   - if:
       - condition: template
         value_template: "{{ extra_notify_service | trim != '' }}"

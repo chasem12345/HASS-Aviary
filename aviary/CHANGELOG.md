@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.4
+
+- **Blueprint: device or notify group**: the device input is now optional, so an
+  automation can target a single companion-app device, a notify group/action
+  (e.g. `notify.all_phones`), or both. Existing automations keep working; the
+  updated blueprint is refreshed automatically on add-on start.
+
 ## 0.3.3
 
 - **Fix**: the Home Assistant config folder is mounted at `/homeassistant`, not
