@@ -12,6 +12,7 @@ header is absent (direct access, or local dev) the prefix is empty and URLs stil
 
 from __future__ import annotations
 
+import glob
 import os
 import time
 from datetime import datetime
@@ -20,6 +21,24 @@ from fastapi import FastAPI, Request
 from fastapi.templating import Jinja2Templates
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+
+
+def _asset_version() -> str:
+    """Cache-busting token: newest mtime among static files.
+
+    Changes whenever any static asset changes (each Docker build re-COPYs them with a
+    fresh mtime), so browsers fetch new CSS/JS after an add-on update instead of serving
+    a stale cached copy.
+    """
+    try:
+        newest = max(os.path.getmtime(p) for p in glob.glob(os.path.join(_STATIC_DIR, "*")))
+        return str(int(newest))
+    except ValueError:
+        return "0"
+
+
+ASSET_VER = _asset_version()
 
 
 def ingress_url(request: Request, endpoint: str, /, **params) -> str:
@@ -39,7 +58,7 @@ def _ingress_context(request: Request) -> dict:
     def u(endpoint, /, **params) -> str:
         return ingress_url(request, endpoint, **params)
 
-    return {"ingress_path": prefix, "u": u}
+    return {"ingress_path": prefix, "u": u, "asset_ver": ASSET_VER}
 
 
 templates = Jinja2Templates(directory=_TEMPLATE_DIR, context_processors=[_ingress_context])

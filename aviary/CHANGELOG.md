@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.8
+
+- **Cache-bust static assets**: `app.css`/`app.js`/`chart.umd.js` now carry a `?v=`
+  token tied to their build mtime, so browsers load the current version after an add-on
+  update instead of a stale cached copy (which was hiding the new About card).
+
 ## 0.2.7
 
 - **Species "About" blurb**: species pages now show a short description from Wikipedia
