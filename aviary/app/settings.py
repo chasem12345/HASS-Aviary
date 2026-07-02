@@ -92,6 +92,7 @@ def load_settings() -> Settings:
         backfill_on_start=_as_bool(_pick("BACKFILL_ON_START", opts, "backfill_on_start", "true")),
         ignore_unclassified=_as_bool(_pick("IGNORE_UNCLASSIFIED", opts, "ignore_unclassified", "true")),
         notify_new_species=_as_bool(_pick("NOTIFY_NEW_SPECIES", opts, "notify_new_species", "true")),
-        ha_config_dir=os.environ.get("HA_CONFIG_DIR", "/homeassistant_config"),
+        # Matches the explicit `path:` on the homeassistant_config map entry.
+        ha_config_dir=os.environ.get("HA_CONFIG_DIR", "/homeassistant"),
         log_level=_pick("LOG_LEVEL", opts, "log_level", "info").lower(),
     )

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+- **Fix**: the Home Assistant config folder is mounted at `/homeassistant`, not
+  `/homeassistant_config` — blueprint auto-install and notification images now work.
+  The mount point is pinned explicitly via `path:` in the add-on config.
+
 ## 0.3.2
 
 - **New-species notifications**: when a species is detected for the first time ever,
