@@ -18,15 +18,18 @@
   <div class="hero-body">
     <h1>{{ species }}</h1>
     {% if stats.scientific_name %}<div class="sci">{{ stats.scientific_name }}</div>{% endif %}
+    {# "seen" = camera (Frigate), "heard" = audio (BirdNET-Go); pick per timestamp source. #}
+    {% set first_verb = 'seen' if stats.first_frigate is not none and (stats.first_birdnet is none or stats.first_frigate <= stats.first_birdnet) else 'heard' %}
+    {% set last_verb = 'seen' if (stats.last_frigate or 0) >= (stats.last_birdnet or 0) else 'heard' %}
     <div class="hero-stats">
       <div><span class="num">{{ stats.total or 0 }}</span><span class="lbl">Detections</span></div>
-      <div><span class="num" title="{{ stats.first_seen | fmt_time }}">{{ stats.first_seen | fmt_rel }}</span><span class="lbl">First seen</span></div>
-      <div><span class="num" title="{{ stats.last_seen | fmt_time }}">{{ stats.last_seen | fmt_rel }}</span><span class="lbl">Last seen</span></div>
+      <div><span class="num" title="{{ stats.first_seen | fmt_time }}">{{ stats.first_seen | fmt_rel }}</span><span class="lbl">First {{ first_verb }}</span></div>
+      <div><span class="num" title="{{ stats.last_seen | fmt_time }}">{{ stats.last_seen | fmt_rel }}</span><span class="lbl">Last {{ last_verb }}</span></div>
       <div><span class="num">{{ stats.best_confidence | fmt_pct }}</span><span class="lbl">Best confidence</span></div>
     </div>
     <div class="meta">
-      {% if stats.frigate_total %}<span class="badge badge-frigate">Frigate × {{ stats.frigate_total }}</span>{% endif %}
-      {% if stats.birdnet_total %}<span class="badge badge-birdnet">BirdNET-Go × {{ stats.birdnet_total }}</span>{% endif %}
+      {% if stats.frigate_total %}<span class="badge badge-frigate" title="On camera (Frigate)">Seen × {{ stats.frigate_total }}</span>{% endif %}
+      {% if stats.birdnet_total %}<span class="badge badge-birdnet" title="Audio (BirdNET-Go)">Heard × {{ stats.birdnet_total }}</span>{% endif %}
     </div>
   </div>
 </section>

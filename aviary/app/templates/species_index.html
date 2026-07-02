@@ -49,6 +49,8 @@
       {% if s.scientific_name %}<div class="sci">{{ s.scientific_name }}</div>{% endif %}
       <div class="tile-meta">
         <span class="tile-count">{{ s.count }}</span>
+        {% if s.frigate_total %}<span class="badge badge-frigate badge-sm" title="On camera (Frigate) × {{ s.frigate_total }}">seen</span>{% endif %}
+        {% if s.birdnet_total %}<span class="badge badge-birdnet badge-sm" title="Audio (BirdNET-Go) × {{ s.birdnet_total }}">heard</span>{% endif %}
         <span title="{{ (s.first_seen if only_new else s.last_seen) | fmt_time }}">
           {{ 'first ' if only_new else '' }}{{ (s.first_seen if only_new else s.last_seen) | fmt_rel }}
         </span>

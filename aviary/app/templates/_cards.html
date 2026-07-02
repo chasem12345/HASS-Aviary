@@ -34,7 +34,7 @@
     <h3><a href="{{ u('species_detail', name=d.common_name) }}">{{ d.common_name }}</a></h3>
     {% if d.scientific_name %}<div class="sci">{{ d.scientific_name }}</div>{% endif %}
     <div class="meta">
-      <span class="badge badge-{{ d.source }}">{{ 'Frigate' if d.source == 'frigate' else 'BirdNET-Go' }}</span>
+      <span class="badge badge-{{ d.source }}">{{ 'Seen · Frigate' if d.source == 'frigate' else 'Heard · BirdNET-Go' }}</span>
       {% if d.confidence is not none %}
       <span class="conf conf-{{ d.confidence | conf_class }}" title="confidence {{ d.confidence | fmt_pct }}">
         <span class="conf-bar"><span style="width: {{ d.confidence | fmt_pct }}"></span></span>

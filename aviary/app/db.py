@@ -181,6 +181,10 @@ def species_stats(name: str) -> dict:
                 MAX(confidence)         AS best_confidence,
                 SUM(source = 'frigate') AS frigate_total,
                 SUM(source = 'birdnet') AS birdnet_total,
+                MIN(CASE WHEN source = 'frigate' THEN start_time END) AS first_frigate,
+                MAX(CASE WHEN source = 'frigate' THEN start_time END) AS last_frigate,
+                MIN(CASE WHEN source = 'birdnet' THEN start_time END) AS first_birdnet,
+                MAX(CASE WHEN source = 'birdnet' THEN start_time END) AS last_birdnet,
                 MAX(scientific_name)    AS scientific_name
             FROM detections WHERE common_name = ?
             """,
@@ -245,7 +249,11 @@ def species_list(
                MIN(start_time)      AS first_seen,
                MAX(start_time)      AS last_seen,
                SUM(source = 'frigate') AS frigate_total,
-               SUM(source = 'birdnet') AS birdnet_total
+               SUM(source = 'birdnet') AS birdnet_total,
+               MIN(CASE WHEN source = 'frigate' THEN start_time END) AS first_frigate,
+               MAX(CASE WHEN source = 'frigate' THEN start_time END) AS last_frigate,
+               MIN(CASE WHEN source = 'birdnet' THEN start_time END) AS first_birdnet,
+               MAX(CASE WHEN source = 'birdnet' THEN start_time END) AS last_birdnet
         FROM detections {where}
         GROUP BY common_name{having}
         ORDER BY {order}
@@ -346,7 +354,9 @@ def top_species(
         rows = conn.execute(
             f"""
             SELECT common_name, scientific_name,
-                   COUNT(*) AS count, MAX(start_time) AS last_seen
+                   COUNT(*) AS count, MAX(start_time) AS last_seen,
+                   MAX(CASE WHEN source = 'frigate' THEN start_time END) AS last_frigate,
+                   MAX(CASE WHEN source = 'birdnet' THEN start_time END) AS last_birdnet
             FROM detections {where}
             GROUP BY common_name
             ORDER BY count DESC, last_seen DESC

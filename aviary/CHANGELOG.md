@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.4
+
+- **"Heard" vs "seen" wording**: audio detections now say *heard* instead of *seen*
+  throughout. Species stats pick the verb from whichever source produced the first/last
+  detection, the dashboard leaderboard shows "seen/heard X ago" per species, species
+  tiles carry colored `seen`/`heard` chips, and detection cards are badged
+  "Seen · Frigate" / "Heard · BirdNET-Go".
+
 ## 0.2.3
 
 - **Generic species photos**: wherever there's no Frigate snapshot (audio-only species,

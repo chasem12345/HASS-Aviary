@@ -62,7 +62,7 @@
   <div class="card">
     <h2>Top species</h2>
     <table class="leaders">
-      <thead><tr><th></th><th>Species</th><th>Count</th><th>Last seen</th></tr></thead>
+      <thead><tr><th></th><th>Species</th><th>Count</th><th>Last detected</th></tr></thead>
       <tbody>
         {% set max_count = leaders[0].count if leaders else 1 %}
         {% for s in leaders %}
@@ -88,7 +88,8 @@
             <span class="count-bar"><span style="width: {{ (100 * s.count / max_count) | round(1) }}%"></span></span>
           </td>
           <td>{{ s.count }}</td>
-          <td title="{{ s.last_seen | fmt_time }}">{{ s.last_seen | fmt_rel }}</td>
+          <td title="{{ s.last_seen | fmt_time }}">
+            {{ 'seen' if (s.last_frigate or 0) >= (s.last_birdnet or 0) else 'heard' }} {{ s.last_seen | fmt_rel }}</td>
         </tr>
         {% else %}
         <tr><td colspan="4" class="empty">No detections yet.</td></tr>

@@ -118,6 +118,7 @@ table.leaders em { color: var(--muted); font-style: italic; margin-left: 6px; fo
 }
 .badge-frigate { background: var(--frigate); }
 .badge-birdnet { background: var(--birdnet); }
+.badge-sm { font-size: 10px; padding: 1px 6px; font-weight: 600; }
 
 .species-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 18px; flex-wrap: wrap; }
 .species-head h1 { margin: 0; font-size: 22px; }
