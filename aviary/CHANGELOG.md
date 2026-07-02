@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.5
+
+- **Blueprint fix**: treat a cleared device picker (`null`) the same as no device, so
+  group-only automations can't hit a template error. Note: after an add-on update
+  refreshes the blueprint file, Home Assistant only re-reads it on **Reload
+  Automations** (Developer Tools → YAML) or a Core restart — "Missing input
+  notify_device" means the old cached definition is still active.
+
 ## 0.3.4
 
 - **Blueprint: device or notify group**: the device input is now optional, so an

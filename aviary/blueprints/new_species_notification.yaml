@@ -47,7 +47,9 @@ variables:
 actions:
   - if:
       - condition: template
-        value_template: "{{ notify_device | default('') != '' }}"
+        # A cleared device picker can submit null (not just omit the key), so
+        # check for both none and empty string.
+        value_template: "{{ notify_device not in (none, '') }}"
     then:
       - action: "notify.mobile_app_{{ device_attr(notify_device, 'name') | slugify }}"
         data:
