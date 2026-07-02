@@ -39,6 +39,8 @@
       <img loading="lazy" alt="" src="{{ u('frigate_snapshot', event_id=thumbs[s.common_name]) }}?thumbnail=true">
       {% else %}
       <span class="thumb-mark">🐦</span>
+      <img loading="lazy" class="overlay-img" alt=""
+           src="{{ u('species_image', name=s.common_name) }}" onerror="this.remove()">
       {% endif %}
       {% if is_new %}<span class="new-badge">NEW</span>{% endif %}
     </div>

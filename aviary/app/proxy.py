@@ -127,6 +127,15 @@ def birdnet_audio_urls(base: str, det: dict) -> list[str]:
     return urls
 
 
+def birdnet_species_image_url(base: str, scientific_name: str) -> str:
+    """Generic species photo served by BirdNET-Go's image cache (Wikipedia/AviCommons).
+
+    Available on current BirdNET-Go builds only; older ones (e.g. v0.6.4) 404 and the
+    templates fall back to their emoji placeholder via ``onerror``.
+    """
+    return f"{base}/api/v2/media/species-image?name={quote(scientific_name, safe='')}"
+
+
 def birdnet_spectrogram_urls(base: str, det: dict) -> list[str]:
     """Candidate URLs for a detection's spectrogram PNG, best first (see audio note)."""
     urls: list[str] = []

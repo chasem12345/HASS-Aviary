@@ -10,7 +10,10 @@
   <img class="hero-thumb" alt="{{ species }}"
        src="{{ u('frigate_snapshot', event_id=thumb) }}">
   {% else %}
-  <div class="hero-thumb hero-thumb-empty">🐦</div>
+  <div class="hero-thumb hero-thumb-empty">🐦
+    <img class="overlay-img" alt="{{ species }}"
+         src="{{ u('species_image', name=species) }}" onerror="this.remove()">
+  </div>
   {% endif %}
   <div class="hero-body">
     <h1>{{ species }}</h1>

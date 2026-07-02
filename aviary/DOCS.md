@@ -23,6 +23,11 @@ dashboard embedded in the Home Assistant sidebar.
   the source deletes the underlying media. BirdNET-Go audio is resolved via its v2
   by-id API when the detection id is known (with the legacy `/clips/` path as a
   fallback), and audio cards show the detection's spectrogram when available.
+- Where there's no Frigate snapshot to show (audio-only species, detections without media),
+  Aviary shows a **generic photo of the species** pulled from BirdNET-Go's image cache
+  (`GET /api/v2/media/species-image`, sourced from Wikipedia/AviCommons). This needs a
+  current BirdNET-Go build — on older builds (≤ v0.6.4) the endpoint doesn't exist and the
+  placeholder icon is shown instead.
 - The **Recent** page filters by source, date range, and species, groups results by day,
   paginates with *Load older*, and refreshes itself (~30s) as new detections arrive.
 - **Species pages** show totals, first/last seen, best confidence, and per-day /

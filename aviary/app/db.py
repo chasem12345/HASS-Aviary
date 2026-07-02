@@ -287,6 +287,21 @@ def latest_snapshot_refs(names: list[str]) -> dict[str, str]:
     return {r["common_name"]: r["snapshot_ref"] for r in rows}
 
 
+def scientific_name_for(common_name: str) -> Optional[str]:
+    """Latest known scientific name for a species (case-insensitive; any source)."""
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT scientific_name FROM detections
+            WHERE common_name = ? COLLATE NOCASE
+              AND scientific_name IS NOT NULL AND scientific_name != ''
+            ORDER BY start_time DESC LIMIT 1
+            """,
+            (common_name,),
+        ).fetchone()
+    return row["scientific_name"] if row else None
+
+
 def detection_by_id(det_id: int) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM detections WHERE id = ?", (det_id,)).fetchone()

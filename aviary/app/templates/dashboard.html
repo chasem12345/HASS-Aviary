@@ -73,7 +73,14 @@
               <img loading="lazy" class="thumb" alt=""
                    src="{{ u('frigate_snapshot', event_id=thumbs[s.common_name]) }}?thumbnail=true">
             </a>
-            {% else %}<span class="thumb thumb-empty">🐦</span>{% endif %}
+            {% else %}
+            <a href="{{ u('species_detail', name=s.common_name) }}">
+              <span class="thumb thumb-empty">🐦
+                <img loading="lazy" class="overlay-img" alt=""
+                     src="{{ u('species_image', name=s.common_name) }}" onerror="this.remove()">
+              </span>
+            </a>
+            {% endif %}
           </td>
           <td>
             <a href="{{ u('species_detail', name=s.common_name) }}">{{ s.common_name }}</a>

@@ -12,6 +12,8 @@
              src="{{ u('frigate_snapshot', event_id=d.source_ref) }}">
       {% else %}
         <div class="nomedia"><span class="bird-mark">🐦</span><span>no media</span></div>
+        <img loading="lazy" class="overlay-img" alt="{{ d.common_name }}"
+             src="{{ u('species_image', name=d.common_name) }}" onerror="this.remove()">
       {% endif %}
     {% elif d.source == 'birdnet' %}
       {% if d.has_clip %}
@@ -23,6 +25,8 @@
         </div>
       {% else %}
         <div class="nomedia"><span class="bird-mark">🔊</span><span>audio detection</span></div>
+        <img loading="lazy" class="overlay-img" alt="{{ d.common_name }}"
+             src="{{ u('species_image', name=d.common_name) }}" onerror="this.remove()">
       {% endif %}
     {% endif %}
   </div>
