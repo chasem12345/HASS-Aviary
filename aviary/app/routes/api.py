@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Query
 
-from .. import db
+from .. import db, species_info
 
 router = APIRouter()
 
@@ -57,3 +57,12 @@ def hourly(
 def latest(source: Optional[str] = Query(None), species: Optional[str] = Query(None)):
     """Cheap change marker polled by the Recent page for live refresh."""
     return db.change_marker(source=_norm_source(source), species=species)
+
+
+@router.get("/species-info")
+async def species_info_endpoint(
+    name: str = Query(..., min_length=1),
+    sci: Optional[str] = Query(None),
+):
+    """Wikipedia blurb + iNaturalist taxonomy for a species (cached; lazy-loaded)."""
+    return await species_info.resolve(name, sci)

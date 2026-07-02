@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.7
+
+- **Species "About" blurb**: species pages now show a short description from Wikipedia
+  plus taxonomy (order/family) and conservation status from iNaturalist, with a
+  "Read more" link. Fetched lazily and cached in SQLite (refreshed monthly); both
+  sources are free and need no API key. Falls back silently if nothing is found.
+
+## 0.2.6
+
+- Added add-on `icon.png` and `logo.png` (bird glyph on brand green).
+
+## 0.2.5
+
+- **Top species**: split the single Count column into separate **Heard** (BirdNET-Go)
+  and **Seen** (Frigate) counts.
+
 ## 0.2.4
 
 - **"Heard" vs "seen" wording**: audio detections now say *heard* instead of *seen*

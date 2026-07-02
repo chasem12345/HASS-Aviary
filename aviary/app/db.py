@@ -37,6 +37,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_source_ref
     ON detections (source, source_ref);
 CREATE INDEX IF NOT EXISTS idx_detections_start_time ON detections (start_time);
 CREATE INDEX IF NOT EXISTS idx_detections_common_name ON detections (common_name);
+
+-- Cached per-species reference info (Wikipedia blurb + iNaturalist taxonomy).
+CREATE TABLE IF NOT EXISTS species_info (
+    common_name     TEXT PRIMARY KEY,
+    scientific_name TEXT,
+    descriptor      TEXT,      -- short one-liner, e.g. "Species of North American bird"
+    extract         TEXT,      -- blurb paragraph
+    wiki_url        TEXT,
+    family          TEXT,
+    "order"         TEXT,
+    conservation    TEXT,
+    fetched_at      REAL,
+    ok              INTEGER NOT NULL DEFAULT 0
+);
 """
 
 _db_path: str = ""
@@ -314,6 +328,40 @@ def detection_by_id(det_id: int) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM detections WHERE id = ?", (det_id,)).fetchone()
     return dict(row) if row else None
+
+
+def get_species_info(common_name: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM species_info WHERE common_name = ?", (common_name,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def put_species_info(row: dict[str, Any]) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO species_info (
+                common_name, scientific_name, descriptor, extract, wiki_url,
+                family, "order", conservation, fetched_at, ok
+            ) VALUES (
+                :common_name, :scientific_name, :descriptor, :extract, :wiki_url,
+                :family, :order, :conservation, :fetched_at, :ok
+            )
+            ON CONFLICT(common_name) DO UPDATE SET
+                scientific_name = excluded.scientific_name,
+                descriptor      = excluded.descriptor,
+                extract         = excluded.extract,
+                wiki_url        = excluded.wiki_url,
+                family          = excluded.family,
+                "order"         = excluded."order",
+                conservation    = excluded.conservation,
+                fetched_at      = excluded.fetched_at,
+                ok              = excluded.ok
+            """,
+            row,
+        )
 
 
 def summary_stats(source: Optional[str] = None, since: Optional[float] = None) -> dict:

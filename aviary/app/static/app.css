@@ -140,6 +140,19 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 .conf-mid  .conf-bar > span { background: #d9a441; }
 .conf-low  .conf-bar > span { background: #c4634f; }
 
+/* --------------------------------------------------------------------- species about */
+.species-about .about-descriptor {
+  color: var(--muted); font-size: 13px; text-transform: capitalize; margin: 0 0 8px;
+}
+.species-about .about-extract { margin: 0 0 12px; max-width: 70ch; }
+.species-about .about-tax { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.tax-chip {
+  background: var(--line); border-radius: 20px; padding: 3px 12px;
+  font-size: 12px; color: var(--ink);
+}
+.species-about .about-link { font-size: 14px; }
+.species-about .about-credit { color: var(--muted); font-size: 11px; margin-top: 10px; opacity: .8; }
+
 /* ----------------------------------------------------------------- day grouping */
 .day-head {
   font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;

@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import backfill, db, ingest, proxy
+from . import backfill, db, ingest, proxy, species_info
 from .mqtt_client import MqttIngestor
 from .routes import register_routes
 from .settings import load_settings
@@ -69,6 +69,7 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         proxy.init_client()
+        species_info.init_client()
         ingestor.start()
         backfill_task = None
         if settings.backfill_on_start:
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
                     await backfill_task
             ingestor.stop()
             await proxy.close_client()
+            await species_info.close_client()
             log.info("Aviary stopped.")
 
     app = FastAPI(title="Aviary", lifespan=lifespan)

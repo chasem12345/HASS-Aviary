@@ -82,9 +82,39 @@
     hourlyChart({ source: opts.source, days: opts.days, since: opts.since });
   };
 
+  async function loadSpeciesInfo(name, scientific) {
+    const el = document.getElementById("about");
+    if (!el) return;
+    try {
+      const info = await getJson("/species-info", { name: name, sci: scientific });
+      if (!info || !info.ok || (!info.extract && !info.family)) return;
+      const set = (sel, text) => {
+        const node = el.querySelector(sel);
+        if (node && text) node.textContent = text;
+      };
+      set(".about-descriptor", info.descriptor);
+      set(".about-extract", info.extract);
+
+      const tax = el.querySelector(".about-tax");
+      [["Order", info.order], ["Family", info.family], ["Status", info.conservation]]
+        .forEach(([k, v]) => {
+          if (!v) return;
+          const chip = document.createElement("span");
+          chip.className = "tax-chip";
+          chip.textContent = k + ": " + v;
+          tax.appendChild(chip);
+        });
+
+      const link = el.querySelector(".about-link");
+      if (info.wiki_url) { link.href = info.wiki_url; link.hidden = false; }
+      el.hidden = false;
+    } catch (e) { /* leave the About card hidden */ }
+  }
+
   window.aviaryInitSpecies = function (opts) {
     perDayChart({ species: opts.species, days: 30 });
     hourlyChart({ species: opts.species, days: 3650 });
+    loadSpeciesInfo(opts.species, opts.scientific);
   };
 
   // ------------------------------------------------------------- live refresh

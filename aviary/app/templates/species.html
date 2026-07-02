@@ -34,6 +34,15 @@
   </div>
 </section>
 
+<section id="about" class="card species-about" hidden>
+  <h2>About</h2>
+  <p class="about-descriptor"></p>
+  <p class="about-extract"></p>
+  <div class="about-tax"></div>
+  <a class="about-link" target="_blank" rel="noopener noreferrer" hidden>Read more on Wikipedia →</a>
+  <div class="about-credit">Info from Wikipedia &amp; iNaturalist</div>
+</section>
+
 <section class="grid2">
   <div class="card"><h2>Detections per day (30d)</h2><div class="chart-box"><canvas id="perDay"></canvas></div></div>
   <div class="card"><h2>Activity by hour (all time)</h2><div class="chart-box"><canvas id="hourly"></canvas></div></div>
@@ -46,6 +55,9 @@
 
 {% block scripts %}
 <script>
-  window.aviaryInitSpecies({ species: {{ species | tojson }} });
+  window.aviaryInitSpecies({
+    species: {{ species | tojson }},
+    scientific: {{ (stats.scientific_name or '') | tojson }},
+  });
 </script>
 {% endblock %}
