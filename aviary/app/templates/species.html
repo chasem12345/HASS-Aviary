@@ -48,6 +48,20 @@
   <div class="card"><h2>Activity by hour (all time)</h2><div class="chart-box"><canvas id="hourly"></canvas></div></div>
 </section>
 
+{% if has_both %}
+<div class="controls">
+  <form method="get" action="{{ u('species_detail', name=species) }}">
+    <label>Show
+      <select name="source" onchange="this.form.submit()">
+        <option value="frigate" {{ 'selected' if source == 'frigate' }}>Video (Frigate)</option>
+        <option value="birdnet" {{ 'selected' if source == 'birdnet' }}>Audio (BirdNET-Go)</option>
+        <option value="all" {{ 'selected' if source == 'all' }}>All</option>
+      </select>
+    </label>
+  </form>
+</div>
+{% endif %}
+
 <div id="groups">
   {% include "_groups.html" %}
 </div>

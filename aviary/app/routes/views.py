@@ -205,18 +205,33 @@ def species_index(
 def species_detail(
     request: Request,
     name: str,
+    source: Optional[str] = Query(None),
     before: Optional[float] = Query(None),
 ):
-    detections, next_before = _paged(None, name, before, None)
+    stats = db.species_stats(name)
+    # Only offer a video/audio filter when the species has both; default to video.
+    has_both = bool(stats.get("frigate_total")) and bool(stats.get("birdnet_total"))
+    sel = "all"
+    if has_both:
+        raw = source if source in ("frigate", "birdnet", "all") else None
+        sel = raw or "frigate"
+    src = _norm_source(sel)  # 'all' -> None (both streams)
+
+    detections, next_before = _paged(src, name, before, None)
     older_url = None
     if next_before is not None:
         base = ingress_url(request, "species_detail", name=name)
-        older_url = f"{base}?{urlencode({'before': f'{next_before:.6f}'})}"
+        q: dict = {"before": f"{next_before:.6f}"}
+        if has_both and sel != "all":
+            q["source"] = sel
+        older_url = f"{base}?{urlencode(q)}"
     ctx = {
         "request": request,
         "page": "species",
         "species": name,
-        "stats": db.species_stats(name),
+        "stats": stats,
+        "source": sel,
+        "has_both": has_both,
         "thumb": db.latest_snapshot_refs([name]).get(name),
         "groups": _day_groups(detections),
         "next_before": next_before,

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- **Species page video/audio filter**: when a species has both Frigate (video) and
+  BirdNET-Go (audio) detections, a "Show" dropdown filters the list by source and
+  defaults to **Video**. Pagination keeps the selected filter. Single-source species
+  show no dropdown.
+
 ## 0.2.9
 
 - **Static assets sent with `Cache-Control: no-cache`** (ETag kept for cheap 304
