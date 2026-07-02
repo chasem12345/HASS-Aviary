@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import backfill, db, ingest, proxy, species_info
 from .mqtt_client import MqttIngestor
-from .routes import register_routes
+from .routes import ASSET_VER, register_routes
 from .settings import load_settings
 
 _APP_DIR = os.path.dirname(__file__)
@@ -110,8 +110,11 @@ def create_app() -> FastAPI:
     app.state.ingestor = ingestor
     app.add_middleware(IngressStripMiddleware)
 
+    # Version the static mount PATH (not just a ?v query) so a reverse proxy that
+    # caches by path and ignores query strings still can't serve a stale app.js/app.css
+    # after an update — each build is a brand-new URL path.
     app.mount(
-        "/static",
+        f"/static-{ASSET_VER}",
         NoCacheStaticFiles(directory=os.path.join(_APP_DIR, "static")),
         name="static",
     )

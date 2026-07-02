@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- **Versioned static path**: assets are now served from `/static-<build>/…` instead of
+  `/static/…?v=<build>`. A reverse proxy that caches by path and ignores the query string
+  (which was serving a stale `app.js` and hiding the species About card) can't have the
+  new path cached, so add-on updates always take effect.
+
 ## 0.3.0
 
 - **Species page video/audio filter**: when a species has both Frigate (video) and

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Aviary{% block title %}{% endblock %}</title>
-  <link rel="stylesheet" href="{{ u('static', path='/app.css') }}?v={{ asset_ver }}">
+  <link rel="stylesheet" href="{{ u('static', path='/app.css') }}">
 </head>
 <body>
   <header class="topbar">
@@ -23,8 +23,8 @@
     window.AVIARY_BASE = "{{ ingress_path }}";
     window.AVIARY_API = "{{ ingress_path }}/api";
   </script>
-  <script src="{{ u('static', path='/chart.umd.js') }}?v={{ asset_ver }}"></script>
-  <script src="{{ u('static', path='/app.js') }}?v={{ asset_ver }}"></script>
+  <script src="{{ u('static', path='/chart.umd.js') }}"></script>
+  <script src="{{ u('static', path='/app.js') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
