@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.2.1"
+version: "0.2.2"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -11,6 +11,7 @@ ingress: true
 ingress_port: 8099
 panel_icon: mdi:bird
 panel_title: Aviary
+panel_admin: false
 map:
   - data:rw
 services:

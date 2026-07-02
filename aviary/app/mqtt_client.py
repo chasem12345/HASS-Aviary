@@ -21,6 +21,7 @@ class MqttIngestor:
         # Read by the UI to distinguish "no birds yet" from "not receiving anything".
         self.connected: bool = False
         self.last_message_at: Optional[float] = None
+        self._last_fail_log: float = 0.0
 
     def start(self) -> None:
         s = self._settings
@@ -35,6 +36,7 @@ class MqttIngestor:
         if s.mqtt_user:
             client.username_pw_set(s.mqtt_user, s.mqtt_password)
         client.on_connect = self._on_connect
+        client.on_connect_fail = self._on_connect_fail
         client.on_message = self._on_message
         client.on_disconnect = self._on_disconnect
 
@@ -62,6 +64,21 @@ class MqttIngestor:
         s = self._settings
         client.subscribe([(s.frigate_topic, 0), (s.birdnet_topic, 0)])
         log.info("Subscribed to '%s' and '%s'", s.frigate_topic, s.birdnet_topic)
+
+    def _on_connect_fail(self, client: mqtt.Client, userdata) -> None:
+        # paho retries with backoff; throttle so a dead broker doesn't flood the log.
+        now = time.time()
+        if now - self._last_fail_log >= 60:
+            self._last_fail_log = now
+            s = self._settings
+            log.warning(
+                "Cannot reach MQTT broker at %s:%s (still retrying). If this is an "
+                "add-on, 'localhost' points at the add-on container itself — use the "
+                "broker's hostname (e.g. core-mosquitto) or leave mqtt_host empty to "
+                "use the Home Assistant mqtt service.",
+                s.mqtt_host,
+                s.mqtt_port,
+            )
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties=None) -> None:
         self.connected = False
