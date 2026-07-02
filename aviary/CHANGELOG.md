@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.9
+
+- **Static assets sent with `Cache-Control: no-cache`** (ETag kept for cheap 304
+  revalidation), so a reverse proxy (e.g. nginx) in front of Home Assistant stops
+  serving a stale `app.js`/`app.css` and picks up add-on updates immediately.
+
 ## 0.2.8
 
 - **Cache-bust static assets**: `app.css`/`app.js`/`chart.umd.js` now carry a `?v=`

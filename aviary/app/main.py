@@ -20,6 +20,22 @@ from .settings import load_settings
 _APP_DIR = os.path.dirname(__file__)
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Serve static files with ``Cache-Control: no-cache``.
+
+    We already cache-bust asset URLs with a ``?v=`` build token, but a reverse proxy in
+    front of Home Assistant (e.g. nginx caching ``*.js``/``*.css`` by path) can serve a
+    stale body and ignore the query string. Sending an explicit ``no-cache`` tells
+    well-behaved caches to revalidate (via ETag) instead of storing, so an add-on update
+    is reflected immediately. ETag revalidation keeps this cheap (304s when unchanged).
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 class IngressStripMiddleware:
     """Normalize the request path for Home Assistant ingress.
 
@@ -96,7 +112,7 @@ def create_app() -> FastAPI:
 
     app.mount(
         "/static",
-        StaticFiles(directory=os.path.join(_APP_DIR, "static")),
+        NoCacheStaticFiles(directory=os.path.join(_APP_DIR, "static")),
         name="static",
     )
     register_routes(app)
