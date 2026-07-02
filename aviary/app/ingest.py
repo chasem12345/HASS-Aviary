@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from . import db
+from . import db, notify
 
 log = logging.getLogger("aviary.ingest")
 
@@ -17,25 +19,65 @@ log = logging.getLogger("aviary.ingest")
 # both store rows through store_row().
 _ignore_unclassified = False
 
+# Species already in the database (seeded at startup) — anything not in here is a
+# "new species" worth notifying about. Guarded by a lock because store_row runs on
+# both paho's MQTT thread and the backfill asyncio task.
+_known_species: set[str] = set()
+_known_lock = threading.Lock()
+_loop: Optional[asyncio.AbstractEventLoop] = None
+
 
 def configure(ignore_unclassified: bool) -> None:
     global _ignore_unclassified
     _ignore_unclassified = ignore_unclassified
 
 
+def seed_known_species() -> None:
+    """Load every species already in the DB so history never triggers 'new species'."""
+    with _known_lock:
+        _known_species.update(db.distinct_species())
+        count = len(_known_species)
+    log.info("Seeded %d known species for new-species notifications.", count)
+
+
+def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Capture the app's event loop so the MQTT thread can schedule notifications."""
+    global _loop
+    _loop = loop
+
+
 def is_unclassified(row: dict) -> bool:
     return (row.get("common_name") or "").strip().lower() == "bird"
 
 
-def store_row(row: Optional[dict]) -> bool:
-    """Upsert a built row unless it's filtered out. Returns True if stored."""
+def store_row(row: Optional[dict], live: bool = True) -> bool:
+    """Upsert a built row unless it's filtered out. Returns True if stored.
+
+    ``live=False`` (backfill) still records the species as known but never fires a
+    new-species notification — historical rows are not news.
+    """
     if row is None:
         return False
     if _ignore_unclassified and is_unclassified(row):
         log.debug("Skipping unclassified %s detection (%s)", row["source"], row["source_ref"])
         return False
     db.upsert_detection(row)
+    _check_new_species(row, live)
     return True
+
+
+def _check_new_species(row: dict, live: bool) -> None:
+    if is_unclassified(row):  # generic 'bird' is never a species
+        return
+    name = row["common_name"]
+    with _known_lock:
+        is_new = name not in _known_species
+        if is_new:
+            _known_species.add(name)
+    # Accepted race: a live detection during a first-run backfill can fire for a
+    # species the backfill was about to import — it is genuinely first-seen by Aviary.
+    if is_new and live and _loop is not None and notify.enabled():
+        asyncio.run_coroutine_threadsafe(notify.send_new_species(dict(row)), _loop)
 
 
 def _now() -> float:

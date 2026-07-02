@@ -330,6 +330,16 @@ def detection_by_id(det_id: int) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def detection_by_ref(source: str, source_ref: str) -> Optional[dict]:
+    """Current row for an upsert key — later source messages update the same row."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM detections WHERE source = ? AND source_ref = ?",
+            (source, source_ref),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def get_species_info(common_name: str) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute(

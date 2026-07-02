@@ -55,6 +55,11 @@ class Settings:
 
     backfill_on_start: bool
     ignore_unclassified: bool
+    notify_new_species: bool
+
+    # HA config folder mount (map: homeassistant_config). Missing on bare metal —
+    # the blueprint install and notification images degrade gracefully then.
+    ha_config_dir: str
 
     log_level: str
 
@@ -86,5 +91,7 @@ def load_settings() -> Settings:
         birdnet_topic=_pick("BIRDNET_TOPIC", opts, "birdnet_topic", "birdnet"),
         backfill_on_start=_as_bool(_pick("BACKFILL_ON_START", opts, "backfill_on_start", "true")),
         ignore_unclassified=_as_bool(_pick("IGNORE_UNCLASSIFIED", opts, "ignore_unclassified", "true")),
+        notify_new_species=_as_bool(_pick("NOTIFY_NEW_SPECIES", opts, "notify_new_species", "true")),
+        ha_config_dir=os.environ.get("HA_CONFIG_DIR", "/homeassistant_config"),
         log_level=_pick("LOG_LEVEL", opts, "log_level", "info").lower(),
     )

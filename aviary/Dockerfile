@@ -15,6 +15,7 @@ RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt
 
 # App code
 COPY app /app/app
+COPY blueprints /app/blueprints
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 

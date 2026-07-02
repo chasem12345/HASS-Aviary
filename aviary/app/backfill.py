@@ -65,7 +65,7 @@ async def _backfill_frigate(client: httpx.AsyncClient, settings: Settings) -> in
 
         min_start = None
         for ev in events:
-            if ingest.store_row(ingest.build_frigate_row(ev)):
+            if ingest.store_row(ingest.build_frigate_row(ev), live=False):
                 imported += 1
             st = ev.get("start_time")
             if st is not None and (min_start is None or st < min_start):
@@ -126,7 +126,7 @@ async def _backfill_birdnet(client: httpx.AsyncClient, settings: Settings) -> in
             break
 
         for d in rows:
-            if ingest.store_row(ingest.build_birdnet_row(birdnet_msg_from_api(d))):
+            if ingest.store_row(ingest.build_birdnet_row(birdnet_msg_from_api(d)), live=False):
                 imported += 1
 
         offset += len(rows)

@@ -12,6 +12,7 @@ export FRIGATE_TOPIC="$(bashio::config 'frigate_topic')"
 export BIRDNET_TOPIC="$(bashio::config 'birdnet_topic')"
 export BACKFILL_ON_START="$(bashio::config 'backfill_on_start')"
 export IGNORE_UNCLASSIFIED="$(bashio::config 'ignore_unclassified')"
+export NOTIFY_NEW_SPECIES="$(bashio::config 'notify_new_species')"
 export LOG_LEVEL="$(bashio::config 'log_level')"
 export DATA_DIR="/data"
 

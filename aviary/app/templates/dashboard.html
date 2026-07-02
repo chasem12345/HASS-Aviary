@@ -19,6 +19,10 @@
         <option value="all" {{ 'selected' if range == 'all' }}>All time</option>
       </select>
     </label>
+    <button type="button" id="testNotify" class="btn btn-sm"
+            title="Fires a test aviary_new_species event (using the latest detection) so you can verify the notification automation">
+      Test notification</button>
+    <span id="testNotifyResult" class="notify-result"></span>
   </form>
 </div>
 

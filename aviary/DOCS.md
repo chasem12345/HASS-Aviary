@@ -33,6 +33,48 @@ dashboard embedded in the Home Assistant sidebar.
 - **Species pages** show totals, first/last seen, best confidence, and per-day /
   hour-of-day activity charts for that species.
 
+## New species notifications
+
+When a species shows up that Aviary has **never recorded before**, it fires an
+`aviary_new_species` event on the Home Assistant event bus:
+
+```json
+{
+  "common_name": "Blue Jay",
+  "scientific_name": "Cyanocitta cristata",
+  "source": "frigate",
+  "verb": "seen",                        // "seen" (camera) or "heard" (audio)
+  "confidence": 0.87,
+  "location": "backyard",
+  "image": "/local/aviary/blue-jay.jpg", // or null when no image was available
+  "detected_at": "2026-07-02T09:15:00-05:00"
+}
+```
+
+The image is the Frigate snapshot when the first detection was visual (Aviary waits a
+few seconds for Frigate to write it), otherwise BirdNET-Go's generic photo of the
+species — saved under `config/www/aviary/` so phones can fetch it.
+
+**To get a phone notification**, use the bundled blueprint — the add-on installs it
+automatically at startup:
+
+1. Go to **Settings → Automations & Scenes → Blueprints** and find
+   **"Aviary: new species notification"** (if it isn't listed, reload blueprints from
+   the ⋮ menu or restart Home Assistant once).
+2. **Create automation** from it and pick the device to notify (optionally an extra
+   notify action like `notify.all_phones`).
+3. Press **"Test notification"** on the Aviary dashboard — it fires a test event
+   through the full pipeline (image included) and reports errors inline, so you can
+   troubleshoot without waiting for a real new bird.
+
+Notes:
+
+- Species already in Aviary's database (including anything imported by backfill) never
+  trigger the event — only genuinely first-time species do.
+- Files under `config/www` are served **without authentication** at `/local/…`; only
+  bird images are stored there.
+- Set `notify_new_species: false` in the add-on options to turn the event off.
+
 ## Configuration
 
 | Option | Description |
@@ -43,6 +85,7 @@ dashboard embedded in the Home Assistant sidebar.
 | `birdnet_topic` | MQTT topic BirdNET-Go publishes to (default `birdnet`). |
 | `backfill_on_start` | Import existing detections from Frigate/BirdNET-Go HTTP APIs on startup (default `true`). Idempotent. |
 | `ignore_unclassified` | Skip detections with no species — i.e. Frigate `bird` objects with no `sub_label` (default `true`). Set `false` to also record generic "bird" sightings. |
+| `notify_new_species` | Fire an `aviary_new_species` HA event the first time a species is ever detected (default `true`). See *New species notifications*. |
 | `mqtt_host` / `mqtt_port` / `mqtt_user` / `mqtt_password` | Optional broker overrides. Leave `mqtt_host` empty to use the HA Mosquitto broker automatically. |
 | `log_level` | Logging verbosity. |
 

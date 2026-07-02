@@ -6,8 +6,9 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, Query
+from fastapi.concurrency import run_in_threadpool
 
-from .. import db, species_info
+from .. import db, notify, species_info
 
 router = APIRouter()
 
@@ -57,6 +58,25 @@ def hourly(
 def latest(source: Optional[str] = Query(None), species: Optional[str] = Query(None)):
     """Cheap change marker polled by the Recent page for live refresh."""
     return db.change_marker(source=_norm_source(source), species=species)
+
+
+@router.post("/test-notification")
+async def test_notification():
+    """Fire a test ``aviary_new_species`` event so notifications can be verified
+    without waiting for a real first-time species. Uses the latest detection (real
+    image pipeline included); returns the delivery status for troubleshooting."""
+    rows = await run_in_threadpool(db.recent_detections, 1)
+    row = rows[0] if rows else {
+        # Empty database: fire a synthetic audio detection with no image.
+        "source": "birdnet",
+        "source_ref": "aviary-test",
+        "common_name": "Aviary Test Bird",
+        "scientific_name": None,
+        "confidence": 1.0,
+        "location": "Aviary",
+        "start_time": time.time(),
+    }
+    return await notify.send_new_species(dict(row), test=True)
 
 
 @router.get("/species-info")

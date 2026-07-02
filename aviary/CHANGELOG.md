@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.2
+
+- **New-species notifications**: when a species is detected for the first time ever,
+  Aviary fires an `aviary_new_species` event on the Home Assistant event bus with the
+  species name, seen/heard verb, and an image (Frigate snapshot, else BirdNET-Go's
+  generic species photo) staged at `/local/aviary/<species>.jpg`.
+- **Bundled blueprint, installed automatically**: an automation blueprint
+  ("Aviary: new species notification") is copied into
+  `config/blueprints/automation/aviary/` at startup — create an automation from it,
+  pick your phone, done. See DOCS for details.
+- **Test button**: "Test notification" on the dashboard fires a test event through the
+  full pipeline (image included) so you can verify the automation without waiting for
+  a new bird.
+- New option `notify_new_species` (default `true`); the add-on now requests
+  `homeassistant_api` and a writable `homeassistant_config` mapping for the above.
+  Note: images under `config/www` are served unauthenticated at `/local/…`.
+
 ## 0.3.1
 
 - **Versioned static path**: assets are now served from `/static-<build>/…` instead of
