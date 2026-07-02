@@ -355,6 +355,8 @@ def top_species(
             f"""
             SELECT common_name, scientific_name,
                    COUNT(*) AS count, MAX(start_time) AS last_seen,
+                   SUM(source = 'birdnet') AS heard,
+                   SUM(source = 'frigate') AS seen,
                    MAX(CASE WHEN source = 'frigate' THEN start_time END) AS last_frigate,
                    MAX(CASE WHEN source = 'birdnet' THEN start_time END) AS last_birdnet
             FROM detections {where}

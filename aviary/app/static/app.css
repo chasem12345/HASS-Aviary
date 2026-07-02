@@ -77,6 +77,8 @@ table.leaders th, table.leaders td {
 }
 table.leaders th { color: var(--muted); font-weight: 600; }
 table.leaders em { color: var(--muted); font-style: italic; margin-left: 6px; font-size: 12px; }
+table.leaders .num-cell { text-align: center; width: 52px; }
+table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-bottom: 18px; }
 .det-card {
