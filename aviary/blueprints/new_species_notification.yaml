@@ -1,10 +1,13 @@
 blueprint:
-  name: "Aviary: new species notification"
+  name: "Aviary: bird notifications"
   description: >
-    Notify a phone when Aviary detects a bird species for the first time.
-    Triggered by the aviary_new_species event fired by the Aviary add-on.
-    Pick a companion-app device, a notify group/action (e.g. notify.all_phones),
-    or both — at least one is required for anything to happen.
+    Bird notifications from the Aviary add-on's aviary_detection events.
+    Notifies on new species (seen or heard), and optionally on every seen
+    (Frigate) and/or heard (BirdNET-Go) detection, with a species blacklist and
+    a per-species cooldown. Tapping a seen-bird notification opens the Frigate
+    clip (requires the Frigate integration); a heard-bird notification opens
+    the Aviary panel. Pick a companion-app device, a notify group/action, or
+    both — at least one is required for anything to happen.
   domain: automation
   homeassistant:
     min_version: "2024.10.0"
@@ -26,23 +29,111 @@ blueprint:
       default: ""
       selector:
         text:
+    notify_new_species:
+      name: Always notify on new species
+      description: First-ever species notify whether they were seen or heard.
+      default: true
+      selector:
+        boolean:
+    notify_all_seen:
+      name: Notify on every seen bird
+      description: Every Frigate (camera) detection, not just new species.
+      default: true
+      selector:
+        boolean:
+    notify_all_heard:
+      name: Notify on every heard bird
+      description: >
+        Every BirdNET-Go (audio) detection, not just new species. Audio
+        detections can be frequent — consider the cooldown below.
+      default: false
+      selector:
+        boolean:
+    blacklist:
+      name: Blacklist (optional)
+      description: >
+        Species that never notify — not even as a new species. Exact common
+        names, case-insensitive (e.g. House Sparrow).
+      default: []
+      selector:
+        text:
+          multiple: true
+    species_cooldown:
+      name: Per-species cooldown (minutes)
+      description: >
+        A species only re-notifies after it has produced no detections for this
+        long — back-to-back cardinals stay silent, but a sparrow in between
+        still notifies. New-species notifications bypass this. 0 disables.
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 1440
+          unit_of_measurement: min
+          mode: box
+    frigate_proxy_base:
+      name: Frigate notification proxy base (advanced)
+      description: >
+        Base path of the Frigate integration's notification proxy, used so
+        tapping a seen-bird notification opens the clip. Multi-instance setups
+        use /api/frigate/<client_id>/notifications. Clear this to disable the
+        Frigate tap action (falls back to opening Aviary).
+      default: "/api/frigate/notifications"
+      selector:
+        text:
 
 mode: queued
 max: 10
 
 triggers:
   - trigger: event
-    event_type: aviary_new_species
+    event_type: aviary_detection
 
 variables:
   # !input can't be used inside Jinja templates, so hoist the inputs first.
   notify_device: !input notify_device
   extra_notify_service: !input extra_notify_service
-  title: "New species {{ trigger.event.data.verb | default('seen') }}"
+  notify_new_species: !input notify_new_species
+  notify_all_seen: !input notify_all_seen
+  notify_all_heard: !input notify_all_heard
+  blacklist: !input blacklist
+  species_cooldown: !input species_cooldown
+  frigate_proxy_base: !input frigate_proxy_base
+  is_new: "{{ trigger.event.data.is_new_species | default(false) }}"
+  verb: "{{ trigger.event.data.verb | default('seen') }}"
+  since_last: "{{ trigger.event.data.seconds_since_species_last_detected }}"
+  blacklisted: >-
+    {{ trigger.event.data.common_name | lower
+       in (blacklist | default([]) | map('lower') | list) }}
+  passes_toggle: >-
+    {{ (is_new and notify_new_species)
+       or (verb == 'seen' and notify_all_seen)
+       or (verb == 'heard' and notify_all_heard) }}
+  passes_cooldown: >-
+    {{ is_new or (species_cooldown | default(0)) == 0 or since_last in (none, '')
+       or (since_last | float(0)) >= (species_cooldown | float(0)) * 60 }}
+  title: "{{ 'New species ' ~ verb if is_new else 'Bird ' ~ verb }}"
   message: >-
     {{ trigger.event.data.common_name }}{% if trigger.event.data.scientific_name
-    %} ({{ trigger.event.data.scientific_name }}){% endif %}
+    %} ({{ trigger.event.data.scientific_name }}){% endif %}{% if
+    trigger.event.data.location %} @ {{ trigger.event.data.location }}{% endif %}
   image: "{{ trigger.event.data.image }}"
+  # Tap action: seen -> the Frigate clip; heard -> the Aviary panel.
+  tap_url: >-
+    {% if verb == 'seen' and (frigate_proxy_base | trim) != '' and
+          trigger.event.data.source_ref %}{{ frigate_proxy_base | trim
+    }}/{{ trigger.event.data.source_ref }}/clip.mp4{% else %}{{
+    trigger.event.data.panel_path | default('', true) }}{% endif %}
+  # clickAction = Android, url = iOS; each platform ignores the other's key.
+  notify_data: >-
+    {% if image and tap_url %}{{ {'image': image, 'clickAction': tap_url, 'url': tap_url} }}
+    {%- elif image %}{{ {'image': image} }}
+    {%- elif tap_url %}{{ {'clickAction': tap_url, 'url': tap_url} }}
+    {%- else %}{{ {} }}{% endif %}
+
+conditions:
+  - condition: template
+    value_template: "{{ not blacklisted and passes_toggle and passes_cooldown }}"
 
 actions:
   - if:
@@ -55,8 +146,7 @@ actions:
         data:
           title: "{{ title }}"
           message: "{{ message }}"
-          # `image` works in both the Android and iOS companion apps; omit when null.
-          data: "{{ {'image': image} if image else {} }}"
+          data: "{{ notify_data }}"
   - if:
       - condition: template
         value_template: "{{ extra_notify_service | trim != '' }}"
@@ -65,4 +155,4 @@ actions:
         data:
           title: "{{ title }}"
           message: "{{ message }}"
-          data: "{{ {'image': image} if image else {} }}"
+          data: "{{ notify_data }}"

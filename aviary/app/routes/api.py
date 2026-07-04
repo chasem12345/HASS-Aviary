@@ -62,9 +62,10 @@ def latest(source: Optional[str] = Query(None), species: Optional[str] = Query(N
 
 @router.post("/test-notification")
 async def test_notification():
-    """Fire a test ``aviary_new_species`` event so notifications can be verified
-    without waiting for a real first-time species. Uses the latest detection (real
-    image pipeline included); returns the delivery status for troubleshooting."""
+    """Fire a test ``aviary_detection`` event so notifications can be verified
+    without waiting for a real detection. Uses the latest detection (real image
+    pipeline included), marked as a new species so the default blueprint settings
+    notify; returns the delivery status for troubleshooting."""
     rows = await run_in_threadpool(db.recent_detections, 1)
     row = rows[0] if rows else {
         # Empty database: fire a synthetic audio detection with no image.
@@ -76,7 +77,7 @@ async def test_notification():
         "location": "Aviary",
         "start_time": time.time(),
     }
-    return await notify.send_new_species(dict(row), test=True)
+    return await notify.send_detection(dict(row), is_new=True, test=True)
 
 
 @router.get("/species-info")

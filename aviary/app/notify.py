@@ -1,10 +1,16 @@
-"""New-species Home Assistant notifications.
+"""Home Assistant detection events for notifications.
 
-When a species is stored for the first time, an ``aviary_new_species`` event is fired
-on the Home Assistant event bus (through the Supervisor's Core API proxy, which needs
-``homeassistant_api: true`` in config.yaml). A notification image — the Frigate
-snapshot, else BirdNET-Go's generic species photo — is staged under HA's ``www``
-folder first so companion apps can fetch it at ``/local/aviary/<slug>.<ext>``.
+Every classified detection fires an ``aviary_detection`` event on the Home Assistant
+event bus (through the Supervisor's Core API proxy — ``homeassistant_api: true``),
+carrying everything a notification automation needs to filter: seen/heard verb,
+``is_new_species``, how long the species had been quiet
+(``seconds_since_species_last_detected``), the Frigate event id (``source_ref``),
+and the Aviary panel path for tap actions. First-ever species ALSO fire the legacy
+``aviary_new_species`` event for older automations.
+
+A notification image — the Frigate snapshot, else BirdNET-Go's generic species
+photo — is staged under HA's ``www`` folder first so companion apps can fetch it at
+``/local/aviary/<slug>.<ext>``.
 
 The bundled automation blueprint (``blueprints/new_species_notification.yaml``) is
 copied into HA's config at startup so users can wire the event to a mobile
@@ -33,7 +39,8 @@ from .settings import Settings
 
 log = logging.getLogger("aviary.notify")
 
-_EVENT_URL = "http://supervisor/core/api/events/aviary_new_species"
+_EVENTS_URL = "http://supervisor/core/api/events/{}"
+_SELF_INFO_URL = "http://supervisor/addons/self/info"
 _BLUEPRINT_SRC = Path(__file__).resolve().parent.parent / "blueprints" / "new_species_notification.yaml"
 
 # Frigate's first MQTT message for an event usually predates the snapshot; later
@@ -48,6 +55,9 @@ _EXT_BY_TYPE = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "
 
 _client: Optional[httpx.AsyncClient] = None
 _settings: Optional[Settings] = None
+# Aviary's HA sidebar path (/hassio/ingress/<slug>) for notification tap actions.
+# Discovered lazily from the Supervisor self-info API; False = lookup failed, retry.
+_panel_path_cache: Optional[str | bool] = None
 
 
 def configure(settings: Settings) -> None:
@@ -113,8 +123,8 @@ def species_slug(common_name: str) -> str:
     return slug or "sp-" + hashlib.sha1(common_name.encode()).hexdigest()[:10]
 
 
-async def send_new_species(row: dict, test: bool = False) -> dict:
-    """Stage an image and fire the event for one detection row.
+async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
+    """Stage an image and fire the aviary_detection event for one detection row.
 
     Returns ``{"fired": bool, "image": str|None, "error": str|None}`` — consumed by
     the test endpoint; fire-and-forget callers can ignore it. Never raises (it is
@@ -127,6 +137,15 @@ async def send_new_species(row: dict, test: bool = False) -> dict:
         return {"fired": False, "image": None, "error": "SUPERVISOR_TOKEN missing — not running under the Supervisor"}
 
     source = row.get("source") or "birdnet"
+    source_ref = str(row.get("source_ref") or "")
+
+    # Per-species quiet gap, for the blueprint's cooldown filter.
+    since_last: Optional[float] = None
+    prev = await asyncio.to_thread(db.last_detection_before, common_name, source, source_ref)
+    start_time = row.get("start_time")
+    if prev is not None and start_time is not None:
+        since_last = max(0.0, float(start_time) - prev)
+
     image_url: Optional[str] = None
     fetched = await _resolve_image(row)
     if fetched:
@@ -136,24 +155,61 @@ async def send_new_species(row: dict, test: bool = False) -> dict:
         "common_name": common_name,
         "scientific_name": row.get("scientific_name"),
         "source": source,
+        "source_ref": source_ref,  # Frigate event id — used for the clip tap action
         "verb": "seen" if source == "frigate" else "heard",
         "confidence": row.get("confidence"),
         "location": row.get("location"),
         "image": image_url,
         "detected_at": _iso(row.get("start_time")),
+        "is_new_species": bool(is_new),
+        "seconds_since_species_last_detected": since_last,
+        "panel_path": await _panel_path(),
     }
     if test:
         payload["test"] = True
 
-    error = await _fire_event(payload)
+    error = await _fire_event("aviary_detection", payload)
+    if not error and is_new:
+        # Legacy event, kept so pre-0.4.0 automations continue to work.
+        await _fire_event("aviary_new_species", payload)
     if error:
-        log.warning("aviary_new_species for %s not delivered: %s", common_name, error)
+        log.warning("aviary_detection for %s not delivered: %s", common_name, error)
         return {"fired": False, "image": image_url, "error": error}
     log.info(
-        "New species %s: fired aviary_new_species (image=%s%s)",
-        common_name, image_url or "none", ", test" if test else "",
+        "Detection %s (%s%s): fired aviary_detection (image=%s%s)",
+        common_name, payload["verb"], ", new species" if is_new else "",
+        image_url or "none", ", test" if test else "",
     )
     return {"fired": True, "image": image_url, "error": None}
+
+
+async def _panel_path() -> Optional[str]:
+    """``/hassio/ingress/<slug>`` for this add-on, from the Supervisor self-info API.
+
+    Needs ``hassio_api: true``. Cached after the first success; a failure is cached
+    as False and retried on the next detection.
+    """
+    global _panel_path_cache
+    if isinstance(_panel_path_cache, str):
+        return _panel_path_cache
+    if _client is None:
+        return None
+    try:
+        resp = await _client.get(
+            _SELF_INFO_URL,
+            headers={"Authorization": f"Bearer {os.environ.get('SUPERVISOR_TOKEN', '')}"},
+        )
+        slug = (resp.json().get("data") or {}).get("slug") if resp.status_code == 200 else None
+    except (httpx.HTTPError, ValueError):
+        slug = None
+    if slug:
+        _panel_path_cache = f"/hassio/ingress/{slug}"
+        return _panel_path_cache
+    if _panel_path_cache is None:  # log the first failure only
+        log.warning("Could not resolve add-on slug from the Supervisor (is hassio_api enabled?); "
+                    "notification tap actions for audio detections will be omitted.")
+    _panel_path_cache = False
+    return None
 
 
 # ------------------------------------------------------------------------ internals
@@ -224,8 +280,8 @@ def _save_image(data: bytes, ctype: str, slug: str) -> Optional[str]:
     return f"/local/aviary/{name}"
 
 
-async def _fire_event(payload: dict) -> Optional[str]:
-    """POST the event to the Core API proxy. Returns an error string, or None on success."""
+async def _fire_event(event_type: str, payload: dict) -> Optional[str]:
+    """POST an event to the Core API proxy. Returns an error string, or None on success."""
     if _client is None:
         return "notify HTTP client not initialized"
     headers = {"Authorization": f"Bearer {os.environ.get('SUPERVISOR_TOKEN', '')}"}
@@ -234,7 +290,7 @@ async def _fire_event(payload: dict) -> Optional[str]:
         if attempt:
             await asyncio.sleep(_EVENT_RETRY_S)
         try:
-            resp = await _client.post(_EVENT_URL, json=payload, headers=headers)
+            resp = await _client.post(_EVENTS_URL.format(event_type), json=payload, headers=headers)
         except httpx.HTTPError as exc:
             last = f"Supervisor API unreachable: {exc}"
             continue

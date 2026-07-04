@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.3.5"
+version: "0.4.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -21,8 +21,11 @@ map:
   - type: homeassistant_config
     read_only: false
     path: /homeassistant
-# Core API proxy (http://supervisor/core/api) — used to fire aviary_new_species events.
+# Core API proxy (http://supervisor/core/api) — used to fire detection events.
 homeassistant_api: true
+# Supervisor API — used only to look up this add-on's own slug (/addons/self/info)
+# so notification tap actions can open the Aviary panel.
+hassio_api: true
 services:
   - mqtt:want
 options:

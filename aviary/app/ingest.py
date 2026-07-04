@@ -19,10 +19,17 @@ log = logging.getLogger("aviary.ingest")
 # both store rows through store_row().
 _ignore_unclassified = False
 
-# Species already in the database (seeded at startup) — anything not in here is a
-# "new species" worth notifying about. Guarded by a lock because store_row runs on
-# both paho's MQTT thread and the backfill asyncio task.
+# Notification state, guarded by one lock because store_row runs on both paho's MQTT
+# thread and the backfill asyncio task:
+#  - _known_species: species already in the DB (seeded at startup); anything not in
+#    here is a "new species".
+#  - _announced_refs: detections already announced as an aviary_detection event.
+#    Frigate sends several MQTT messages per event (new/update/end) that upsert the
+#    same row — announce each detection exactly once. Insertion-ordered dict trimmed
+#    to a cap so memory stays bounded.
 _known_species: set[str] = set()
+_announced_refs: dict[str, None] = {}
+_ANNOUNCED_CAP = 4096
 _known_lock = threading.Lock()
 _loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -32,12 +39,18 @@ def configure(ignore_unclassified: bool) -> None:
     _ignore_unclassified = ignore_unclassified
 
 
-def seed_known_species() -> None:
-    """Load every species already in the DB so history never triggers 'new species'."""
+def seed_notify_state() -> None:
+    """Seed known species (all-time) and recently announced refs from the DB.
+
+    Recent refs are pre-marked announced so an in-progress Frigate event doesn't
+    re-notify after an add-on restart.
+    """
     with _known_lock:
         _known_species.update(db.distinct_species())
-        count = len(_known_species)
-    log.info("Seeded %d known species for new-species notifications.", count)
+        for source, ref in db.recent_refs(time.time() - 3600):
+            _announced_refs[f"{source}:{ref}"] = None
+        species, refs = len(_known_species), len(_announced_refs)
+    log.info("Seeded notification state: %d known species, %d recent refs.", species, refs)
 
 
 def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -53,8 +66,8 @@ def is_unclassified(row: dict) -> bool:
 def store_row(row: Optional[dict], live: bool = True) -> bool:
     """Upsert a built row unless it's filtered out. Returns True if stored.
 
-    ``live=False`` (backfill) still records the species as known but never fires a
-    new-species notification — historical rows are not news.
+    ``live=False`` (backfill) still records the species/refs as seen but never fires
+    detection events — historical rows are not news.
     """
     if row is None:
         return False
@@ -62,22 +75,34 @@ def store_row(row: Optional[dict], live: bool = True) -> bool:
         log.debug("Skipping unclassified %s detection (%s)", row["source"], row["source_ref"])
         return False
     db.upsert_detection(row)
-    _check_new_species(row, live)
+    _announce(row, live)
     return True
 
 
-def _check_new_species(row: dict, live: bool) -> None:
+def _announce(row: dict, live: bool) -> None:
+    """Fire an aviary_detection event once per classified detection.
+
+    An unclassified row is skipped here but NOT marked announced, so a Frigate event
+    that gains its ``sub_label`` on a later message gets announced at that point —
+    exactly when the species becomes known.
+    """
     if is_unclassified(row):  # generic 'bird' is never a species
         return
     name = row["common_name"]
+    key = f"{row['source']}:{row['source_ref']}"
     with _known_lock:
+        if key in _announced_refs:
+            return
+        _announced_refs[key] = None
+        while len(_announced_refs) > _ANNOUNCED_CAP:
+            _announced_refs.pop(next(iter(_announced_refs)))
         is_new = name not in _known_species
         if is_new:
             _known_species.add(name)
-    # Accepted race: a live detection during a first-run backfill can fire for a
-    # species the backfill was about to import — it is genuinely first-seen by Aviary.
-    if is_new and live and _loop is not None and notify.enabled():
-        asyncio.run_coroutine_threadsafe(notify.send_new_species(dict(row)), _loop)
+    # Accepted race: a live detection during a first-run backfill can announce a
+    # species/ref the backfill was about to import — genuinely first-seen by Aviary.
+    if live and _loop is not None and notify.enabled():
+        asyncio.run_coroutine_threadsafe(notify.send_detection(dict(row), is_new=is_new), _loop)
 
 
 def _now() -> float:

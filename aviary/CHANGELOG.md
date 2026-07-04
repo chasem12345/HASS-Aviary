@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.0
+
+- **Notifications for every bird, not just new species**: the add-on now fires an
+  `aviary_detection` event for every classified detection (deduplicated across
+  Frigate's repeated MQTT messages), carrying `is_new_species`,
+  `seconds_since_species_last_detected`, the `source_ref` (Frigate event id), and
+  the Aviary panel path. New species still ALSO fire the legacy
+  `aviary_new_species` event, so old automations keep working.
+- **Blueprint v2 — "Aviary: bird notifications"** (same file, refreshed on update;
+  remember to *Reload Automations*): toggles for new-species / all-seen / all-heard
+  notifications (defaults: on / on / off), a species **blacklist**, and a
+  **per-species cooldown** (default 10 min) — back-to-back cardinals stay silent,
+  a sparrow in between still notifies; new species bypass it.
+- **Tap actions**: tapping a seen-bird notification opens the **Frigate clip**
+  (via the Frigate integration's notification proxy, configurable); a heard-bird
+  notification opens the **Aviary panel**.
+- Requires `hassio_api` (self slug lookup for the panel link) — expect a
+  permission prompt on update. **Behavior change**: existing automations made from
+  the v1 blueprint inherit the new defaults after a blueprint reload and will start
+  notifying on every seen bird — turn "Notify on every seen bird" off to keep the
+  old behavior.
+
 ## 0.3.5
 
 - **Blueprint fix**: treat a cleared device picker (`null`) the same as no device, so

@@ -340,6 +340,34 @@ def detection_by_ref(source: str, source_ref: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def last_detection_before(common_name: str, source: str, source_ref: str) -> Optional[float]:
+    """The species' most recent detection time, excluding one row (already upserted).
+
+    Feeds the notification blueprint's per-species cooldown: 'how long has this species
+    been quiet before this detection?'
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT MAX(start_time) AS t FROM detections
+            WHERE common_name = ? COLLATE NOCASE
+              AND NOT (source = ? AND source_ref = ?)
+            """,
+            (common_name, source, source_ref),
+        ).fetchone()
+    return row["t"] if row and row["t"] is not None else None
+
+
+def recent_refs(since: float) -> list[tuple[str, str]]:
+    """(source, source_ref) pairs of recent detections, to pre-mark them announced."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT source, source_ref FROM detections WHERE start_time >= ?",
+            (since,),
+        ).fetchall()
+    return [(r["source"], r["source_ref"]) for r in rows]
+
+
 def get_species_info(common_name: str) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute(
