@@ -51,7 +51,9 @@ deduplicated):
   "image": "/local/aviary/blue-jay.jpg",   // or null when no image was available
   "detected_at": "2026-07-02T09:15:00-05:00",
   "is_new_species": false,                 // first time Aviary has ever recorded it
-  "seconds_since_species_last_detected": 5400.0,  // null = first ever
+  "seconds_since_species_last_detected": 5400.0,  // any source; null = first ever
+  "seconds_since_species_last_seen": 5400.0,      // Frigate only; null = never seen
+  "seconds_since_species_last_heard": 120.0,      // BirdNET-Go only; null = never heard
   "panel_path": "/hassio/ingress/<slug>"   // Aviary's sidebar panel, for tap actions
 }
 ```
@@ -72,7 +74,9 @@ update, run *Developer Tools → YAML → Reload Automations* so HA re-reads it)
    - **Notify on every seen bird** (default on) / **every heard bird** (default off).
    - **Blacklist** — species that never notify, even as new species.
    - **Per-species cooldown** (default 10 min) — a species re-notifies only after it
-     has been quiet that long; other species are unaffected. New species bypass it.
+     has been quiet that long, counting only detections of the same kind (camera
+     cooldown ignores audio detections and vice versa); other species are
+     unaffected. New species bypass it.
    - **Frigate notification proxy base** (advanced) — powers the seen-bird tap
      action; needs the Frigate integration. Clear to disable.
 3. **Tap behavior**: seen-bird notifications open the Frigate clip; heard-bird

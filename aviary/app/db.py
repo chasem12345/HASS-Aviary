@@ -340,22 +340,30 @@ def detection_by_ref(source: str, source_ref: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def last_detection_before(common_name: str, source: str, source_ref: str) -> Optional[float]:
-    """The species' most recent detection time, excluding one row (already upserted).
+def species_last_times(common_name: str, source: str, source_ref: str) -> dict:
+    """The species' most recent detection time — overall and per source — excluding
+    one row (already upserted).
 
-    Feeds the notification blueprint's per-species cooldown: 'how long has this species
-    been quiet before this detection?'
+    Feeds the notification blueprint's per-species cooldown: 'how long has this
+    species been quiet before this detection?', split by source so a camera cooldown
+    isn't fed by audio detections (and vice versa).
     """
+    empty = {"any": None, "seen": None, "heard": None}
     with _connect() as conn:
         row = conn.execute(
             """
-            SELECT MAX(start_time) AS t FROM detections
+            SELECT MAX(start_time) AS any_t,
+                   MAX(CASE WHEN source = 'frigate' THEN start_time END) AS seen_t,
+                   MAX(CASE WHEN source = 'birdnet' THEN start_time END) AS heard_t
+            FROM detections
             WHERE common_name = ? COLLATE NOCASE
               AND NOT (source = ? AND source_ref = ?)
             """,
             (common_name, source, source_ref),
         ).fetchone()
-    return row["t"] if row and row["t"] is not None else None
+    if not row:
+        return empty
+    return {"any": row["any_t"], "seen": row["seen_t"], "heard": row["heard_t"]}
 
 
 def recent_refs(since: float) -> list[tuple[str, str]]:

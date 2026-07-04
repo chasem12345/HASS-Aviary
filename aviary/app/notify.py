@@ -139,12 +139,15 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
     source = row.get("source") or "birdnet"
     source_ref = str(row.get("source_ref") or "")
 
-    # Per-species quiet gap, for the blueprint's cooldown filter.
-    since_last: Optional[float] = None
-    prev = await asyncio.to_thread(db.last_detection_before, common_name, source, source_ref)
+    # Per-species quiet gaps (overall and per source), for the blueprint's cooldown.
+    last_times = await asyncio.to_thread(db.species_last_times, common_name, source, source_ref)
     start_time = row.get("start_time")
-    if prev is not None and start_time is not None:
-        since_last = max(0.0, float(start_time) - prev)
+
+    def _gap(key: str) -> Optional[float]:
+        prev = last_times.get(key)
+        if prev is None or start_time is None:
+            return None
+        return max(0.0, float(start_time) - prev)
 
     image_url: Optional[str] = None
     fetched = await _resolve_image(row)
@@ -162,7 +165,9 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
         "image": image_url,
         "detected_at": _iso(row.get("start_time")),
         "is_new_species": bool(is_new),
-        "seconds_since_species_last_detected": since_last,
+        "seconds_since_species_last_detected": _gap("any"),
+        "seconds_since_species_last_seen": _gap("seen"),
+        "seconds_since_species_last_heard": _gap("heard"),
         "panel_path": await _panel_path(),
     }
     if test:

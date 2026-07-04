@@ -61,9 +61,12 @@ blueprint:
     species_cooldown:
       name: Per-species cooldown (minutes)
       description: >
-        A species only re-notifies after it has produced no detections for this
-        long — back-to-back cardinals stay silent, but a sparrow in between
-        still notifies. New-species notifications bypass this. 0 disables.
+        A species only re-notifies after it has produced no detections OF THE
+        SAME KIND for this long — the camera cooldown ignores audio detections
+        and vice versa, so a bird singing near the microphone can't suppress
+        its camera notifications. Back-to-back cardinals stay silent, a sparrow
+        in between still notifies. New-species notifications bypass this.
+        0 disables.
       default: 10
       selector:
         number:
@@ -120,7 +123,15 @@ variables:
   frigate_proxy_base: !input frigate_proxy_base
   is_new: "{{ trigger.event.data.is_new_species | default(false) }}"
   verb: "{{ trigger.event.data.verb | default('seen') }}"
-  since_last: "{{ trigger.event.data.seconds_since_species_last_detected }}"
+  # Cooldown counts only detections of the same kind (seen vs heard), so audio
+  # chatter never suppresses camera notifications. Falls back to the any-source
+  # gap for events from add-on versions before 0.4.2.
+  since_last: >-
+    {{ (trigger.event.data.seconds_since_species_last_seen
+        | default(trigger.event.data.seconds_since_species_last_detected))
+       if verb == 'seen' else
+       (trigger.event.data.seconds_since_species_last_heard
+        | default(trigger.event.data.seconds_since_species_last_detected)) }}
   blacklisted: >-
     {{ trigger.event.data.common_name | lower
        in (blacklist | default([]) | map('lower') | list) }}

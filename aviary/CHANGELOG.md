@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.2
+
+- **Cooldown no longer mixes camera and audio**: the per-species cooldown now counts
+  only detections of the same kind — a bird singing near BirdNET-Go can't suppress
+  its camera notifications (this was why a Frigate notification could arrive with no
+  Aviary one). Event payload adds `seconds_since_species_last_seen` and
+  `seconds_since_species_last_heard` alongside the existing any-source field.
+
 ## 0.4.1
 
 - **Current images, not cached ones**: seen-bird notifications now use the Frigate
