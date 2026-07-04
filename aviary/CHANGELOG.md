@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.3
+
+- **One bird, one species**: species names are now unified across sources at ingest.
+  A label matching another species' scientific name (Frigate's classifier emits
+  scientific names, e.g. "Cardinalis cardinalis") is mapped to the species' common
+  name, and case differences adopt the stored spelling. New-species matching is
+  case-insensitive. Fixes duplicate notifications where the same cardinal fired
+  once as "Cardinalis cardinalis" (seen) and once as a "new" "Northern Cardinal"
+  (heard). A startup migration remaps existing scientific-named rows, so split
+  species pages merge after the update.
+- **Heard-bird image fallback**: when BirdNET-Go's species photo can't be fetched,
+  the notification falls back to the species' most recent camera snapshot instead
+  of going imageless.
+
 ## 0.4.2
 
 - **Cooldown no longer mixes camera and audio**: the per-species cooldown now counts

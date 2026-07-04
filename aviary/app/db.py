@@ -67,6 +67,29 @@ def init_db(db_path: str) -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(detections)")}
         if "native_id" not in cols:
             conn.execute("ALTER TABLE detections ADD COLUMN native_id TEXT")
+        # Idempotent cleanup: remap rows whose common_name is actually a scientific
+        # name (e.g. Frigate's classifier) onto the species' real common name, when
+        # another source has recorded the pairing. Keeps species pages and
+        # new-species notifications from splitting one bird into two species.
+        conn.execute(
+            """
+            UPDATE detections SET
+                scientific_name = COALESCE(scientific_name, common_name),
+                common_name = (
+                    SELECT b.common_name FROM detections b
+                    WHERE b.scientific_name = detections.common_name COLLATE NOCASE
+                      AND b.common_name != ''
+                      AND LOWER(b.common_name) != LOWER(b.scientific_name)
+                    ORDER BY b.start_time DESC LIMIT 1
+                )
+            WHERE common_name != '' AND EXISTS (
+                SELECT 1 FROM detections b
+                WHERE b.scientific_name = detections.common_name COLLATE NOCASE
+                  AND b.common_name != ''
+                  AND LOWER(b.common_name) != LOWER(b.scientific_name)
+            )
+            """
+        )
 
 
 @contextmanager
@@ -337,6 +360,39 @@ def detection_by_ref(source: str, source_ref: str) -> Optional[dict]:
             "SELECT * FROM detections WHERE source = ? AND source_ref = ?",
             (source, source_ref),
         ).fetchone()
+    return dict(row) if row else None
+
+
+def canonical_species(name: str) -> Optional[dict]:
+    """Canonical ``{common_name, scientific_name}`` for an incoming species label.
+
+    Handles cross-source naming drift: a label that matches another species'
+    scientific name maps to that species' common name (Frigate's classifier emits
+    scientific names while BirdNET-Go emits common names); otherwise a
+    case-insensitive match adopts the spelling already stored, preferring rows that
+    carry a scientific name (BirdNET's proper-cased entries). None when unknown.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT common_name, scientific_name FROM detections
+            WHERE scientific_name = ? COLLATE NOCASE
+              AND common_name != ''
+              AND LOWER(common_name) != LOWER(scientific_name)
+            ORDER BY start_time DESC LIMIT 1
+            """,
+            (name,),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                """
+                SELECT common_name, scientific_name FROM detections
+                WHERE common_name = ? COLLATE NOCASE
+                ORDER BY (scientific_name IS NOT NULL) DESC, start_time DESC
+                LIMIT 1
+                """,
+                (name,),
+            ).fetchone()
     return dict(row) if row else None
 
 

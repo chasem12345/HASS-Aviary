@@ -46,7 +46,7 @@ def seed_notify_state() -> None:
     re-notify after an add-on restart.
     """
     with _known_lock:
-        _known_species.update(db.distinct_species())
+        _known_species.update(name.lower() for name in db.distinct_species())
         for source, ref in db.recent_refs(time.time() - 3600):
             _announced_refs[f"{source}:{ref}"] = None
         species, refs = len(_known_species), len(_announced_refs)
@@ -77,10 +77,29 @@ def store_row(row: Optional[dict], live: bool = True, announce: bool = True) -> 
     if _ignore_unclassified and is_unclassified(row):
         log.debug("Skipping unclassified %s detection (%s)", row["source"], row["source_ref"])
         return False
+    if not is_unclassified(row):
+        _canonicalize(row)
     db.upsert_detection(row)
     if announce:
         _announce(row, live)
     return True
+
+
+def _canonicalize(row: dict) -> None:
+    """Unify species naming across sources, in place.
+
+    Frigate's classifier can emit the scientific name (or a different
+    capitalization) where BirdNET-Go emits the common name; adopt the canonical
+    naming already in the database so one bird doesn't split into two species.
+    """
+    canon = db.canonical_species(row["common_name"])
+    if not canon:
+        return
+    if canon["common_name"] != row["common_name"]:
+        log.debug("Canonicalized species %r -> %r", row["common_name"], canon["common_name"])
+        row["common_name"] = canon["common_name"]
+    if not row.get("scientific_name") and canon.get("scientific_name"):
+        row["scientific_name"] = canon["scientific_name"]
 
 
 def _announce(row: dict, live: bool) -> None:
@@ -92,7 +111,7 @@ def _announce(row: dict, live: bool) -> None:
     """
     if is_unclassified(row):  # generic 'bird' is never a species
         return
-    name = row["common_name"]
+    name = row["common_name"].lower()  # known-species set is case-insensitive
     key = f"{row['source']}:{row['source_ref']}"
     with _known_lock:
         if key in _announced_refs:

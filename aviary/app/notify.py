@@ -241,13 +241,23 @@ async def _resolve_image(row: dict) -> Optional[tuple[bytes, str]]:
                     break
                 await asyncio.sleep(_SNAPSHOT_POLL_S)
         # Audio detections (and frigate fallback): BirdNET-Go's generic species photo.
+        common = row.get("common_name") or ""
         if _settings.birdnet_url:
             sci = row.get("scientific_name") or await asyncio.to_thread(
-                db.scientific_name_for, row.get("common_name") or ""
+                db.scientific_name_for, common
             )
             if sci:
-                return await _fetch_image(
+                fetched = await _fetch_image(
                     proxy.birdnet_species_image_url(_settings.birdnet_url, sci)
+                )
+                if fetched:
+                    return fetched
+        # Last resort: the species' most recent camera snapshot, if it has one.
+        if _settings.frigate_url and common:
+            ref = (await asyncio.to_thread(db.latest_snapshot_refs, [common])).get(common)
+            if ref:
+                return await _fetch_image(
+                    proxy.frigate_snapshot_url(_settings.frigate_url, ref)
                 )
     except Exception:  # noqa: BLE001 - the image is best-effort, never fatal
         log.exception("Notification image resolution failed for %s", row.get("common_name"))
