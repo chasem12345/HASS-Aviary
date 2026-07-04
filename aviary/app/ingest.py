@@ -63,11 +63,14 @@ def is_unclassified(row: dict) -> bool:
     return (row.get("common_name") or "").strip().lower() == "bird"
 
 
-def store_row(row: Optional[dict], live: bool = True) -> bool:
+def store_row(row: Optional[dict], live: bool = True, announce: bool = True) -> bool:
     """Upsert a built row unless it's filtered out. Returns True if stored.
 
     ``live=False`` (backfill) still records the species/refs as seen but never fires
-    detection events — historical rows are not news.
+    detection events — historical rows are not news. ``announce=False`` stores the
+    row without marking it announced (Frigate in-progress messages: the detection is
+    announced once, on the event's ``end`` message, so the notification carries the
+    final species/score and the clip exists when tapped).
     """
     if row is None:
         return False
@@ -75,7 +78,8 @@ def store_row(row: Optional[dict], live: bool = True) -> bool:
         log.debug("Skipping unclassified %s detection (%s)", row["source"], row["source_ref"])
         return False
     db.upsert_detection(row)
-    _announce(row, live)
+    if announce:
+        _announce(row, live)
     return True
 
 
@@ -178,7 +182,9 @@ def handle_frigate(payload: bytes) -> None:
 
     after = msg.get("after") or msg.get("before") or {}
     row = build_frigate_row(after)
-    if store_row(row):
+    # Announce only when the event ends: the species/score are final and Frigate has
+    # (or is about to have) the finished clip for the notification's tap action.
+    if store_row(row, announce=msg.get("type") == "end"):
         log.debug("Frigate detection upserted: %s (%s)", row["common_name"], row["source_ref"])
 
 

@@ -71,13 +71,31 @@ blueprint:
           max: 1440
           unit_of_measurement: min
           mode: box
+    seen_image:
+      name: Seen-bird notification image
+      description: >
+        Image style for camera detections, served live by the Frigate
+        integration (always the current event). "Aviary staged image" uses the
+        snapshot the add-on saved instead.
+      default: "event_preview.gif"
+      selector:
+        select:
+          options:
+            - label: Animated preview (GIF)
+              value: event_preview.gif
+            - label: Snapshot
+              value: snapshot.jpg
+            - label: Thumbnail
+              value: thumbnail.jpg
+            - label: Aviary staged image
+              value: aviary
     frigate_proxy_base:
       name: Frigate notification proxy base (advanced)
       description: >
-        Base path of the Frigate integration's notification proxy, used so
-        tapping a seen-bird notification opens the clip. Multi-instance setups
-        use /api/frigate/<client_id>/notifications. Clear this to disable the
-        Frigate tap action (falls back to opening Aviary).
+        Base path of the Frigate integration's notification proxy, used for the
+        seen-bird image and clip tap action. Multi-instance setups use
+        /api/frigate/<client_id>/notifications. Clear this to disable both
+        (falls back to the Aviary image / panel).
       default: "/api/frigate/notifications"
       selector:
         text:
@@ -98,6 +116,7 @@ variables:
   notify_all_heard: !input notify_all_heard
   blacklist: !input blacklist
   species_cooldown: !input species_cooldown
+  seen_image: !input seen_image
   frigate_proxy_base: !input frigate_proxy_base
   is_new: "{{ trigger.event.data.is_new_species | default(false) }}"
   verb: "{{ trigger.event.data.verb | default('seen') }}"
@@ -112,12 +131,21 @@ variables:
   passes_cooldown: >-
     {{ is_new or (species_cooldown | default(0)) == 0 or since_last in (none, '')
        or (since_last | float(0)) >= (species_cooldown | float(0)) * 60 }}
-  title: "{{ 'New species ' ~ verb if is_new else 'Bird ' ~ verb }}"
+  # e.g. "Northern Cardinal detected on bird camera" / "Wood Thrush heard at yard",
+  # prefixed with "New species! " for first-ever species (notifications have no title).
   message: >-
-    {{ trigger.event.data.common_name }}{% if trigger.event.data.scientific_name
-    %} ({{ trigger.event.data.scientific_name }}){% endif %}{% if
-    trigger.event.data.location %} @ {{ trigger.event.data.location }}{% endif %}
-  image: "{{ trigger.event.data.image }}"
+    {{ 'New species! ' if is_new else '' }}{{ trigger.event.data.common_name }}
+    {%- if verb == 'seen' %} detected{% if trigger.event.data.location %} on
+    {{ trigger.event.data.location }} camera{% endif %}
+    {%- else %} heard{% if trigger.event.data.location %} at
+    {{ trigger.event.data.location }}{% endif %}{% endif %}
+  # Seen birds: live image from the Frigate integration (current event, never a
+  # stale cache). Everything else: the image the add-on staged under /local.
+  image: >-
+    {%- if verb == 'seen' and seen_image != 'aviary'
+          and (frigate_proxy_base | trim) != '' and trigger.event.data.source_ref
+    -%}{{ frigate_proxy_base | trim }}/{{ trigger.event.data.source_ref }}/{{ seen_image }}
+    {%- else -%}{{ trigger.event.data.image | default('', true) }}{%- endif -%}
   # Tap action: seen -> the Frigate clip; heard -> the Aviary panel.
   tap_url: >-
     {% if verb == 'seen' and (frigate_proxy_base | trim) != '' and
@@ -144,7 +172,6 @@ actions:
     then:
       - action: "notify.mobile_app_{{ device_attr(notify_device, 'name') | slugify }}"
         data:
-          title: "{{ title }}"
           message: "{{ message }}"
           data: "{{ notify_data }}"
   - if:
@@ -153,6 +180,5 @@ actions:
     then:
       - action: "{{ extra_notify_service }}"
         data:
-          title: "{{ title }}"
           message: "{{ message }}"
           data: "{{ notify_data }}"

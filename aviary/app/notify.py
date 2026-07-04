@@ -277,7 +277,9 @@ def _save_image(data: bytes, ctype: str, slug: str) -> Optional[str]:
     except OSError:
         log.warning("Could not write notification image %s", path, exc_info=True)
         return None
-    return f"/local/aviary/{name}"
+    # Cache-buster: HA serves /local with a ~month-long max-age, and this URL is
+    # reused per species — without it phones show the previously cached image.
+    return f"/local/aviary/{name}?v={int(time.time())}"
 
 
 async def _fire_event(event_type: str, payload: dict) -> Optional[str]:

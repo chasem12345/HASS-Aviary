@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.1
+
+- **Current images, not cached ones**: seen-bird notifications now use the Frigate
+  integration's live image proxy (like the Frigate blueprint) with a new image-style
+  choice — animated **GIF** (default), snapshot, or thumbnail. The add-on's staged
+  `/local` images (heard birds) get a cache-buster so phones stop showing a
+  days-old cached copy.
+- **Frigate notifications fire at event end**: the species/score are final and the
+  clip exists, so the tap action no longer lands on "event not found".
+- **Cleaner message, no title**: "Northern Cardinal detected on bird camera" /
+  "Wood Thrush heard at yard", with a "New species! " prefix for first-ever species.
+
 ## 0.4.0
 
 - **Notifications for every bird, not just new species**: the add-on now fires an
