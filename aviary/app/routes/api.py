@@ -5,10 +5,11 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Query
+import httpx
+from fastapi import APIRouter, Query, Request
 from fastapi.concurrency import run_in_threadpool
 
-from .. import db, notify, species_info
+from .. import db, ingest, notify, proxy, species_info
 
 router = APIRouter()
 
@@ -58,6 +59,92 @@ def hourly(
 def latest(source: Optional[str] = Query(None), species: Optional[str] = Query(None)):
     """Cheap change marker polled by the Recent page for live refresh."""
     return db.change_marker(source=_norm_source(source), species=species)
+
+
+def _norm_source_action(action: Optional[str]) -> str:
+    return action if action in ("clear", "delete") else "none"
+
+
+async def _source_action(settings, det: dict, action: str) -> Optional[dict]:
+    """Apply the requested action at the detection's source. Returns a status dict.
+
+    'clear' removes the species label but keeps the event (Frigate only — for
+    BirdNET-Go the detection IS the classification, so 'clear' deletes it).
+    """
+    if action == "none":
+        return None
+    try:
+        if det["source"] == "frigate":
+            if not settings.frigate_url:
+                return {"ok": False, "error": "frigate_url not configured"}
+            if action == "clear":
+                status, text = await proxy.call_upstream(
+                    "POST",
+                    proxy.frigate_sub_label_url(settings.frigate_url, det["source_ref"]),
+                    json={"subLabel": ""},
+                )
+            else:
+                status, text = await proxy.call_upstream(
+                    "DELETE", proxy.frigate_event_api_url(settings.frigate_url, det["source_ref"])
+                )
+        else:
+            if not settings.birdnet_url:
+                return {"ok": False, "error": "birdnet_url not configured"}
+            if not det.get("native_id"):
+                return {"ok": False, "error": "no BirdNET-Go id recorded for this detection"}
+            status, text = await proxy.call_upstream(
+                "DELETE", proxy.birdnet_detection_url(settings.birdnet_url, det["native_id"])
+            )
+    except httpx.HTTPError as exc:
+        return {"ok": False, "error": f"source unreachable: {exc}"}
+    if status >= 400:
+        return {"ok": False, "error": f"source returned {status}: {text}"}
+    return {"ok": True, "error": None}
+
+
+def _forget_if_gone(common_name: str) -> None:
+    """After deletions, let the species announce as new again if nothing remains."""
+    if not (db.species_stats(common_name).get("total") or 0):
+        ingest.forget_species(common_name)
+
+
+@router.delete("/detections/{det_id}")
+async def delete_detection(det_id: int, request: Request, source_action: Optional[str] = Query(None)):
+    """Remove a (mis)classified detection. The ref is tombstoned so backfill can't
+    re-import it. ``source_action``: none | clear (drop Frigate's species label,
+    keep the event) | delete (remove the event/detection at the source)."""
+    action = _norm_source_action(source_action)
+    det = await run_in_threadpool(db.detection_by_id, det_id)
+    if det is None:
+        return {"ok": False, "error": "detection not found"}
+    source_result = await _source_action(request.app.state.settings, det, action)
+    await run_in_threadpool(db.delete_detection, det_id)
+    ingest.add_tombstone(det["source"], det["source_ref"])
+    await run_in_threadpool(_forget_if_gone, det["common_name"])
+    return {"ok": True, "common_name": det["common_name"], "source_result": source_result}
+
+
+@router.delete("/species/{name:path}")
+async def delete_species(name: str, request: Request, source_action: Optional[str] = Query(None)):
+    """Remove every detection of a species (e.g. a misclassification-only species),
+    tombstoning each ref, optionally clearing/deleting them at the source too."""
+    action = _norm_source_action(source_action)
+    rows = await run_in_threadpool(db.delete_species, name)
+    if not rows:
+        return {"ok": False, "error": "species not found", "deleted": 0}
+    source_errors = []
+    for det in rows:
+        ingest.add_tombstone(det["source"], det["source_ref"])
+        result = await _source_action(request.app.state.settings, det, action)
+        if result and not result["ok"]:
+            source_errors.append(f"{det['source']} {det['source_ref']}: {result['error']}")
+    ingest.forget_species(name)
+    return {
+        "ok": True,
+        "deleted": len(rows),
+        "source_errors": source_errors[:5],
+        "source_error_count": len(source_errors),
+    }
 
 
 @router.post("/test-notification")

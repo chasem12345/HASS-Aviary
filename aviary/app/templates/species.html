@@ -30,6 +30,9 @@
     <div class="meta">
       {% if stats.frigate_total %}<span class="badge badge-frigate" title="On camera (Frigate)">Seen × {{ stats.frigate_total }}</span>{% endif %}
       {% if stats.birdnet_total %}<span class="badge badge-birdnet" title="Audio (BirdNET-Go)">Heard × {{ stats.birdnet_total }}</span>{% endif %}
+      <button type="button" class="btn btn-sm species-delete" data-species="{{ species }}"
+              title="Remove this species and all {{ stats.total or 0 }} of its detections (e.g. a misclassification)">
+        Remove species…</button>
     </div>
   </div>
 </section>

@@ -94,7 +94,30 @@ async def stream_upstream(request: Request, url: str, fallbacks: tuple[str, ...]
     )
 
 
+async def call_upstream(method: str, url: str, json: Optional[dict] = None) -> tuple[int, str]:
+    """One-off upstream API call (e.g. deleting an event). Returns (status, body[:200]).
+
+    Raises httpx.HTTPError on transport failure; callers surface it to the UI.
+    """
+    if _client is None:
+        raise httpx.TransportError("proxy client not initialized")
+    resp = await _client.request(method, url, json=json)
+    return resp.status_code, resp.text[:200]
+
+
 # ------------------------------------------------------------------- URL builders
+
+def frigate_event_api_url(base: str, event_id: str) -> str:
+    return f"{base}/api/events/{event_id}"
+
+
+def frigate_sub_label_url(base: str, event_id: str) -> str:
+    return f"{base}/api/events/{event_id}/sub_label"
+
+
+def birdnet_detection_url(base: str, native_id: str) -> str:
+    return f"{base}/api/v2/detections/{quote(str(native_id), safe='')}"
+
 
 def frigate_clip_url(base: str, event_id: str) -> str:
     return f"{base}/api/events/{event_id}/clip.mp4"

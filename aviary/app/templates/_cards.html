@@ -1,5 +1,7 @@
 {% macro detection_card(d, highlight_after=None) %}
 <article class="det-card{{ ' new' if highlight_after and d.start_time > highlight_after }}">
+  <button type="button" class="det-delete" title="Remove this detection (misclassified?)"
+          data-id="{{ d.id }}" data-source="{{ d.source }}" data-name="{{ d.common_name }}">×</button>
   <div class="det-media">
     {% if d.source == 'frigate' %}
       {% if d.has_clip %}

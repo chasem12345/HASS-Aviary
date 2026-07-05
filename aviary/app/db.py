@@ -9,6 +9,7 @@ and the FastAPI event loop cleanly separated.
 from __future__ import annotations
 
 import sqlite3
+import time
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 
@@ -37,6 +38,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_source_ref
     ON detections (source, source_ref);
 CREATE INDEX IF NOT EXISTS idx_detections_start_time ON detections (start_time);
 CREATE INDEX IF NOT EXISTS idx_detections_common_name ON detections (common_name);
+
+-- Tombstones for user-deleted detections: ingest and backfill skip these refs so a
+-- deleted misclassification can't be re-imported from the source's history.
+CREATE TABLE IF NOT EXISTS deleted_refs (
+    source     TEXT NOT NULL,
+    source_ref TEXT NOT NULL,
+    deleted_at REAL NOT NULL,
+    PRIMARY KEY (source, source_ref)
+);
 
 -- Cached per-species reference info (Wikipedia blurb + iNaturalist taxonomy).
 CREATE TABLE IF NOT EXISTS species_info (
@@ -361,6 +371,54 @@ def detection_by_ref(source: str, source_ref: str) -> Optional[dict]:
             (source, source_ref),
         ).fetchone()
     return dict(row) if row else None
+
+
+def delete_detection(det_id: int) -> Optional[dict]:
+    """Delete one detection and tombstone its ref. Returns the deleted row."""
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM detections WHERE id = ?", (det_id,)).fetchone()
+        if row is None:
+            return None
+        conn.execute("DELETE FROM detections WHERE id = ?", (det_id,))
+        conn.execute(
+            "INSERT OR REPLACE INTO deleted_refs (source, source_ref, deleted_at) VALUES (?, ?, ?)",
+            (row["source"], row["source_ref"], time.time()),
+        )
+    return dict(row)
+
+
+def delete_species(common_name: str) -> list[dict]:
+    """Delete every detection of a species (case-insensitive), tombstoning each ref.
+
+    Returns the deleted rows (the API uses their refs/native ids for source-side
+    deletion).
+    """
+    with _connect() as conn:
+        rows = [
+            dict(r) for r in conn.execute(
+                "SELECT * FROM detections WHERE common_name = ? COLLATE NOCASE",
+                (common_name,),
+            ).fetchall()
+        ]
+        if rows:
+            now = time.time()
+            conn.execute(
+                "DELETE FROM detections WHERE common_name = ? COLLATE NOCASE",
+                (common_name,),
+            )
+            conn.executemany(
+                "INSERT OR REPLACE INTO deleted_refs (source, source_ref, deleted_at) VALUES (?, ?, ?)",
+                [(r["source"], r["source_ref"], now) for r in rows],
+            )
+        conn.execute("DELETE FROM species_info WHERE common_name = ? COLLATE NOCASE", (common_name,))
+    return rows
+
+
+def tombstoned_refs() -> list[tuple[str, str]]:
+    """All (source, source_ref) pairs the user has deleted."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT source, source_ref FROM deleted_refs").fetchall()
+    return [(r["source"], r["source_ref"]) for r in rows]
 
 
 def canonical_species(name: str) -> Optional[dict]:

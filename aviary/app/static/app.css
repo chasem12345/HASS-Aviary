@@ -87,6 +87,7 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   overflow: hidden; display: flex; flex-direction: column;
   transition: box-shadow .15s ease, transform .15s ease;
+  position: relative;
 }
 .det-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.10); transform: translateY(-1px); }
 .det-card.new { animation: cardIn .8s ease; box-shadow: 0 0 0 2px var(--accent); }
@@ -206,8 +207,30 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 .hero-card .det-card { border: none; }
 .hero-card .det-card:hover { box-shadow: none; transform: none; }
 
+/* ------------------------------------------------------------ remove detections */
+.det-delete {
+  position: absolute; top: 6px; right: 6px; z-index: 5;
+  width: 24px; height: 24px; border-radius: 50%; border: none;
+  background: rgba(0, 0, 0, .55); color: #fff; font-size: 15px; line-height: 22px;
+  padding: 0; cursor: pointer; opacity: 0; transition: opacity .15s ease;
+}
+.det-card:hover .det-delete, .det-delete:focus { opacity: 1; }
+@media (hover: none) { .det-delete { opacity: .75; } }
+.del-menu {
+  position: absolute; top: 34px; right: 6px; z-index: 30;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .25); overflow: hidden; min-width: 240px;
+}
+.del-menu button {
+  display: block; width: 100%; text-align: left; padding: 9px 12px;
+  background: none; border: none; color: var(--ink); font-size: 13px; cursor: pointer;
+}
+.del-menu button:hover { background: var(--line); }
+.del-menu button.danger { color: #c4634f; }
+.species-delete { color: var(--muted); }
+
 /* ---------------------------------------------------------------- species hero */
-.species-hero { display: flex; gap: 20px; align-items: stretch; }
+.species-hero { display: flex; gap: 20px; align-items: stretch; position: relative; }
 .hero-thumb {
   width: 220px; border-radius: 10px; object-fit: cover; aspect-ratio: 4 / 3;
   background: var(--line); flex: none;

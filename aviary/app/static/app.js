@@ -193,4 +193,97 @@
 
     setInterval(tick, 30000);
   };
+
+  // --------------------------------------------------------- remove detections
+  // Delete buttons open a small menu: remove from Aviary only, or also clear the
+  // species label / delete the event at the source (Frigate / BirdNET-Go).
+  // Delegated so cards injected by the live refresh keep working.
+
+  function deleteMenuItems(ds) {
+    if (ds.species) {
+      return [
+        ["Remove species from Aviary", "none"],
+        ["Remove + clear Frigate labels (keeps video; deletes BirdNET-Go entries)", "clear"],
+        ["Remove + delete events at the source", "delete"],
+      ];
+    }
+    if (ds.source === "frigate") {
+      return [
+        ["Remove from Aviary", "none"],
+        ["Remove + clear species label in Frigate (keeps video)", "clear"],
+        ["Remove + delete Frigate event", "delete"],
+      ];
+    }
+    return [
+      ["Remove from Aviary", "none"],
+      ["Remove + delete from BirdNET-Go", "delete"],
+    ];
+  }
+
+  function closeDeleteMenu() {
+    document.querySelectorAll(".del-menu").forEach((m) => m.remove());
+  }
+
+  function showDeleteMenu(btn) {
+    closeDeleteMenu();
+    const host = btn.closest(".det-card") || btn.closest(".species-hero") || btn.parentElement;
+    const menu = document.createElement("div");
+    menu.className = "del-menu";
+    deleteMenuItems(btn.dataset).forEach(([label, action]) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      if (action !== "none") b.classList.add("danger");
+      b.addEventListener("click", () => { closeDeleteMenu(); doDelete(btn.dataset, action); });
+      menu.appendChild(b);
+    });
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", closeDeleteMenu);
+    menu.appendChild(cancel);
+    host.appendChild(menu);
+  }
+
+  async function doDelete(ds, action) {
+    const isSpecies = !!ds.species;
+    const path = isSpecies
+      ? "/species/" + encodeURIComponent(ds.species)
+      : "/detections/" + ds.id;
+    try {
+      const res = await fetch(API + path + "?source_action=" + action, { method: "DELETE" });
+      const data = await res.json();
+      if (!data.ok) {
+        alert("Remove failed: " + (data.error || res.status));
+        return;
+      }
+      const sr = data.source_result;
+      if (sr && sr.ok === false) {
+        alert("Removed from Aviary, but the source action failed: " + sr.error);
+      } else if (data.source_error_count) {
+        alert("Removed from Aviary; " + data.source_error_count + " source action(s) failed:\n" +
+              data.source_errors.join("\n"));
+      }
+      if (isSpecies) {
+        window.location = (BASE || "") + "/species";
+      } else {
+        const b = document.querySelector('.det-delete[data-id="' + ds.id + '"]');
+        const card = b && b.closest(".det-card");
+        if (card) card.remove();
+      }
+    } catch (e) {
+      alert("Remove failed: " + e);
+    }
+  }
+
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".det-delete, .species-delete");
+    if (btn) {
+      e.preventDefault();
+      e.stopPropagation();
+      showDeleteMenu(btn);
+      return;
+    }
+    if (!e.target.closest(".del-menu")) closeDeleteMenu();
+  });
 })();

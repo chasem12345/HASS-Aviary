@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.4
+
+- **Remove misclassifications**: every detection card gets a × button and species
+  pages a "Remove species…" button. Options per removal: Aviary only, also **clear
+  the species label in Frigate** (keeps the video), or also **delete the
+  event/detection at the source** (Frigate event or BirdNET-Go detection).
+- Removed detections are **tombstoned**, so the startup backfill can't re-import
+  them from the source's history. If a species' last detection is removed, a
+  genuine future detection announces as a new species again.
+
 ## 0.4.3
 
 - **One bird, one species**: species names are now unified across sources at ingest.

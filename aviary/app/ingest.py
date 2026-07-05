@@ -27,8 +27,11 @@ _ignore_unclassified = False
 #    Frigate sends several MQTT messages per event (new/update/end) that upsert the
 #    same row — announce each detection exactly once. Insertion-ordered dict trimmed
 #    to a cap so memory stays bounded.
+#  - _tombstones: refs the user deleted; ingest and backfill silently drop these so
+#    a removed misclassification can't come back from the source's history.
 _known_species: set[str] = set()
 _announced_refs: dict[str, None] = {}
+_tombstones: set[str] = set()
 _ANNOUNCED_CAP = 4096
 _known_lock = threading.Lock()
 _loop: Optional[asyncio.AbstractEventLoop] = None
@@ -49,8 +52,22 @@ def seed_notify_state() -> None:
         _known_species.update(name.lower() for name in db.distinct_species())
         for source, ref in db.recent_refs(time.time() - 3600):
             _announced_refs[f"{source}:{ref}"] = None
+        _tombstones.update(f"{s}:{r}" for s, r in db.tombstoned_refs())
         species, refs = len(_known_species), len(_announced_refs)
     log.info("Seeded notification state: %d known species, %d recent refs.", species, refs)
+
+
+def add_tombstone(source: str, source_ref: str) -> None:
+    """Mark a deleted ref so re-ingest (live or backfill) skips it."""
+    with _known_lock:
+        _tombstones.add(f"{source}:{source_ref}")
+
+
+def forget_species(common_name: str) -> None:
+    """Drop a species from the known set (after its last detection was deleted),
+    so a genuine future detection announces as a new species again."""
+    with _known_lock:
+        _known_species.discard(common_name.lower())
 
 
 def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -76,6 +93,11 @@ def store_row(row: Optional[dict], live: bool = True, announce: bool = True) -> 
         return False
     if _ignore_unclassified and is_unclassified(row):
         log.debug("Skipping unclassified %s detection (%s)", row["source"], row["source_ref"])
+        return False
+    with _known_lock:
+        tombstoned = f"{row['source']}:{row['source_ref']}" in _tombstones
+    if tombstoned:
+        log.debug("Skipping deleted %s detection (%s)", row["source"], row["source_ref"])
         return False
     if not is_unclassified(row):
         _canonicalize(row)

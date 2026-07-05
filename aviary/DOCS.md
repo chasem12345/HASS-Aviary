@@ -33,6 +33,22 @@ dashboard embedded in the Home Assistant sidebar.
 - **Species pages** show totals, first/last seen, best confidence, and per-day /
   hour-of-day activity charts for that species.
 
+## Removing misclassifications
+
+Classifiers get it wrong sometimes (a sparrow labeled as a heron). Hover a detection
+card and click **×**, or use **Remove species…** on a species page, then pick:
+
+- **Remove from Aviary** — deletes it here only.
+- **Remove + clear species label in Frigate** — also blanks the event's `sub_label`
+  at the source, so the video stays in Frigate as a plain "bird" event.
+- **Remove + delete at the source** — also deletes the Frigate event (clip and all)
+  or the BirdNET-Go detection.
+
+Removed detections are tombstoned: the startup backfill will not re-import them.
+Source-side actions need `frigate_url` / `birdnet_url` to be reachable; BirdNET-Go
+deletion requires its API to allow it (and the detection's BirdNET-Go id to be
+known, which is the case for detections ingested from current builds).
+
 ## Bird notifications
 
 Aviary fires an `aviary_detection` event on the Home Assistant event bus for **every
