@@ -23,6 +23,10 @@ dashboard embedded in the Home Assistant sidebar.
   the source deletes the underlying media. BirdNET-Go audio is resolved via its v2
   by-id API when the detection id is known (with the legacy `/clips/` path as a
   fallback), and audio cards show the detection's spectrogram when available.
+- The **⬇ video** link on video cards downloads the clip **remuxed into a standard
+  MP4** (ffmpeg `-c copy`, lossless) with a correct duration header — clips saved
+  straight from the media player are streaming MP4s that report 00:00 length and can
+  fail upload validation elsewhere (e.g. Discord).
 - Where there's no Frigate snapshot to show (audio-only species, detections without media),
   Aviary shows a **generic photo of the species** pulled from BirdNET-Go's image cache
   (`GET /api/v2/media/species-image`, sourced from Wikipedia/AviCommons). This needs a

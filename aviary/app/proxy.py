@@ -94,6 +94,23 @@ async def stream_upstream(request: Request, url: str, fallbacks: tuple[str, ...]
     )
 
 
+async def fetch_to_file(url: str, dest: str) -> bool:
+    """Stream an upstream URL into a local file. Returns False on any failure."""
+    if _client is None:
+        return False
+    try:
+        async with _client.stream("GET", url) as resp:
+            if resp.status_code != 200:
+                return False
+            with open(dest, "wb") as f:
+                async for chunk in resp.aiter_bytes():
+                    f.write(chunk)
+        return True
+    except (httpx.HTTPError, OSError) as exc:
+        log.warning("Download from %s failed: %s", url, exc)
+        return False
+
+
 async def call_upstream(method: str, url: str, json: Optional[dict] = None) -> tuple[int, str]:
     """One-off upstream API call (e.g. deleting an event). Returns (status, body[:200]).
 

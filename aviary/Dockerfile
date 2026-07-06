@@ -7,7 +7,9 @@ ENV LANG=C.UTF-8 \
 
 # tzdata: Supervisor passes the host TZ; without zoneinfo present, localtime-based
 # charts ("per day" / "by hour" / the Today boundary) silently run in UTC.
-RUN apk add --no-cache tzdata
+# ffmpeg: remuxes downloaded clips into standard MP4s with a real duration header
+# (Frigate's streaming clips report 00:00 and fail upload validation elsewhere).
+RUN apk add --no-cache tzdata ffmpeg
 
 # The HA base-python images already ship Python 3 + pip.
 COPY requirements.txt /tmp/requirements.txt

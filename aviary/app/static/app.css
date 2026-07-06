@@ -228,6 +228,8 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 .del-menu button:hover { background: var(--line); }
 .del-menu button.danger { color: #c4634f; }
 .species-delete { color: var(--muted); }
+.dl-link { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.dl-link:hover { color: var(--accent); text-decoration: none; }
 
 /* ---------------------------------------------------------------- species hero */
 .species-hero { display: flex; gap: 20px; align-items: stretch; position: relative; }

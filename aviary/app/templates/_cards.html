@@ -47,6 +47,10 @@
     <div class="meta sub">
       {% if d.location %}<span>{{ d.location }}</span>{% endif %}
       <span title="{{ d.start_time | fmt_time }}">{{ d.start_time | fmt_rel }}</span>
+      {% if d.source == 'frigate' and d.has_clip %}
+      <a class="dl-link" title="Download video — remuxed so the duration shows correctly when shared"
+         href="{{ u('frigate_download', event_id=d.source_ref) }}">⬇ video</a>
+      {% endif %}
     </div>
   </div>
 </article>

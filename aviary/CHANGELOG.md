@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.5
+
+- **Shareable video downloads**: video cards get a "⬇ video" link that remuxes the
+  Frigate clip through ffmpeg (`-c copy`, lossless) into a standard MP4 with a real
+  duration header. Clips saved from the media player are streaming MP4s that report
+  00:00 length and fail upload validation (e.g. Discord treats them as empty);
+  remuxed downloads pass. Files are named `<species>-<timestamp>.mp4`.
+
 ## 0.4.4
 
 - **Remove misclassifications**: every detection card gets a × button and species
