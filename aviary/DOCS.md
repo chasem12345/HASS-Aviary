@@ -36,6 +36,9 @@ dashboard embedded in the Home Assistant sidebar.
   paginates with *Load older*, and refreshes itself (~30s) as new detections arrive.
 - **Species pages** show totals, first/last seen, best confidence, and per-day /
   hour-of-day activity charts for that species.
+- Species pages also offer a **reference call** — a community-confirmed recording of that
+  species from iNaturalist — so you can hear what the bird actually sounds like and judge
+  a BirdNET-Go classification for yourself. See [Reference calls](#reference-calls).
 
 ## Removing misclassifications
 
@@ -47,11 +50,71 @@ card and click **×**, or use **Remove species…** on a species page, then pick
   at the source, so the video stays in Frigate as a plain "bird" event.
 - **Remove + delete at the source** — also deletes the Frigate event (clip and all)
   or the BirdNET-Go detection.
+- **Blacklist — remove and never record again** — see below.
 
 Removed detections are tombstoned: the startup backfill will not re-import them.
 Source-side actions need `frigate_url` / `birdnet_url` to be reachable; BirdNET-Go
 deletion requires its API to allow it (and the detection's BirdNET-Go id to be
 known, which is the case for detections ingested from current builds).
+
+### Blacklisting a species
+
+Removing is retroactive: if a classifier is *reliably* wrong about a species, it comes
+straight back on the next detection. Blacklisting stops that permanently.
+
+**Blacklist — remove and never record again** (on the **Remove species…** menu) deletes
+every detection of the species and then refuses it at ingest from that point on — for
+**both** live MQTT and the startup backfill. A blacklisted species produces no rows, so
+it never appears in stats or charts, and no `aviary_detection` event fires for it, so it
+can't notify either.
+
+Blacklisting captures the species' **scientific name** as well as its common name, and
+matches on both. This matters because Frigate's classifier can emit scientific names —
+and once the species' rows are deleted, Aviary has nothing left to map that label onto a
+common name from.
+
+Review and undo the list under **Settings → Blacklisted species**. *Allow again* re-opens
+ingest for the species; it does **not** restore the detections that were deleted when you
+blacklisted it — those are gone.
+
+> The notification blueprint has its own `blacklist` option (see below). That one only
+> silences notifications while still recording the species. Use it when you want the data
+> but not the alerts; use the blacklist here when you want neither.
+
+## Reference calls
+
+Each species page lazily loads a **reference recording** from
+[iNaturalist](https://www.inaturalist.org) — the quickest way to sanity-check an audio
+classification against a known example of the species.
+
+- Only **research-grade** observations are used (the identification has been confirmed by
+  the community), under a reusable Creative Commons licence. The recordist and licence are
+  always shown, with a link through to the original observation.
+- No API key or configuration is needed, and it works even if Frigate and BirdNET-Go are
+  unreachable.
+- Results are cached in Aviary's database for 30 days, so each species hits the API at most
+  once a month. The audio itself is not cached — it's streamed from iNaturalist on demand,
+  the same way Frigate and BirdNET-Go media are.
+- If iNaturalist has no suitable recording for a species, the card is simply not shown.
+
+## Pokédex mode
+
+**Settings → Theme → Pokédex mode** reskins Aviary as a field registry. It reuses the
+distinction Aviary already tracks — BirdNET-Go **heard** it, Frigate **saw** it — as the
+two states of a dex entry:
+
+- **HEARD** — the bird has been detected by audio only. The entry stays a darkened
+  silhouette, like an encountered-but-uncaught species.
+- **SEEN** — a camera has caught it, so the entry is complete and shows its photo.
+- Species get **registry numbers** in order of first detection, and the species index shows
+  a `REGISTRY seen/total` completion readout.
+
+The theme is stored in Aviary's database rather than the browser, so it applies to every
+device that opens the panel and pages render already themed (no flash of the wrong
+colours). Switched off, Aviary follows your system's light/dark preference as before.
+
+Aviary has no regional species checklist, so the registry only contains birds you've
+actually detected — there are no blank "not yet encountered" entries to fill in.
 
 ## Bird notifications
 
@@ -127,6 +190,9 @@ Notes:
 | `notify_new_species` | Fire `aviary_detection` HA events for live detections (default `true`). See *Bird notifications*. |
 | `mqtt_host` / `mqtt_port` / `mqtt_user` / `mqtt_password` | Optional broker overrides. Leave `mqtt_host` empty to use the HA Mosquitto broker automatically. |
 | `log_level` | Logging verbosity. |
+
+Changing any of these needs an add-on restart. The **Settings** page inside Aviary holds
+the options that don't: the theme and the species blacklist both apply immediately.
 
 ## Local development (outside Home Assistant)
 

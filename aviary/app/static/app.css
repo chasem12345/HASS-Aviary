@@ -7,10 +7,16 @@
   --accent: #2f7d5b;
   --frigate: #3b6ea5;
   --birdnet: #b5651d;
+  --warn: #d9a441;
+  --danger: #c4634f;
   --radius: 12px;
+  --font-body: -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
 }
+/* Excludes the dex theme, which sets its own palette and must not be overridden by the
+   viewer's OS preference. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="dex"]) {
     --bg: #12171c; --card: #1b2229; --ink: #e6ebf0; --muted: #93a1af;
     --line: #2a333c; --accent: #4cc38a;
   }
@@ -18,7 +24,7 @@
 * { box-sizing: border-box; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
-  font: 15px/1.5 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+  font: 15px/1.5 var(--font-body);
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -46,7 +52,7 @@ a:hover { text-decoration: underline; }
   background: var(--line); border-radius: 20px; padding: 4px 10px; font-size: 13px;
 }
 .notify-result { font-size: 12px; color: var(--muted); }
-.notify-result.err { color: #c4634f; }
+.notify-result.err { color: var(--danger); }
 .filter-chip a { margin-left: 6px; color: var(--muted); }
 
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 18px; }
@@ -140,8 +146,8 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 }
 .conf-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--muted); }
 .conf-high .conf-bar > span { background: var(--accent); }
-.conf-mid  .conf-bar > span { background: #d9a441; }
-.conf-low  .conf-bar > span { background: #c4634f; }
+.conf-mid  .conf-bar > span { background: var(--warn); }
+.conf-low  .conf-bar > span { background: var(--danger); }
 
 /* --------------------------------------------------------------------- species about */
 .species-about .about-descriptor {
@@ -226,7 +232,7 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
   background: none; border: none; color: var(--ink); font-size: 13px; cursor: pointer;
 }
 .del-menu button:hover { background: var(--line); }
-.del-menu button.danger { color: #c4634f; }
+.del-menu button.danger { color: var(--danger); }
 .species-delete { color: var(--muted); }
 .dl-link { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .dl-link:hover { color: var(--accent); text-decoration: none; }
@@ -298,6 +304,39 @@ img.overlay-img {
   object-fit: cover; border-radius: inherit;
 }
 
+/* ---------------------------------------------------------------- theme toggle */
+.theme-toggle {
+  margin-left: auto; flex: none; cursor: pointer;
+  background: none; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--muted); font: inherit; font-size: 12px; padding: 4px 12px;
+}
+.theme-toggle:hover { color: var(--ink); border-color: var(--accent); }
+/* Dex-only chrome: inert in the default theme. */
+.dex-led, .dex-state, .page-title .registry { display: none; }
+
+/* -------------------------------------------------------------------- settings */
+.setting-row { display: flex; gap: 20px; align-items: flex-start; }
+.setting-copy { flex: 1; }
+.setting-name { font-weight: 600; margin-bottom: 2px; }
+.setting-help { color: var(--muted); font-size: 13px; margin: 0 0 4px; max-width: 68ch; }
+.setting-row .btn { flex: none; }
+.blacklist-table em { color: var(--muted); font-style: italic; margin-left: 6px; font-size: 12px; }
+.card h2 .count {
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  background: var(--line); border-radius: 20px; padding: 2px 9px; margin-left: 6px;
+}
+
+/* ------------------------------------------------------------- reference audio */
+.ref-audio .ref-help { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+.ref-audio audio { width: 100%; max-width: 460px; display: block; }
+/* Attribution is a licence condition for the CC recordings served here — it is never
+   decoration, so it stays legible rather than being faded out. */
+.ref-credit {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
+  margin-top: 10px; font-size: 12px; color: var(--muted);
+}
+.ref-attribution { max-width: 60ch; }
+
 @media (max-width: 720px) {
   .stats { grid-template-columns: repeat(2, 1fr); }
   .grid2, .grid2-uneven { grid-template-columns: 1fr; }
@@ -307,4 +346,125 @@ img.overlay-img {
   .species-hero { flex-direction: column; }
   .hero-thumb { width: 100%; aspect-ratio: 16 / 9; }
   .hero-stats { gap: 18px; }
+  .setting-row { flex-direction: column; gap: 10px; }
+}
+
+/* ==========================================================================
+   Pokedex theme (data-theme="dex")
+   --------------------------------------------------------------------------
+   A field-registry reskin of the same pages. The heard/seen split Aviary already
+   tracks maps onto a dex's two states: HEARD is an encounter (silhouette), SEEN is
+   a completed entry. Everything below is additive and scoped, so the default theme
+   is untouched.
+   ========================================================================== */
+:root[data-theme="dex"] {
+  --bg: #1b1d21;
+  --card: #26292e;
+  --ink: #f2f4f6;
+  --muted: #8b939c;
+  --line: #34383e;
+  --accent: #d64b3f;        /* dex casing red */
+  --frigate: #c9a227;       /* SEEN — entry complete */
+  --birdnet: #3d7dca;       /* HEARD — encountered */
+  --warn: #e0a72c;
+  --danger: #e0553f;
+  --radius: 6px;
+  --dex-screen: #8bac5f;    /* LED readout green */
+  --font-body: var(--font-mono);
+}
+
+/* --- casing: red topbar with indicator lamps --- */
+[data-theme="dex"] .topbar {
+  background: linear-gradient(180deg, var(--accent), #a83428);
+  border-bottom: 3px solid #7d2118;
+}
+[data-theme="dex"] .brand { display: flex; align-items: center; gap: 10px; color: #fff; }
+[data-theme="dex"] .dex-led {
+  display: block; width: 22px; height: 22px; border-radius: 50%; flex: none;
+  background: radial-gradient(circle at 33% 30%, #dff1ff 0 14%, #4aa3e8 42%, #14568f 100%);
+  box-shadow: 0 0 0 3px #f4f6f8, 0 0 10px 2px rgba(74, 163, 232, .75);
+}
+[data-theme="dex"] .topbar nav a {
+  color: rgba(255, 255, 255, .78); text-transform: uppercase;
+  font-size: 12px; letter-spacing: .1em;
+}
+[data-theme="dex"] .topbar nav a.active {
+  color: #fff; border-bottom-color: var(--dex-screen);
+}
+[data-theme="dex"] .theme-toggle {
+  color: #fff; border-color: rgba(255, 255, 255, .55);
+  text-transform: uppercase; letter-spacing: .08em;
+}
+[data-theme="dex"] .theme-toggle:hover {
+  border-color: #fff; background: rgba(0, 0, 0, .18);
+}
+
+/* --- readouts --- */
+[data-theme="dex"] .page-title,
+[data-theme="dex"] .card h2,
+[data-theme="dex"] .day-head {
+  text-transform: uppercase; letter-spacing: .08em;
+}
+[data-theme="dex"] .page-title .registry {
+  display: inline-block; font-size: 12px; letter-spacing: .12em;
+  color: var(--dex-screen); background: #10130f;
+  border: 1px solid #3d4a33; border-radius: 4px; padding: 3px 10px;
+}
+/* The registry readout already carries the species count. */
+[data-theme="dex"] .page-title .count { display: none; }
+[data-theme="dex"] .tile-meta .badge { text-transform: uppercase; }
+[data-theme="dex"] .stat .num,
+[data-theme="dex"] .hero-stats .num { color: var(--dex-screen); }
+
+/* --- registry entries --- */
+[data-theme="dex"] .species-tile,
+[data-theme="dex"] .det-card,
+[data-theme="dex"] .species-hero {
+  border-width: 2px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .35);
+}
+/* Entry number plate, from data-dex on the tile/hero. */
+[data-theme="dex"] .species-tile[data-dex]::before,
+[data-theme="dex"] .species-hero[data-dex]::before {
+  content: "No." attr(data-dex);
+  position: absolute; top: 0; left: 0; z-index: 4;
+  background: #10130f; color: var(--dex-screen);
+  font-size: 11px; letter-spacing: .08em; padding: 2px 8px;
+  border-right: 1px solid #3d4a33; border-bottom: 1px solid #3d4a33;
+  border-bottom-right-radius: 4px;
+}
+[data-theme="dex"] .species-tile { position: relative; }
+[data-theme="dex"] .tile-name { text-transform: uppercase; letter-spacing: .04em; }
+
+/* HEARD vs SEEN state stamp. */
+[data-theme="dex"] .dex-state {
+  display: block; position: absolute; bottom: 6px; right: 6px; z-index: 4;
+  font-size: 10px; font-weight: 700; letter-spacing: .1em;
+  padding: 2px 7px; border-radius: 3px; color: #14170f;
+  background: var(--frigate);
+}
+[data-theme="dex"] .heard-only .dex-state { background: var(--birdnet); color: #fff; }
+/* A species only ever heard stays a silhouette until a camera completes the entry. */
+[data-theme="dex"] .species-tile.heard-only .tile-thumb img {
+  filter: grayscale(1) brightness(.45) contrast(1.15);
+}
+[data-theme="dex"] .species-tile.heard-only .thumb-mark { filter: grayscale(1); opacity: .35; }
+[data-theme="dex"] .species-hero.heard-only .hero-thumb {
+  filter: grayscale(1) brightness(.55) contrast(1.1);
+}
+
+[data-theme="dex"] .badge { border-radius: 3px; letter-spacing: .08em; }
+[data-theme="dex"] .badge-frigate { color: #14170f; }
+[data-theme="dex"] .new-badge { border-radius: 3px; letter-spacing: .1em; color: #fff; }
+
+/* --- reference call reads as a dex cry readout --- */
+[data-theme="dex"] .ref-audio h2::after {
+  content: " · CRY"; color: var(--dex-screen);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-theme="dex"] .dex-led { animation: dexLed 3.2s ease-in-out infinite; }
+  @keyframes dexLed {
+    0%, 100% { box-shadow: 0 0 0 3px #f4f6f8, 0 0 10px 2px rgba(74, 163, 232, .75); }
+    50%      { box-shadow: 0 0 0 3px #f4f6f8, 0 0 16px 5px rgba(74, 163, 232, .95); }
+  }
 }

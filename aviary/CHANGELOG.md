@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.5.0
+
+- **Species blacklist**: "Blacklist — remove and never record again" on the
+  **Remove species…** menu deletes every detection of a species and then refuses it at
+  ingest permanently — live MQTT *and* startup backfill. Blacklisted species produce no
+  rows at all, so they never reach stats, charts, or notifications. Removing a species
+  used to be retroactive only; a classifier that was reliably wrong brought it back on
+  the next detection.
+  - Matches the **scientific name** as well as the common name. Frigate's classifier can
+    emit scientific names, and once a species' rows are deleted there's nothing left to
+    map such a label onto a common name from — so the scientific name is captured before
+    the purge.
+  - Review and undo under **Settings → Blacklisted species**. *Allow again* re-opens
+    ingest but does not restore the deleted detections.
+  - Distinct from the notification blueprint's `blacklist`, which only silences alerts
+    while still recording the species.
+- **Reference calls**: species pages lazily load a community-confirmed (research-grade)
+  recording of the species from iNaturalist, so an audio classification can be compared
+  against a known example. Recordist and licence are always shown, with a link to the
+  original observation. No API key or configuration needed; metadata is cached for 30
+  days and the audio is streamed on demand rather than stored.
+- **Pokédex mode** (**Settings → Theme**): reskins Aviary as a field registry, reusing the
+  heard/seen split it already tracks — a bird BirdNET-Go has only **heard** stays a
+  darkened silhouette until a camera **sees** it and completes the entry. Adds registry
+  numbers (by order of first detection) and a `REGISTRY seen/total` completion readout.
+  Stored server-side, so it applies on every device and pages render already themed.
+- **New Settings page** for preferences that apply immediately, unlike add-on options
+  which need a restart.
+- Charts, confidence bars and menu accents now read their colours from the active theme
+  instead of hardcoded values, so they follow both the light/dark and Pokédex themes.
+- iNaturalist taxon lookups are constrained to birds, so a bird's common name can no
+  longer match an unrelated non-bird taxon.
+
 ## 0.4.5
 
 - **Shareable video downloads**: video cards get a "⬇ video" link that remuxes the

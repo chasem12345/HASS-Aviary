@@ -5,7 +5,8 @@
   <a class="back" href="{{ u('dashboard') }}">← Dashboard</a>
 </div>
 
-<section class="card species-hero">
+<section class="card species-hero{{ ' heard-only' if not stats.frigate_total }}"
+         {% if dex_no %}data-dex="{{ '%03d' | format(dex_no) }}"{% endif %}>
   {% if thumb %}
   <img class="hero-thumb" alt="{{ species }}"
        src="{{ u('frigate_snapshot', event_id=thumb) }}">
@@ -34,6 +35,19 @@
               title="Remove this species and all {{ stats.total or 0 }} of its detections (e.g. a misclassification)">
         Remove species…</button>
     </div>
+  </div>
+</section>
+
+{# Reference recording from iNaturalist, to compare against what BirdNET-Go classified.
+   Lazy-loaded and hidden unless a licensed research-grade recording exists. #}
+<section id="ref-audio" class="card ref-audio" hidden>
+  <h2>Reference call</h2>
+  <p class="ref-help">A confirmed recording of this species — compare it against the
+    detections below.</p>
+  <audio controls preload="none"></audio>
+  <div class="ref-credit">
+    <span class="ref-attribution"></span>
+    <a class="ref-link" target="_blank" rel="noopener noreferrer" hidden>View on iNaturalist →</a>
   </div>
 </section>
 

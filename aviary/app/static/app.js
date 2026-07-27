@@ -19,9 +19,24 @@
     return res.json();
   }
 
+  // Read theme colors from the live CSS custom properties rather than duplicating them
+  // here, so charts follow whichever theme is active (including the dex theme, which
+  // ignores the OS light/dark preference entirely).
+  function cssVar(name, fallback) {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name);
+    return (value || "").trim() || fallback;
+  }
+
   function axisColor() {
-    const dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-    return dark ? "#93a1af" : "#6b7785";
+    return cssVar("--muted", "#6b7785");
+  }
+
+  // rgba() from a #rrggbb custom property, for chart area fills.
+  function tint(hex, alpha) {
+    const m = /^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(hex.trim());
+    if (!m) return hex;
+    const [r, g, b] = m.slice(1).map((h) => parseInt(h, 16));
+    return "rgba(" + r + "," + g + "," + b + "," + alpha + ")";
   }
 
   function chartError(canvasId) {
@@ -48,13 +63,14 @@
   async function perDayChart(params) {
     try {
       const perDay = await getJson("/per-day", params);
+      const accent = cssVar("--accent", "#2f7d5b");
       new Chart(document.getElementById("perDay"), {
         type: "line",
         data: {
           labels: perDay.data.map((d) => d.day),
           datasets: [{
             data: perDay.data.map((d) => d.count),
-            borderColor: "#2f7d5b", backgroundColor: "rgba(47,125,91,.15)",
+            borderColor: accent, backgroundColor: tint(accent, 0.15),
             fill: true, tension: 0.3, pointRadius: 2,
           }],
         },
@@ -70,7 +86,10 @@
         type: "bar",
         data: {
           labels: hourly.data.map((d) => String(d.hour).padStart(2, "0")),
-          datasets: [{ data: hourly.data.map((d) => d.count), backgroundColor: "#3b6ea5" }],
+          datasets: [{
+            data: hourly.data.map((d) => d.count),
+            backgroundColor: cssVar("--frigate", "#3b6ea5"),
+          }],
         },
         options: commonOptions(),
       });
@@ -139,10 +158,87 @@
     } catch (e) { /* leave the About card hidden */ }
   }
 
+  async function loadReferenceAudio(name, scientific) {
+    const el = document.getElementById("ref-audio");
+    if (!el) return;
+    try {
+      const info = await getJson("/reference-audio", { name: name, sci: scientific });
+      if (!info || !info.ok || !info.media_url) return;
+      el.querySelector("audio").src = info.media_url;
+      // Attribution is a licence condition for these CC recordings, so the card is
+      // only revealed once we have something to credit. iNaturalist's attribution
+      // string already names the licence ("... some rights reserved (CC BY-NC)"), so
+      // the bare code is only appended when it would otherwise go unstated.
+      const license = (info.license_code || "").toUpperCase();
+      const attribution = info.attribution || "";
+      const stated = license && attribution.toUpperCase().replace(/[\s-]/g, "")
+        .includes(license.replace(/[\s-]/g, ""));
+      const credit = [attribution, !stated ? license : ""].filter(Boolean).join(" · ");
+      if (!credit) return;
+      el.querySelector(".ref-attribution").textContent = credit;
+      if (info.observation_url) {
+        const link = el.querySelector(".ref-link");
+        link.href = info.observation_url;
+        link.hidden = false;
+      }
+      el.hidden = false;
+    } catch (e) { /* leave the reference card hidden */ }
+  }
+
   window.aviaryInitSpecies = function (opts) {
     perDayChart({ species: opts.species, days: 30 });
     hourlyChart({ species: opts.species, days: 3650 });
     loadSpeciesInfo(opts.species, opts.scientific);
+    loadReferenceAudio(opts.species, opts.scientific);
+  };
+
+  // ---------------------------------------------------------------- theme toggle
+  // The theme is stored server-side (so server-rendered pages can stamp it without a
+  // flash), which means switching is a POST followed by a reload.
+
+  async function setTheme(next) {
+    try {
+      const res = await fetch(API + "/theme?theme=" + encodeURIComponent(next), {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(res.status);
+      window.location.reload();
+    } catch (e) {
+      alert("Couldn't switch theme: " + e);
+    }
+  }
+
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-theme-next]");
+    if (!btn) return;
+    e.preventDefault();
+    setTheme(btn.dataset.themeNext);
+  });
+
+  // -------------------------------------------------------------------- settings
+
+  window.aviaryInitSettings = function () {
+    document.querySelectorAll(".blacklist-remove").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const species = btn.dataset.species;
+        btn.disabled = true;
+        try {
+          const res = await fetch(API + "/blacklist/" + encodeURIComponent(species), {
+            method: "DELETE",
+          });
+          const data = await res.json();
+          if (!data.ok) {
+            alert("Couldn't un-blacklist: " + (data.error || res.status));
+            btn.disabled = false;
+            return;
+          }
+          window.location.reload();
+        } catch (err) {
+          alert("Couldn't un-blacklist: " + err);
+          btn.disabled = false;
+        }
+      });
+    });
   };
 
   // ------------------------------------------------------------- live refresh
@@ -205,6 +301,7 @@
         ["Remove species from Aviary", "none"],
         ["Remove + clear Frigate labels (keeps video; deletes BirdNET-Go entries)", "clear"],
         ["Remove + delete events at the source", "delete"],
+        ["Blacklist — remove and never record again", "blacklist"],
       ];
     }
     if (ds.source === "frigate") {
@@ -247,11 +344,23 @@
 
   async function doDelete(ds, action) {
     const isSpecies = !!ds.species;
-    const path = isSpecies
-      ? "/species/" + encodeURIComponent(ds.species)
-      : "/detections/" + ds.id;
+    // Blacklisting purges the same way "remove species" does, but also refuses the
+    // species at ingest from then on — irreversible for the history, so confirm.
+    const blacklisting = action === "blacklist";
+    if (blacklisting && !window.confirm(
+      "Blacklist " + ds.species + "?\n\n" +
+      "Every detection of it is deleted, and new ones are ignored from now on " +
+      "(no stats, no notifications). You can allow it again from Settings, but the " +
+      "deleted detections do not come back."
+    )) return;
+
+    const path = blacklisting
+      ? "/blacklist?species=" + encodeURIComponent(ds.species)
+      : (isSpecies
+        ? "/species/" + encodeURIComponent(ds.species) + "?source_action=" + action
+        : "/detections/" + ds.id + "?source_action=" + action);
     try {
-      const res = await fetch(API + path + "?source_action=" + action, { method: "DELETE" });
+      const res = await fetch(API + path, { method: blacklisting ? "POST" : "DELETE" });
       const data = await res.json();
       if (!data.ok) {
         alert("Remove failed: " + (data.error || res.status));

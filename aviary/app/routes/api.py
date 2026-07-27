@@ -9,7 +9,8 @@ import httpx
 from fastapi import APIRouter, Query, Request
 from fastapi.concurrency import run_in_threadpool
 
-from .. import db, ingest, notify, proxy, species_info
+from .. import db, ingest, notify, proxy, species_audio, species_info
+from . import ingress_url, set_theme
 
 router = APIRouter()
 
@@ -147,6 +148,78 @@ async def delete_species(name: str, request: Request, source_action: Optional[st
     }
 
 
+# ------------------------------------------------------------------------- blacklist
+# Deliberately *not* nested under /species/{name} — the existing
+# `DELETE /species/{name:path}` route would greedily match a trailing "/blacklist" as
+# part of the species name.
+
+@router.get("/blacklist")
+async def list_blacklist():
+    """Species that are never ingested, for the settings page."""
+    return {"entries": await run_in_threadpool(db.blacklist_entries)}
+
+
+@router.post("/blacklist")
+async def add_blacklist(
+    request: Request,
+    species: str = Query(..., min_length=1),
+    source_action: Optional[str] = Query(None),
+):
+    """Blacklist a species: purge everything it has, then refuse it at ingest forever.
+
+    Same ``source_action`` semantics as ``DELETE /species/{name}``: none | clear | delete.
+    The species' scientific name is captured *before* the purge — afterwards there are no
+    rows left to look it up from, and ingest needs it to recognise Frigate's
+    scientific-name labels (see ``ingest._blacklist_keys``).
+    """
+    action = _norm_source_action(source_action)
+    scientific = await run_in_threadpool(db.scientific_name_for, species)
+
+    rows = await run_in_threadpool(db.delete_species, species)
+    source_errors = []
+    for det in rows:
+        ingest.add_tombstone(det["source"], det["source_ref"])
+        result = await _source_action(request.app.state.settings, det, action)
+        if result and not result["ok"]:
+            source_errors.append(f"{det['source']} {det['source_ref']}: {result['error']}")
+    ingest.forget_species(species)
+
+    await run_in_threadpool(db.blacklist_add, species, scientific, 1 if rows else 0)
+    ingest.add_blacklist(species, scientific)
+    return {
+        "ok": True,
+        "species": species,
+        "scientific_name": scientific,
+        "deleted": len(rows),
+        "source_errors": source_errors[:5],
+        "source_error_count": len(source_errors),
+    }
+
+
+@router.delete("/blacklist/{name:path}")
+async def remove_blacklist(name: str):
+    """Un-blacklist a species so it can be ingested again.
+
+    Detections purged when it was blacklisted are not restored — they're gone.
+    """
+    entries = await run_in_threadpool(db.blacklist_entries)
+    match = next((e for e in entries if e["common_name"].lower() == name.strip().lower()), None)
+    removed = await run_in_threadpool(db.blacklist_remove, name)
+    if not removed:
+        return {"ok": False, "error": "not blacklisted"}
+    ingest.remove_blacklist(name, match.get("scientific_name") if match else None)
+    return {"ok": True, "species": name}
+
+
+# ----------------------------------------------------------------------------- theme
+
+@router.post("/theme")
+async def set_theme_endpoint(theme: str = Query(..., min_length=1)):
+    """Persist the UI theme ('auto' or 'dex'). Applies to every client immediately."""
+    value = await run_in_threadpool(set_theme, theme)
+    return {"ok": True, "theme": value}
+
+
 @router.post("/test-notification")
 async def test_notification():
     """Fire a test ``aviary_detection`` event so notifications can be verified
@@ -174,3 +247,27 @@ async def species_info_endpoint(
 ):
     """Wikipedia blurb + iNaturalist taxonomy for a species (cached; lazy-loaded)."""
     return await species_info.resolve(name, sci)
+
+
+@router.get("/reference-audio")
+async def reference_audio(
+    request: Request,
+    name: str = Query(..., min_length=1),
+    sci: Optional[str] = Query(None),
+):
+    """Metadata for a species' reference recording (cached; lazy-loaded).
+
+    ``media_url`` points at Aviary's own proxy rather than iNaturalist, so the upstream
+    URL stays server-side and playback works on http-served instances. Attribution and
+    licence are always returned — the UI is required to display them.
+    """
+    info = await species_audio.resolve(name, sci)
+    return {
+        "ok": info["ok"],
+        "attribution": info["attribution"],
+        "license_code": info["license_code"],
+        "observation_url": info["observation_url"],
+        "media_url": (
+            ingress_url(request, "species_reference_audio", name=name) if info["ok"] else None
+        ),
+    }

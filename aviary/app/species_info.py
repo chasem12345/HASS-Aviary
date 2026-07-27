@@ -20,7 +20,7 @@ from . import db
 log = logging.getLogger("aviary.species_info")
 
 # Wikimedia asks for a descriptive User-Agent with contact/URL.
-_UA = "Aviary/HomeAssistantAddon (+https://github.com/chasem12345/HASS-Aviary)"
+USER_AGENT ="Aviary/HomeAssistantAddon (+https://github.com/chasem12345/HASS-Aviary)"
 _TTL_OK = 30 * 86400      # refresh good info monthly
 _TTL_FAIL = 3 * 86400     # retry misses in a few days, not every load
 
@@ -37,7 +37,7 @@ def init_client() -> None:
         _client = httpx.AsyncClient(
             timeout=httpx.Timeout(8.0),
             follow_redirects=True,
-            headers={"User-Agent": _UA, "Accept": "application/json"},
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
         )
 
 
@@ -71,11 +71,29 @@ def _fresh(row: dict) -> bool:
     return age < (_TTL_OK if row.get("ok") else _TTL_FAIL)
 
 
+async def taxon_id(common_name: str, scientific_name: Optional[str] = None) -> Optional[int]:
+    """iNaturalist taxon id for a species, resolving + caching the info row on a miss.
+
+    The taxon lookup already happens for the About card, so this reuses that cached
+    result instead of hitting the taxa endpoint again (see ``species_audio``).
+    """
+    cached = db.get_species_info(common_name)
+    if cached and cached.get("inat_taxon_id"):
+        return int(cached["inat_taxon_id"])
+    if cached and _fresh(cached):
+        # Fresh row with no taxon id: iNaturalist genuinely didn't resolve this name.
+        return None
+    await resolve(common_name, scientific_name)
+    row = db.get_species_info(common_name)
+    return int(row["inat_taxon_id"]) if row and row.get("inat_taxon_id") else None
+
+
 async def _fetch(common: str, sci: Optional[str]) -> dict:
     row = {
         "common_name": common, "scientific_name": sci, "descriptor": None,
         "extract": None, "wiki_url": None, "family": None, "order": None,
         "conservation": None, "fetched_at": time.time(), "ok": 0,
+        "inat_taxon_id": None,
     }
     if _client is None:
         return row
@@ -96,6 +114,7 @@ async def _fetch(common: str, sci: Optional[str]) -> dict:
         row["family"] = inat.get("family")
         row["order"] = inat.get("order")
         row["conservation"] = inat.get("conservation")
+        row["inat_taxon_id"] = inat.get("id")
         if not row["scientific_name"] and inat.get("name"):
             row["scientific_name"] = inat["name"]
 
@@ -124,7 +143,13 @@ async def _inat(name: str) -> Optional[dict]:
     try:
         resp = await _client.get(
             _INAT_SEARCH,
-            params={"q": name, "rank": "species", "per_page": 1, "locale": "en"},
+            params={
+                "q": name, "rank": "species", "per_page": 1, "locale": "en",
+                # Aviary only ever deals in birds; constraining the search stops a bird's
+                # common name from matching an unrelated insect/plant taxon (which would
+                # also mean the wrong reference recording — see species_audio).
+                "iconic_taxa": "Aves",
+            },
         )
         if resp.status_code != 200:
             return None
@@ -133,6 +158,7 @@ async def _inat(name: str) -> Optional[dict]:
             return None
         top = results[0]
         out = {
+            "id": top.get("id"),
             "name": top.get("name"),
             "family": None,
             "order": None,

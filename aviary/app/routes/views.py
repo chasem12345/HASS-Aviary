@@ -11,7 +11,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
 from .. import db
-from . import ingress_url, templates
+from . import THEMES, get_theme, ingress_url, templates
 
 router = APIRouter()
 
@@ -197,6 +197,9 @@ def species_index(
         "species": species,
         "since": since,
         "thumbs": db.latest_snapshot_refs([s["common_name"] for s in species]),
+        # Registry framing for the Pokedex theme; harmless (unused) in the default one.
+        "dex": db.species_dex_numbers(),
+        "registry": db.registry_stats(),
     }
     return templates.TemplateResponse("species_index.html", ctx)
 
@@ -237,5 +240,23 @@ def species_detail(
         "next_before": next_before,
         "older_url": older_url,
         "paged": before is not None,
+        "dex_no": db.species_dex_numbers().get(name),
     }
     return templates.TemplateResponse("species.html", ctx)
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request):
+    """Runtime preferences: UI theme and the species blacklist.
+
+    Everything here is stored in the add-on's database and applies immediately — unlike
+    the add-on options, which need a restart.
+    """
+    ctx = {
+        "request": request,
+        "page": "settings",
+        "themes": THEMES,
+        "current_theme": get_theme(),
+        "blacklist": db.blacklist_entries(),
+    }
+    return templates.TemplateResponse("settings.html", ctx)

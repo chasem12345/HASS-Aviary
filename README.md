@@ -9,6 +9,13 @@ or audio with spectrogram (BirdNET-Go) proxied from the originating source, with
 pages (totals, first/last seen, activity charts), day-grouped browsing with filters and
 pagination, and a live-refreshing Recent feed.
 
+Species pages also play a **reference call** for the species (a community-confirmed
+recording from [iNaturalist](https://www.inaturalist.org)) so you can judge a
+classification by ear. Species a classifier is reliably wrong about can be
+**blacklisted** — purged and refused at ingest from then on. An optional **Pokédex mode**
+reskins the UI as a field registry, where a bird BirdNET-Go has only *heard* stays a
+silhouette until a camera *sees* it.
+
 > Aviary does **no** classification of its own. It reads the species that Frigate emits in the
 > event `sub_label` and the species BirdNET-Go emits in its MQTT payload.
 

@@ -59,7 +59,44 @@ CREATE TABLE IF NOT EXISTS species_info (
     "order"         TEXT,
     conservation    TEXT,
     fetched_at      REAL,
-    ok              INTEGER NOT NULL DEFAULT 0
+    ok              INTEGER NOT NULL DEFAULT 0,
+    inat_taxon_id   INTEGER    -- reused to look up reference audio (see species_audio)
+);
+
+-- Species the user never wants ingested again (chronic misclassifications).
+-- Both names are matched at ingest: blacklisting purges the species' rows, which
+-- removes the very data canonical_species() needs to map Frigate's scientific-name
+-- labels onto common names — so the scientific name has to be remembered here.
+-- NOCASE on the primary key matches how every other species lookup compares names.
+CREATE TABLE IF NOT EXISTS species_blacklist (
+    common_name     TEXT PRIMARY KEY COLLATE NOCASE,
+    scientific_name TEXT COLLATE NOCASE,
+    added_at        REAL NOT NULL,
+    purged          INTEGER NOT NULL DEFAULT 0   -- detections removed when blacklisted
+);
+
+-- User preferences editable from the UI (currently just the theme). Kept server-side
+-- rather than in the browser so server-rendered pages can stamp the theme during
+-- render, with no flash of the wrong theme and no per-device drift.
+CREATE TABLE IF NOT EXISTS app_prefs (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- Cached reference recording per species (an iNaturalist research-grade observation),
+-- so a questionable classification can be compared against a known call. Only the
+-- metadata is stored; the audio itself is streamed from iNaturalist on demand.
+CREATE TABLE IF NOT EXISTS species_audio (
+    common_name    TEXT PRIMARY KEY COLLATE NOCASE,
+    taxon_id       INTEGER,
+    sound_id       INTEGER,
+    observation_id INTEGER,
+    file_url       TEXT,
+    content_type   TEXT,
+    license_code   TEXT,
+    attribution    TEXT,       -- must always be displayed: these are CC recordings
+    fetched_at     REAL,
+    ok             INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -77,6 +114,14 @@ def init_db(db_path: str) -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(detections)")}
         if "native_id" not in cols:
             conn.execute("ALTER TABLE detections ADD COLUMN native_id TEXT")
+        info_cols = {r[1] for r in conn.execute("PRAGMA table_info(species_info)")}
+        if "inat_taxon_id" not in info_cols:
+            conn.execute("ALTER TABLE species_info ADD COLUMN inat_taxon_id INTEGER")
+            # Rows cached before this column existed have no taxon id, but their TTL is
+            # still fresh — reference audio (which needs the id) would silently find
+            # nothing for up to a month. Expire them so the next lookup refills the id.
+            # One-time, and only for rows that predate the column.
+            conn.execute("UPDATE species_info SET fetched_at = 0 WHERE inat_taxon_id IS NULL")
         # Idempotent cleanup: remap rows whose common_name is actually a scientific
         # name (e.g. Frigate's classifier) onto the species' real common name, when
         # another source has recorded the pairing. Keeps species pages and
@@ -323,6 +368,54 @@ def distinct_species(source: Optional[str] = None) -> list[str]:
     return [r["common_name"] for r in rows]
 
 
+def species_dex_numbers() -> dict[str, int]:
+    """Registry number per species: 1-based order of first-ever detection.
+
+    Derived rather than stored, so there's no counter to keep in sync with deletions.
+    Removing a species renumbers the ones after it, which is fine — the number is a
+    display flourish for the Pokedex theme, not an identifier anything keys on.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT common_name,
+                   ROW_NUMBER() OVER (ORDER BY MIN(start_time), common_name) AS dex_no
+            FROM detections
+            GROUP BY common_name
+            """
+        ).fetchall()
+    return {r["common_name"]: r["dex_no"] for r in rows}
+
+
+def registry_stats() -> dict:
+    """Species counts for the Pokedex completion readout.
+
+    ``seen`` (on camera, the "caught" analogue) is the subset of ``total`` that has at
+    least one Frigate detection; ``heard`` likewise for BirdNET-Go. A species can be
+    both. There is no master checklist, so ``total`` is only what's been detected.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   SUM(seen)  AS seen,
+                   SUM(heard) AS heard
+            FROM (
+                SELECT MAX(source = 'frigate') AS seen,
+                       MAX(source = 'birdnet') AS heard
+                FROM detections GROUP BY common_name
+            )
+            """
+        ).fetchone()
+    if not row:
+        return {"total": 0, "seen": 0, "heard": 0}
+    return {
+        "total": row["total"] or 0,
+        "seen": row["seen"] or 0,
+        "heard": row["heard"] or 0,
+    }
+
+
 def latest_snapshot_refs(names: list[str]) -> dict[str, str]:
     """Newest Frigate snapshot event-ref per species, for thumbnails."""
     if not names:
@@ -411,6 +504,7 @@ def delete_species(common_name: str) -> list[dict]:
                 [(r["source"], r["source_ref"], now) for r in rows],
             )
         conn.execute("DELETE FROM species_info WHERE common_name = ? COLLATE NOCASE", (common_name,))
+        conn.execute("DELETE FROM species_audio WHERE common_name = ? COLLATE NOCASE", (common_name,))
     return rows
 
 
@@ -419,6 +513,78 @@ def tombstoned_refs() -> list[tuple[str, str]]:
     with _connect() as conn:
         rows = conn.execute("SELECT source, source_ref FROM deleted_refs").fetchall()
     return [(r["source"], r["source_ref"]) for r in rows]
+
+
+# ------------------------------------------------------------------------- blacklist
+
+def blacklist_add(
+    common_name: str,
+    scientific_name: Optional[str] = None,
+    purged: int = 0,
+) -> None:
+    """Blacklist a species so ingest drops it from now on.
+
+    Re-blacklisting an existing entry keeps the earlier ``added_at`` but refreshes the
+    scientific name (which may only have become known later) and the purged flag.
+    """
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO species_blacklist (common_name, scientific_name, added_at, purged)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(common_name) DO UPDATE SET
+                scientific_name = COALESCE(excluded.scientific_name, species_blacklist.scientific_name),
+                purged          = MAX(species_blacklist.purged, excluded.purged)
+            """,
+            (common_name, scientific_name or None, time.time(), 1 if purged else 0),
+        )
+
+
+def blacklist_remove(common_name: str) -> bool:
+    """Un-blacklist a species (re-opens ingest). Returns True if an entry was removed."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM species_blacklist WHERE common_name = ? COLLATE NOCASE",
+            (common_name,),
+        )
+    return cur.rowcount > 0
+
+
+def blacklist_entries() -> list[dict]:
+    """All blacklist entries, newest first (for the settings page)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM species_blacklist ORDER BY added_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def blacklist_names() -> list[tuple[str, Optional[str]]]:
+    """(common_name, scientific_name) pairs, for seeding ingest's in-memory set."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT common_name, scientific_name FROM species_blacklist"
+        ).fetchall()
+    return [(r["common_name"], r["scientific_name"]) for r in rows]
+
+
+# ----------------------------------------------------------------------- preferences
+
+def get_pref(key: str, default: str = "") -> str:
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM app_prefs WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row and row["value"] is not None else default
+
+
+def set_pref(key: str, value: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_prefs (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
 
 
 def canonical_species(name: str) -> Optional[dict]:
@@ -504,10 +670,10 @@ def put_species_info(row: dict[str, Any]) -> None:
             """
             INSERT INTO species_info (
                 common_name, scientific_name, descriptor, extract, wiki_url,
-                family, "order", conservation, fetched_at, ok
+                family, "order", conservation, fetched_at, ok, inat_taxon_id
             ) VALUES (
                 :common_name, :scientific_name, :descriptor, :extract, :wiki_url,
-                :family, :order, :conservation, :fetched_at, :ok
+                :family, :order, :conservation, :fetched_at, :ok, :inat_taxon_id
             )
             ON CONFLICT(common_name) DO UPDATE SET
                 scientific_name = excluded.scientific_name,
@@ -518,7 +684,45 @@ def put_species_info(row: dict[str, Any]) -> None:
                 "order"         = excluded."order",
                 conservation    = excluded.conservation,
                 fetched_at      = excluded.fetched_at,
-                ok              = excluded.ok
+                ok              = excluded.ok,
+                -- A later fetch that failed to resolve the taxon shouldn't discard an
+                -- id we already have; reference audio depends on it.
+                inat_taxon_id   = COALESCE(excluded.inat_taxon_id, species_info.inat_taxon_id)
+            """,
+            row,
+        )
+
+
+def get_species_audio(common_name: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM species_audio WHERE common_name = ? COLLATE NOCASE",
+            (common_name,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def put_species_audio(row: dict[str, Any]) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO species_audio (
+                common_name, taxon_id, sound_id, observation_id, file_url,
+                content_type, license_code, attribution, fetched_at, ok
+            ) VALUES (
+                :common_name, :taxon_id, :sound_id, :observation_id, :file_url,
+                :content_type, :license_code, :attribution, :fetched_at, :ok
+            )
+            ON CONFLICT(common_name) DO UPDATE SET
+                taxon_id       = COALESCE(excluded.taxon_id, species_audio.taxon_id),
+                sound_id       = excluded.sound_id,
+                observation_id = excluded.observation_id,
+                file_url       = excluded.file_url,
+                content_type   = excluded.content_type,
+                license_code   = excluded.license_code,
+                attribution    = excluded.attribution,
+                fetched_at     = excluded.fetched_at,
+                ok             = excluded.ok
             """,
             row,
         )

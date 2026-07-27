@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %} · Settings{% endblock %}
+{% block content %}
+<h1 class="page-title">Settings</h1>
+
+<section class="card">
+  <h2>Theme</h2>
+  <div class="setting-row">
+    <div class="setting-copy">
+      <div class="setting-name">Pokédex mode</div>
+      <p class="setting-help">
+        Reskins Aviary as a field registry: species get entry numbers, and a bird you've
+        only <strong>heard</strong> shows as a silhouette until a camera <strong>sees</strong>
+        it and completes the entry. Off, Aviary follows your system's light/dark setting.
+      </p>
+    </div>
+    <button type="button" id="themeToggleSetting" class="btn btn-sm"
+            data-theme-next="{{ 'auto' if current_theme == 'dex' else 'dex' }}">
+      {{ 'Turn off' if current_theme == 'dex' else 'Turn on' }}</button>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Blacklisted species <span class="count">{{ blacklist | length }}</span></h2>
+  <p class="setting-help">
+    Blacklisted species are dropped the moment they arrive — from live MQTT and from
+    backfill — so a species that BirdNET-Go or Frigate keeps getting wrong stops polluting
+    your stats, and never notifies. Blacklist a species from the
+    <strong>Remove species…</strong> menu on its page.
+  </p>
+  {% if blacklist %}
+  <table class="leaders blacklist-table">
+    <thead><tr><th>Species</th><th>Blacklisted</th><th></th></tr></thead>
+    <tbody>
+      {% for entry in blacklist %}
+      <tr>
+        <td>
+          {{ entry.common_name }}
+          {% if entry.scientific_name %}<em>{{ entry.scientific_name }}</em>{% endif %}
+        </td>
+        <td title="{{ entry.added_at | fmt_time }}">{{ entry.added_at | fmt_rel }}</td>
+        <td class="num-cell">
+          <button type="button" class="btn btn-sm blacklist-remove"
+                  data-species="{{ entry.common_name }}"
+                  title="Allow this species to be recorded again. Detections deleted when it was blacklisted are not restored.">
+            Allow again</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No species are blacklisted.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Add-on options</h2>
+  <p class="setting-help">
+    Sources, MQTT and topics are add-on options — edit them in the Home Assistant
+    <strong>Configuration</strong> tab for this add-on and restart it. Everything on this
+    page applies immediately and needs no restart.
+  </p>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.aviaryInitSettings();
+</script>
+{% endblock %}

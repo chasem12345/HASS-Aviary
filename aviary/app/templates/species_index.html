@@ -28,12 +28,18 @@
 </div>
 
 <h1 class="page-title">{{ 'New species' if only_new else 'Species' }}
-  <span class="count">{{ species | length }}</span></h1>
+  <span class="count">{{ species | length }}</span>
+  {# Pokedex completion: species caught on camera out of every species detected. #}
+  <span class="registry" title="{{ registry.seen }} of {{ registry.total }} species have been seen on camera">
+    REGISTRY {{ registry.seen }}/{{ registry.total }}</span></h1>
 
 <div class="species-grid">
   {% for s in species %}
   {% set is_new = since is not none and s.first_seen is not none and s.first_seen >= since %}
-  <a class="species-tile" href="{{ u('species_detail', name=s.common_name) }}">
+  {# "seen" = caught on camera (full entry); heard-only stays a silhouette. #}
+  {% set is_seen = s.frigate_total or 0 %}
+  <a class="species-tile{{ ' heard-only' if not is_seen }}" data-dex="{{ '%03d' | format(dex.get(s.common_name, 0)) }}"
+     href="{{ u('species_detail', name=s.common_name) }}">
     <div class="tile-thumb">
       {% if thumbs.get(s.common_name) %}
       <img loading="lazy" alt="" src="{{ u('frigate_snapshot', event_id=thumbs[s.common_name]) }}?thumbnail=true">
@@ -43,6 +49,7 @@
            src="{{ u('species_image', name=s.common_name) }}" onerror="this.remove()">
       {% endif %}
       {% if is_new %}<span class="new-badge">NEW</span>{% endif %}
+      <span class="dex-state">{{ 'SEEN' if is_seen else 'HEARD' }}</span>
     </div>
     <div class="tile-body">
       <div class="tile-name">{{ s.common_name }}</div>

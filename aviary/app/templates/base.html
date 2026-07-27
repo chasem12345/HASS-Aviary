@@ -1,5 +1,6 @@
 <!DOCTYPE html>
-<html lang="en">
+{# Theme is stamped server-side so a themed page never flashes the default colours. #}
+<html lang="en" data-theme="{{ theme }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,12 +9,17 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">🐦 <span>Aviary</span></div>
+    <div class="brand"><span class="dex-led" aria-hidden="true"></span>🐦 <span>Aviary</span></div>
     <nav>
       <a href="{{ u('dashboard') }}" class="{{ 'active' if page == 'dashboard' }}">Dashboard</a>
       <a href="{{ u('recent') }}" class="{{ 'active' if page == 'recent' }}">Recent</a>
-      <a href="{{ u('species_index') }}" class="{{ 'active' if page == 'species' }}">Species</a>
+      <a href="{{ u('species_index') }}" class="{{ 'active' if page == 'species' }}">{{ 'Registry' if theme == 'dex' else 'Species' }}</a>
+      <a href="{{ u('settings_page') }}" class="{{ 'active' if page == 'settings' }}">Settings</a>
     </nav>
+    <button type="button" id="themeToggle" class="theme-toggle"
+            data-theme-next="{{ 'auto' if theme == 'dex' else 'dex' }}"
+            title="{{ 'Switch back to the standard theme' if theme == 'dex' else 'Switch to Pokedex mode' }}">
+      {{ '◉ DEX' if theme == 'dex' else '◌ Dex mode' }}</button>
   </header>
   <main class="container">
     {% block content %}{% endblock %}

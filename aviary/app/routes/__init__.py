@@ -20,8 +20,35 @@ from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.templating import Jinja2Templates
 
+from .. import db
+
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+
+# Theme is stamped onto <html> during render (see base.html) so a themed page never
+# flashes the wrong colours. Every template render needs it, so it's cached here rather
+# than read from SQLite on each request; set_theme() is the only writer.
+THEMES = ("auto", "dex")
+_DEFAULT_THEME = "auto"
+_theme_cache: str = ""
+
+
+def get_theme() -> str:
+    """Current UI theme, reading through to the DB once and then serving from cache."""
+    global _theme_cache
+    if not _theme_cache:
+        value = db.get_pref("theme", _DEFAULT_THEME)
+        _theme_cache = value if value in THEMES else _DEFAULT_THEME
+    return _theme_cache
+
+
+def set_theme(theme: str) -> str:
+    """Persist the UI theme. Returns the value actually stored."""
+    global _theme_cache
+    value = theme if theme in THEMES else _DEFAULT_THEME
+    db.set_pref("theme", value)
+    _theme_cache = value
+    return value
 
 
 def _asset_version() -> str:
@@ -58,7 +85,7 @@ def _ingress_context(request: Request) -> dict:
     def u(endpoint, /, **params) -> str:
         return ingress_url(request, endpoint, **params)
 
-    return {"ingress_path": prefix, "u": u, "asset_ver": ASSET_VER}
+    return {"ingress_path": prefix, "u": u, "asset_ver": ASSET_VER, "theme": get_theme()}
 
 
 templates = Jinja2Templates(directory=_TEMPLATE_DIR, context_processors=[_ingress_context])

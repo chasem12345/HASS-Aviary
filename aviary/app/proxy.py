@@ -44,16 +44,23 @@ async def close_client() -> None:
         _client = None
 
 
-async def stream_upstream(request: Request, url: str, fallbacks: tuple[str, ...] = ()):
+async def stream_upstream(
+    request: Request,
+    url: str,
+    fallbacks: tuple[str, ...] = (),
+    headers: Optional[dict[str, str]] = None,
+):
     """Proxy ``url``, forwarding Range and relaying media headers as a streaming response.
 
     ``fallbacks`` are tried in order when a URL errors or returns >= 400 (used for
-    BirdNET-Go, where the working audio endpoint differs across versions).
+    BirdNET-Go, where the working audio endpoint differs across versions). ``headers``
+    adds request headers for the upstream call — the client sets none by default, and
+    public APIs (e.g. iNaturalist) ask to be sent a descriptive User-Agent.
     """
     if _client is None:
         return JSONResponse({"error": "proxy client not initialized"}, status_code=500)
 
-    fwd_headers = {}
+    fwd_headers = dict(headers or {})
     if "range" in request.headers:
         fwd_headers["Range"] = request.headers["range"]
 

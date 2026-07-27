@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import backfill, db, ingest, notify, proxy, species_info
+from . import backfill, db, ingest, notify, proxy, species_audio, species_info
 from .mqtt_client import MqttIngestor
 from .routes import ASSET_VER, register_routes
 from .settings import load_settings
@@ -89,6 +89,7 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         proxy.init_client()
         species_info.init_client()
+        species_audio.init_client()
         notify.init_client()
         ingest.set_event_loop(asyncio.get_running_loop())
         notify.install_blueprint()
@@ -109,6 +110,7 @@ def create_app() -> FastAPI:
             ingestor.stop()
             await proxy.close_client()
             await species_info.close_client()
+            await species_audio.close_client()
             await notify.close_client()
             log.info("Aviary stopped.")
 

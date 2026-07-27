@@ -29,9 +29,12 @@ _ignore_unclassified = False
 #    to a cap so memory stays bounded.
 #  - _tombstones: refs the user deleted; ingest and backfill silently drop these so
 #    a removed misclassification can't come back from the source's history.
+#  - _blacklist: lowercased names of species the user never wants ingested again.
+#    Holds both common and scientific names (see _is_blacklisted).
 _known_species: set[str] = set()
 _announced_refs: dict[str, None] = {}
 _tombstones: set[str] = set()
+_blacklist: set[str] = set()
 _ANNOUNCED_CAP = 4096
 _known_lock = threading.Lock()
 _loop: Optional[asyncio.AbstractEventLoop] = None
@@ -53,14 +56,50 @@ def seed_notify_state() -> None:
         for source, ref in db.recent_refs(time.time() - 3600):
             _announced_refs[f"{source}:{ref}"] = None
         _tombstones.update(f"{s}:{r}" for s, r in db.tombstoned_refs())
+        for common, sci in db.blacklist_names():
+            _blacklist.update(_blacklist_keys(common, sci))
         species, refs = len(_known_species), len(_announced_refs)
-    log.info("Seeded notification state: %d known species, %d recent refs.", species, refs)
+        blacklisted = len(_blacklist)
+    log.info(
+        "Seeded notification state: %d known species, %d recent refs, %d blacklist keys.",
+        species, refs, blacklisted,
+    )
 
 
 def add_tombstone(source: str, source_ref: str) -> None:
     """Mark a deleted ref so re-ingest (live or backfill) skips it."""
     with _known_lock:
         _tombstones.add(f"{source}:{source_ref}")
+
+
+def _blacklist_keys(common_name: str, scientific_name: Optional[str]) -> set[str]:
+    """Lowercased match keys for a blacklist entry.
+
+    Both names are keyed because blacklisting purges the species' detections, and
+    _canonicalize() maps a scientific-name label to its common name *by querying those
+    very rows*. With them gone, a Frigate event labelled with the scientific name would
+    otherwise sail past a common-name-only check.
+    """
+    return {n.strip().lower() for n in (common_name, scientific_name) if n and n.strip()}
+
+
+def add_blacklist(common_name: str, scientific_name: Optional[str] = None) -> None:
+    """Start dropping a species at ingest (live and backfill)."""
+    with _known_lock:
+        _blacklist.update(_blacklist_keys(common_name, scientific_name))
+
+
+def remove_blacklist(common_name: str, scientific_name: Optional[str] = None) -> None:
+    """Stop dropping a species. Purged history is not restored."""
+    with _known_lock:
+        _blacklist.difference_update(_blacklist_keys(common_name, scientific_name))
+
+
+def _is_blacklisted(name: Optional[str]) -> bool:
+    if not name:
+        return False
+    with _known_lock:
+        return name.strip().lower() in _blacklist
 
 
 def forget_species(common_name: str) -> None:
@@ -99,8 +138,23 @@ def store_row(row: Optional[dict], live: bool = True, announce: bool = True) -> 
     if tombstoned:
         log.debug("Skipping deleted %s detection (%s)", row["source"], row["source_ref"])
         return False
+    if _is_blacklisted(row["common_name"]) or _is_blacklisted(row.get("scientific_name")):
+        log.debug(
+            "Skipping blacklisted species %r (%s %s)",
+            row["common_name"], row["source"], row["source_ref"],
+        )
+        return False
     if not is_unclassified(row):
         _canonicalize(row)
+        # Canonicalization can rename an incoming label *into* a blacklisted species
+        # (e.g. a scientific-name label resolving to a blacklisted common name), so the
+        # check has to run again on the final name.
+        if _is_blacklisted(row["common_name"]):
+            log.debug(
+                "Skipping blacklisted species %r after canonicalization (%s %s)",
+                row["common_name"], row["source"], row["source_ref"],
+            )
+            return False
     db.upsert_detection(row)
     if announce:
         _announce(row, live)

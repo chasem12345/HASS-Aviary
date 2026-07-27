@@ -15,7 +15,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 
-from .. import db, proxy
+from .. import db, proxy, species_audio, species_info
 from ..notify import species_slug
 
 log = logging.getLogger("aviary.media")
@@ -57,6 +57,23 @@ async def species_image(name: str, request: Request):
     if not sci:
         return JSONResponse({"error": "no scientific name for species"}, status_code=404)
     return await proxy.stream_upstream(request, proxy.birdnet_species_image_url(base, sci))
+
+
+@router.get("/species/{name}/reference-audio", name="species_reference_audio")
+async def species_reference_audio(name: str, request: Request):
+    """Stream a species' reference recording from iNaturalist.
+
+    Proxied rather than linked directly so the upstream URL stays server-side and the
+    audio loads on http-served Home Assistant instances. Needs no configured upstream —
+    unlike the Frigate/BirdNET-Go media routes, this works on a fresh install.
+    """
+    sci = await run_in_threadpool(db.scientific_name_for, name)
+    url = await species_audio.file_url(name, sci)
+    if not url:
+        return JSONResponse({"error": "no reference audio for species"}, status_code=404)
+    return await proxy.stream_upstream(
+        request, url, headers={"User-Agent": species_info.USER_AGENT}
+    )
 
 
 @router.get("/frigate/{event_id}/download.mp4")
