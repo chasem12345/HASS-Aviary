@@ -11,7 +11,8 @@ pagination, and a live-refreshing Recent feed.
 
 Species pages also play a **reference call** for the species (a community-confirmed
 recording from [iNaturalist](https://www.inaturalist.org)) so you can judge a
-classification by ear. Species a classifier is reliably wrong about can be
+classification by ear, and show **what it eats**, where it forages and its habitat from a
+bundled subset of the [AVONET](https://doi.org/10.1111/ele.13898) dataset (no API needed). Species a classifier is reliably wrong about can be
 **blacklisted** — purged and refused at ingest from then on. An optional **Pokédex mode**
 rebuilds the species pages as a field registry — a numbered list of entries and a dex-style
 data readout, where a bird BirdNET-Go has only *heard* stays a silhouette until a camera

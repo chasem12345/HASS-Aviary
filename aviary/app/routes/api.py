@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, Query, Request
 from fastapi.concurrency import run_in_threadpool
 
-from .. import db, ingest, notify, proxy, species_audio, species_info
+from .. import db, ingest, notify, proxy, species_audio, species_info, traits
 from . import ingress_url, set_theme
 
 router = APIRouter()
@@ -245,8 +245,18 @@ async def species_info_endpoint(
     name: str = Query(..., min_length=1),
     sci: Optional[str] = Query(None),
 ):
-    """Wikipedia blurb + iNaturalist taxonomy for a species (cached; lazy-loaded)."""
-    return await species_info.resolve(name, sci)
+    """Wikipedia blurb + iNaturalist taxonomy + bundled ecological traits for a species.
+
+    Cached and lazy-loaded. ``traits`` (diet/foraging/habitat) comes from the local AVONET
+    subset, keyed on the scientific name — preferring the one iNaturalist resolved, since
+    Frigate-only species often have none recorded. It is None when the species isn't in
+    the table.
+    """
+    info = await species_info.resolve(name, sci)
+    scientific = info.get("scientific_name") or sci
+    # First call decompresses the bundled table; keep that off the event loop.
+    info["traits"] = await run_in_threadpool(traits.lookup, scientific)
+    return info
 
 
 @router.get("/reference-audio")

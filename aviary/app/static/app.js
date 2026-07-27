@@ -133,16 +133,22 @@
   // fetch as the About card — no second request. Filled before the About card's
   // early-returns so the rows resolve to "unknown" instead of sitting on placeholders.
   function fillDexTaxonomy(info) {
+    const t = (info && info.traits) || {};
     const fields = {
       "dex-order": info && info.order,
       "dex-family": info && info.family,
       "dex-status": info && info.conservation,
+      "dex-diet": t.food,
+      "dex-forages": t.foraging,
+      "dex-habitat": t.habitat,
     };
     Object.keys(fields).forEach((id) => {
       const node = document.getElementById(id);
       if (!node) return;
       node.textContent = fields[id] || "unknown";
       node.classList.remove("pending");
+      // The AVONET term behind the plain-English diet description.
+      if (id === "dex-diet" && t.niche && t.niche !== t.food) node.title = t.niche;
     });
   }
 
@@ -152,7 +158,11 @@
     try {
       const info = await getJson("/species-info", { name: name, sci: scientific });
       fillDexTaxonomy(info);
-      if (!info || !info.ok || (!info.extract && !info.family)) return;
+      // Show the card if there is anything to put in it. Bundled traits alone are worth
+      // showing, so this can't depend on Wikipedia having an article.
+      const t = (info && info.traits) || {};
+      const hasTraits = !!(t.food || t.foraging || t.habitat);
+      if (!info || (!info.extract && !info.family && !hasTraits)) return;
       const set = (sel, text) => {
         const node = el.querySelector(sel);
         if (node && text) node.textContent = text;
@@ -161,12 +171,14 @@
       set(".about-extract", info.extract);
 
       const tax = el.querySelector(".about-tax");
-      [["Order", info.order], ["Family", info.family], ["Status", info.conservation]]
+      [["Order", info.order], ["Family", info.family], ["Status", info.conservation],
+       ["Eats", t.food], ["Forages", t.foraging], ["Habitat", t.habitat]]
         .forEach(([k, v]) => {
           if (!v) return;
           const chip = document.createElement("span");
           chip.className = "tax-chip";
           chip.textContent = k + ": " + v;
+          if (k === "Eats" && t.niche && t.niche !== v) chip.title = t.niche;
           tax.appendChild(chip);
         });
 

@@ -531,7 +531,7 @@ img.overlay-img {
 [data-theme="dex"] .dex-reg-row {
   position: relative; z-index: 1;
   display: grid; align-items: center; gap: 10px;
-  grid-template-columns: 10px auto minmax(0, 1fr) 116px 62px;
+  grid-template-columns: 10px 44px auto minmax(0, 1fr) 116px 62px;
   /* Uniform rows whether or not the species has a scientific name to show. */
   min-height: 44px;
   padding: 6px 8px; color: var(--ink); text-decoration: none;
@@ -539,6 +539,21 @@ img.overlay-img {
 }
 [data-theme="dex"] .dex-reg-row:last-child { border-bottom: none; }
 [data-theme="dex"] .dex-reg-row .cursor { color: var(--accent); opacity: 0; }
+/* Registry thumbnail. Colour once seen on camera, darkened while only heard — the same
+   distinction the state chip carries, so the list is scannable at a glance. */
+[data-theme="dex"] .dex-thumb {
+  position: relative; width: 44px; height: 33px; overflow: hidden;
+  display: grid; place-items: center; border-radius: 2px;
+  background: rgba(0, 0, 0, .45); border: 1px solid var(--dex-well-line);
+}
+[data-theme="dex"] .dex-thumb img {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+}
+[data-theme="dex"] .dex-thumb .thumb-mark { font-size: 15px; opacity: .35; }
+[data-theme="dex"] .heard-only .dex-thumb img {
+  filter: grayscale(1) brightness(.45) contrast(1.1);
+}
+[data-theme="dex"] .heard-only .dex-thumb .thumb-mark { filter: grayscale(1); opacity: .25; }
 [data-theme="dex"] .dex-reg-row:hover,
 [data-theme="dex"] .dex-reg-row:focus {
   background: rgba(139, 172, 95, .12); text-decoration: none; outline: none;
@@ -566,7 +581,10 @@ img.overlay-img {
   padding: 2px 6px; border-radius: 3px; text-align: center;
   background: var(--frigate); color: #14170f;
 }
-[data-theme="dex"] .heard-only .dex-state { background: var(--birdnet); color: #fff; }
+/* Both forms: the registry puts .heard-only on the row (ancestor), the entry header puts
+   it on the chip itself. */
+[data-theme="dex"] .heard-only .dex-state,
+[data-theme="dex"] .dex-state.heard-only { background: var(--birdnet); color: #fff; }
 
 /* --------------------------------------------------------------- entry screen */
 [data-theme="dex"] .dex-entry { display: grid; gap: 14px; grid-template-columns: 260px 1fr; }
@@ -575,9 +593,9 @@ img.overlay-img {
   width: 100%; height: 100%; object-fit: cover; display: block;
 }
 [data-theme="dex"] .dex-photo .thumb-mark { font-size: 46px; opacity: .4; }
-/* Heard but never seen: the entry stays a silhouette until a camera completes it. */
-[data-theme="dex"] .heard-only .dex-photo img { filter: grayscale(1) brightness(.4) contrast(1.2); }
-[data-theme="dex"] .heard-only .dex-photo .thumb-mark { filter: grayscale(1); opacity: .3; }
+/* Deliberately NOT darkened for heard-only species, unlike the registry thumbnails: the
+   entry is where you go to find out what the bird actually looks like. The HEARD/SEEN
+   state is still carried by the header chip and the seen/heard gauges. */
 [data-theme="dex"] .dex-side { display: flex; flex-direction: column; gap: 10px; }
 [data-theme="dex"] .dex-data { padding: 10px 14px; }
 [data-theme="dex"] .dex-title {
@@ -589,6 +607,11 @@ img.overlay-img {
   text-transform: none; letter-spacing: 0; color: var(--muted); margin-top: 4px;
 }
 
+/* Source credit for the data screen. CC BY 4.0 requires attribution wherever the AVONET
+   values appear, and the About card below may be hidden. */
+[data-theme="dex"] .dex-credit {
+  color: var(--muted); font-size: 10px; letter-spacing: .04em; margin: -4px 0 2px;
+}
 [data-theme="dex"] .dex-cry {
   display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
   font-family: var(--font-pixel); font-size: 12px; letter-spacing: .1em;
@@ -635,10 +658,11 @@ img.overlay-img {
 @media (max-width: 720px) {
   [data-theme="dex"] .dex-entry { grid-template-columns: 1fr; }
   [data-theme="dex"] .dex-photo { aspect-ratio: 16 / 9; }
-  /* Drop the meter column first — the number, name and state carry the row. */
+  /* Drop the meter column first — thumbnail, number, name and state carry the row. */
   [data-theme="dex"] .dex-reg-row {
-    grid-template-columns: 10px auto minmax(0, 1fr) 56px; gap: 8px;
+    grid-template-columns: 10px 40px auto minmax(0, 1fr) 56px; gap: 8px;
   }
+  [data-theme="dex"] .dex-thumb { width: 40px; height: 30px; }
   [data-theme="dex"] .dex-reg-row .dex-count { display: none; }
   /* Keyboard hints are noise on a touch device. */
   [data-theme="dex"] .dex-head .hint { display: none; }

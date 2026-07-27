@@ -1,0 +1,39 @@
+avonet_diet.csv.gz
+==================
+
+A compact subset of the AVONET database, bundled with the Aviary add-on to show each
+species' diet, trophic level, foraging lifestyle and primary habitat without any network
+access.
+
+Contents
+--------
+10,661 bird species keyed on eBird-taxonomy scientific names (the taxonomy BirdNET-Go
+emits), with five columns retained verbatim from AVONET's `AVONET2_eBird` sheet:
+
+    species    <- Species2
+    niche      <- Trophic.Niche
+    level      <- Trophic.Level
+    lifestyle  <- Primary.Lifestyle
+    habitat    <- Habitat
+
+Regenerate with `python scripts/build_diet_table.py` (see that script for details). No
+values are altered; the mapping from AVONET's terms to the plain-English food
+descriptions shown in the UI lives in `app/traits.py`.
+
+Source and citation
+-------------------
+Tobias, J. A., Sheard, C., Pigot, A. L., et al. (2022). AVONET: morphological, ecological
+and geographical data for all birds. Ecology Letters, 25(3), 581-597.
+https://doi.org/10.1111/ele.13898
+
+Dataset: Tobias, Joseph (2021). AVONET: morphological, ecological and geographical data
+for all birds. figshare. https://doi.org/10.6084/m9.figshare.16586228
+
+Licence
+-------
+Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/
+
+The licence permits redistribution, including in modified form and for commercial
+purposes, provided appropriate credit is given. Aviary credits AVONET in this file and in
+the user interface wherever these values are displayed.

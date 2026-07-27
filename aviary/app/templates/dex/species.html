@@ -19,7 +19,8 @@
   <span class="dex-state{{ ' heard-only' if not is_seen }}">{{ 'SEEN' if is_seen else 'HEARD' }}</span>
 </div>
 
-<section class="dex-entry{{ ' heard-only' if not is_seen }}">
+{# No heard-only modifier here on purpose: the entry photo always shows in full colour. #}
+<section class="dex-entry">
   {# Placeholder always present, with the real image layered over it and removing itself
      on error — so an unreachable Frigate/BirdNET-Go leaves a silhouette, not a broken
      image icon. Same pattern as _cards.html. #}
@@ -43,6 +44,14 @@
         <span class="v pending" id="dex-family">·····</span></div>
       <div class="dex-row"><span class="k">Status</span><span class="lead"></span>
         <span class="v pending" id="dex-status">·····</span></div>
+      {# Diet / foraging / habitat come from the bundled AVONET subset (local, no
+         network) via the same request. Credited below, as CC BY 4.0 requires. #}
+      <div class="dex-row"><span class="k">Eats</span><span class="lead"></span>
+        <span class="v pending" id="dex-diet">·····</span></div>
+      <div class="dex-row"><span class="k">Forages</span><span class="lead"></span>
+        <span class="v pending" id="dex-forages">·····</span></div>
+      <div class="dex-row"><span class="k">Habitat</span><span class="lead"></span>
+        <span class="v pending" id="dex-habitat">·····</span></div>
       <div class="dex-row"><span class="k">Detections</span><span class="lead"></span>
         <span class="v">{{ total }}</span></div>
       <div class="dex-row"><span class="k">First {{ first_verb }}</span><span class="lead"></span>
@@ -59,6 +68,7 @@
         <span class="dex-meter heard" style="--fill: {{ (100 * (stats.birdnet_total or 0) / total) | round(0) if total else 0 }}%"></span>
         <span class="v">×{{ stats.birdnet_total or 0 }}</span></div>
     </div>
+    <div class="dex-credit">Taxonomy: iNaturalist · Traits: AVONET (CC BY 4.0)</div>
 
     {# Revealed by loadReferenceAudio() only when a licensed recording exists, so there's
        never a dead CRY button. Attribution and licence are a condition of the CC
@@ -105,7 +115,7 @@
   <p class="about-extract"></p>
   <div class="about-tax"></div>
   <a class="about-link" target="_blank" rel="noopener noreferrer" hidden>Read more on Wikipedia →</a>
-  <div class="about-credit">Info from Wikipedia &amp; iNaturalist</div>
+  <div class="about-credit">Info from Wikipedia, iNaturalist &amp; AVONET (CC BY 4.0)</div>
 </section>
 
 <section class="grid2">

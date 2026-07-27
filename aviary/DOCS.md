@@ -97,6 +97,29 @@ classification against a known example of the species.
   the same way Frigate and BirdNET-Go media are.
 - If iNaturalist has no suitable recording for a species, the card is simply not shown.
 
+## Diet and habitat
+
+Species pages show what the bird eats, where it forages and its primary habitat — as data
+rows in Pokédex mode (`EATS · SEEDS & GRAIN`) and as chips on the About card otherwise.
+
+- Data comes from **AVONET** (Tobias et al. 2022), a published dataset covering every
+  extant bird species, bundled with the add-on as an ~88 KB gzipped subset of 10,661
+  species. There is **no API call** — it's a local lookup, so it works offline, on a fresh
+  install, and without any key or rate limit.
+- It's keyed on **eBird scientific names**, which is the taxonomy BirdNET-Go emits, so
+  lookups match without synonym juggling. All 17 species in the author's own BirdNET-Go
+  history resolve.
+- Frigate-only species sometimes have no scientific name recorded; Aviary uses the one
+  iNaturalist resolves for the About card, and simply omits the fields if there's still no
+  match.
+- `Eats` shows a plain-English description with AVONET's own term (e.g. *Granivore*) as the
+  tooltip. Values are AVONET's trophic niche, so they describe a species' predominant diet
+  rather than an exhaustive list.
+
+Regenerate the bundled table with `python scripts/build_diet_table.py` (needs `openpyxl`;
+the add-on itself does not). AVONET is CC BY 4.0 and is credited in the UI and in
+`app/data/AVONET-CITATION.txt`.
+
 ## Pokédex mode
 
 **Settings → Theme → Pokédex mode** turns Aviary into a field registry. It reuses the
@@ -110,14 +133,17 @@ two states of a dex entry:
 Two pages are rebuilt rather than recoloured:
 
 - **Registry** (the Species page) becomes a numbered list in order of first detection,
-  with a `SEEN n/total` completion readout. Each row shows its entry number, a detection
-  gauge, and its HEARD/SEEN state. Source/range/"new only" filters still apply — entry
-  numbers belong to the whole registry, so a filtered list is legitimately
-  non-contiguous.
+  with a `SEEN n/total` completion readout. Each row shows its entry number, a photo, a
+  detection gauge, and its HEARD/SEEN state. Row photos are **full colour once a camera
+  has seen the species, and darkened while it has only been heard**. Source/range/"new
+  only" filters still apply — entry numbers belong to the whole registry, so a filtered
+  list is legitimately non-contiguous.
 - **Entry** (a species page) becomes a dex readout: the photo in one screen, and
-  order/family/conservation status, first/last detection, best confidence and seen/heard
-  gauges in another, with a **CRY** button that plays the species' reference recording
-  (see [Reference calls](#reference-calls)).
+  order/family/conservation status, [diet](#diet-and-habitat), first/last detection, best
+  confidence and seen/heard gauges in another, with a **CRY** button that plays the
+  species' reference recording (see [Reference calls](#reference-calls)). The entry photo
+  is **always full colour**, even for a species you've only heard — the entry is where you
+  go to see what the bird actually looks like.
 
 Dashboard, Recent and Settings keep their normal layout in the dex palette.
 

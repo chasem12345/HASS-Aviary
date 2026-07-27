@@ -7,14 +7,25 @@
   ([Silkscreen](https://github.com/googlefonts/silkscreen), SIL OFL, served locally so the
   theme works offline):
   - **Registry** (Species page): a numbered list in first-detection order with a
-    `SEEN n/total` completion readout, per-row detection gauges and HEARD/SEEN state.
+    `SEEN n/total` completion readout, per-row photo, detection gauges and HEARD/SEEN
+    state. Row photos are full colour once a camera has seen the species and darkened
+    while it has only been heard, so the list is scannable at a glance.
   - **Entry** (species page): the photo in one screen and a data readout in another —
-    order, family, conservation status, first/last detection, best confidence and
-    seen/heard gauges — plus a **CRY** button that plays the species' reference recording.
+    order, family, conservation status, diet, foraging, habitat, first/last detection,
+    best confidence and seen/heard gauges — plus a **CRY** button that plays the species'
+    reference recording. The entry photo is always full colour, including for
+    heard-only species: it's where you go to find out what the bird looks like.
   - **Dex navigation**: `↑`/`↓` move the registry cursor, `↵` opens an entry, `Home`/`End`
     jump to either end, and `←`/`→` step between neighbouring entries. Built from ordinary
     links, so clicking (and JavaScript being disabled) still works.
   - Dashboard, Recent and Settings keep their normal layout in the dex palette.
+- **Diet, foraging and habitat** on every species page — "Eats: Seeds & grain",
+  "Forages: On the ground" — in both themes (data rows in the dex entry, chips on the
+  About card). Comes from a compact subset of the **AVONET** dataset (Tobias et al. 2022,
+  CC BY 4.0) bundled with the add-on: ~88 KB gzipped covering 10,661 species, keyed on
+  eBird scientific names so it matches what BirdNET-Go emits. Entirely local — no API, no
+  key, no rate limit, works offline and on a fresh install. Regenerate with
+  `scripts/build_diet_table.py`; see `app/data/AVONET-CITATION.txt`.
 - **Fixed: slow startup could make Home Assistant's ingress return 502.** The
   species-name canonicalisation pass ran on every start with an unindexed
   `COLLATE NOCASE` correlated subquery — quadratic in the size of the detections table,
