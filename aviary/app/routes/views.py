@@ -11,7 +11,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
 from .. import db
-from . import THEMES, get_theme, ingress_url, templates
+from . import THEMES, get_theme, ingress_url, render
 
 router = APIRouter()
 
@@ -110,7 +110,7 @@ def dashboard(
         "mqtt_enabled": request.app.state.settings.mqtt_enabled,
         "mqtt_connected": bool(ingestor and ingestor.connected),
     }
-    return templates.TemplateResponse("dashboard.html", ctx)
+    return render("dashboard.html", ctx)
 
 
 def _recent_ctx(
@@ -158,7 +158,7 @@ def recent(
     before: Optional[float] = Query(None),
 ):
     ctx = _recent_ctx(request, source, species, range_key, before)
-    return templates.TemplateResponse("recent.html", ctx)
+    return render("recent.html", ctx)
 
 
 @router.get("/recent/partial", response_class=HTMLResponse)
@@ -173,7 +173,7 @@ def recent_partial(
     """Server-rendered detection groups for the Recent page's live refresh."""
     ctx = _recent_ctx(request, source, species, range_key, before)
     ctx["highlight_after"] = highlight_after
-    return templates.TemplateResponse("_groups.html", ctx)
+    return render("_groups.html", ctx)
 
 
 @router.get("/species", response_class=HTMLResponse)
@@ -188,6 +188,12 @@ def species_index(
     since = _since(range_key)
     only_new = bool(new)
     species = db.species_list(source=src, since=since, only_new=only_new)
+    # Registry framing for the Pokedex theme. The number is attached to each row rather
+    # than reordering here, because the default theme's ordering (count DESC) must not
+    # change — the dex template sorts by dex_no itself.
+    dex = db.species_dex_numbers()
+    for s in species:
+        s["dex_no"] = dex.get(s["common_name"], 0)
     ctx = {
         "request": request,
         "page": "species",
@@ -197,11 +203,9 @@ def species_index(
         "species": species,
         "since": since,
         "thumbs": db.latest_snapshot_refs([s["common_name"] for s in species]),
-        # Registry framing for the Pokedex theme; harmless (unused) in the default one.
-        "dex": db.species_dex_numbers(),
         "registry": db.registry_stats(),
     }
-    return templates.TemplateResponse("species_index.html", ctx)
+    return render("species_index.html", ctx)
 
 
 @router.get("/species/{name}", response_class=HTMLResponse)
@@ -240,9 +244,31 @@ def species_detail(
         "next_before": next_before,
         "older_url": older_url,
         "paged": before is not None,
-        "dex_no": db.species_dex_numbers().get(name),
     }
-    return templates.TemplateResponse("species.html", ctx)
+    ctx.update(_registry_position(name))
+    return render("species.html", ctx)
+
+
+def _registry_position(name: str) -> dict:
+    """This species' registry number plus its neighbours, for dex prev/next stepping.
+
+    Neighbours traverse the whole registry in first-detection order, not whatever filter
+    the user was browsing. Either side is None at the ends, and all three are None for a
+    species with no detections (e.g. an old link to something since removed).
+    """
+    numbers = db.species_dex_numbers()
+    ordered = sorted(numbers, key=lambda n: (numbers[n], n))
+    try:
+        idx = ordered.index(name)
+    except ValueError:
+        return {"dex_no": None, "dex_prev": None, "dex_next": None}
+
+    def entry(i: int) -> Optional[dict]:
+        if not 0 <= i < len(ordered):
+            return None
+        return {"common_name": ordered[i], "dex_no": numbers[ordered[i]]}
+
+    return {"dex_no": numbers[name], "dex_prev": entry(idx - 1), "dex_next": entry(idx + 1)}
 
 
 @router.get("/settings", response_class=HTMLResponse)
@@ -259,4 +285,4 @@ def settings_page(request: Request):
         "current_theme": get_theme(),
         "blacklist": db.blacklist_entries(),
     }
-    return templates.TemplateResponse("settings.html", ctx)
+    return render("settings.html", ctx)

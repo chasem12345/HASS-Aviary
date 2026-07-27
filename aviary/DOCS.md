@@ -99,22 +99,43 @@ classification against a known example of the species.
 
 ## Pokédex mode
 
-**Settings → Theme → Pokédex mode** reskins Aviary as a field registry. It reuses the
+**Settings → Theme → Pokédex mode** turns Aviary into a field registry. It reuses the
 distinction Aviary already tracks — BirdNET-Go **heard** it, Frigate **saw** it — as the
 two states of a dex entry:
 
-- **HEARD** — the bird has been detected by audio only. The entry stays a darkened
-  silhouette, like an encountered-but-uncaught species.
+- **HEARD** — detected by audio only. The entry stays a darkened silhouette, like an
+  encountered-but-uncaught species.
 - **SEEN** — a camera has caught it, so the entry is complete and shows its photo.
-- Species get **registry numbers** in order of first detection, and the species index shows
-  a `REGISTRY seen/total` completion readout.
+
+Two pages are rebuilt rather than recoloured:
+
+- **Registry** (the Species page) becomes a numbered list in order of first detection,
+  with a `SEEN n/total` completion readout. Each row shows its entry number, a detection
+  gauge, and its HEARD/SEEN state. Source/range/"new only" filters still apply — entry
+  numbers belong to the whole registry, so a filtered list is legitimately
+  non-contiguous.
+- **Entry** (a species page) becomes a dex readout: the photo in one screen, and
+  order/family/conservation status, first/last detection, best confidence and seen/heard
+  gauges in another, with a **CRY** button that plays the species' reference recording
+  (see [Reference calls](#reference-calls)).
+
+Dashboard, Recent and Settings keep their normal layout in the dex palette.
+
+**Navigating like a dex.** On the registry, `↑`/`↓` move the cursor and `↵` opens the
+entry (`Home`/`End` jump to either end); on an entry, `←`/`→` step to the neighbouring
+entries. Everything is built from ordinary links, so it all works by clicking — and with
+JavaScript disabled — too.
 
 The theme is stored in Aviary's database rather than the browser, so it applies to every
-device that opens the panel and pages render already themed (no flash of the wrong
+device that opens the panel and pages arrive already themed (no flash of the wrong
 colours). Switched off, Aviary follows your system's light/dark preference as before.
 
 Aviary has no regional species checklist, so the registry only contains birds you've
 actually detected — there are no blank "not yet encountered" entries to fill in.
+
+The pixel typeface is [Silkscreen](https://github.com/googlefonts/silkscreen), bundled
+with the add-on under the SIL Open Font License (`app/static/fonts/OFL.txt`) and served
+locally, so the theme needs no internet access.
 
 ## Bird notifications
 

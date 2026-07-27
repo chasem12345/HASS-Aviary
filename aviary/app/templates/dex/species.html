@@ -1,0 +1,143 @@
+{# Pokedex-theme entry screen. Selected by routes.render() when the dex theme is active;
+   the default species.html is unchanged. Taxonomy rows and the reference recording are
+   lazy-loaded by the same app.js functions the default template uses — the ids and
+   classes below are the contract (#dex-order/#dex-family/#dex-status, #ref-audio). #}
+{% extends "base.html" %}
+{% block title %} · No.{{ '%03d' | format(dex_no) if dex_no else '???' }} {{ species }}{% endblock %}
+{% block content %}
+
+{% set is_seen = stats.frigate_total or 0 %}
+{% set total = stats.total or 0 %}
+{# "seen" = camera (Frigate), "heard" = audio (BirdNET-Go); pick per timestamp source. #}
+{% set first_verb = 'seen' if stats.first_frigate is not none and (stats.first_birdnet is none or stats.first_frigate <= stats.first_birdnet) else 'heard' %}
+{% set last_verb = 'seen' if (stats.last_frigate or 0) >= (stats.last_birdnet or 0) else 'heard' %}
+
+<div class="dex-head">
+  <a class="back" href="{{ u('species_index') }}">← Registry</a>
+  <span class="spacer"></span>
+  {% if dex_no %}<span>No.{{ '%03d' | format(dex_no) }}</span>{% endif %}
+  <span class="dex-state{{ ' heard-only' if not is_seen }}">{{ 'SEEN' if is_seen else 'HEARD' }}</span>
+</div>
+
+<section class="dex-entry{{ ' heard-only' if not is_seen }}">
+  {# Placeholder always present, with the real image layered over it and removing itself
+     on error — so an unreachable Frigate/BirdNET-Go leaves a silhouette, not a broken
+     image icon. Same pattern as _cards.html. #}
+  <div class="dex-screen dex-photo">
+    <span class="thumb-mark">🐦</span>
+    <img class="overlay-img" alt="{{ species }}" onerror="this.remove()"
+         src="{{ u('frigate_snapshot', event_id=thumb) if thumb else u('species_image', name=species) }}">
+  </div>
+
+  <div class="dex-side">
+    <h1 class="dex-title">{{ species }}
+      {% if stats.scientific_name %}<span class="sci">{{ stats.scientific_name }}</span>{% endif %}
+    </h1>
+
+    <div class="dex-screen dex-data">
+      {# Order / family / status arrive from /api/species-info after load; the view
+         handlers are sync, so resolving them server-side would block the event loop. #}
+      <div class="dex-row"><span class="k">Order</span><span class="lead"></span>
+        <span class="v pending" id="dex-order">·····</span></div>
+      <div class="dex-row"><span class="k">Family</span><span class="lead"></span>
+        <span class="v pending" id="dex-family">·····</span></div>
+      <div class="dex-row"><span class="k">Status</span><span class="lead"></span>
+        <span class="v pending" id="dex-status">·····</span></div>
+      <div class="dex-row"><span class="k">Detections</span><span class="lead"></span>
+        <span class="v">{{ total }}</span></div>
+      <div class="dex-row"><span class="k">First {{ first_verb }}</span><span class="lead"></span>
+        <span class="v" title="{{ stats.first_seen | fmt_time }}">{{ stats.first_seen | fmt_rel }}</span></div>
+      <div class="dex-row"><span class="k">Last {{ last_verb }}</span><span class="lead"></span>
+        <span class="v" title="{{ stats.last_seen | fmt_time }}">{{ stats.last_seen | fmt_rel }}</span></div>
+      <div class="dex-row"><span class="k">Best conf</span><span class="lead"></span>
+        <span class="dex-meter" style="--fill: {{ ((stats.best_confidence or 0) * 100) | round(0) }}%"></span>
+        <span class="v">{{ stats.best_confidence | fmt_pct }}</span></div>
+      <div class="dex-row"><span class="k">Seen</span><span class="lead"></span>
+        <span class="dex-meter" style="--fill: {{ (100 * (stats.frigate_total or 0) / total) | round(0) if total else 0 }}%"></span>
+        <span class="v">×{{ stats.frigate_total or 0 }}</span></div>
+      <div class="dex-row"><span class="k">Heard</span><span class="lead"></span>
+        <span class="dex-meter heard" style="--fill: {{ (100 * (stats.birdnet_total or 0) / total) | round(0) if total else 0 }}%"></span>
+        <span class="v">×{{ stats.birdnet_total or 0 }}</span></div>
+    </div>
+
+    {# Revealed by loadReferenceAudio() only when a licensed recording exists, so there's
+       never a dead CRY button. Attribution and licence are a condition of the CC
+       licences these recordings carry — they stay on screen. #}
+    <div id="ref-audio" class="ref-audio" hidden>
+      <button type="button" class="dex-cry" id="dexCry">
+        <span class="dex-tri dex-tri-r" aria-hidden="true"></span> CRY</button>
+      <audio preload="none"></audio>
+      <div class="ref-credit">
+        <span class="ref-attribution"></span>
+        <a class="ref-link" target="_blank" rel="noopener noreferrer" hidden>iNaturalist →</a>
+      </div>
+    </div>
+
+    <div class="meta">
+      <button type="button" class="btn btn-sm species-delete" data-species="{{ species }}"
+              title="Remove this species and all {{ total }} of its detections, or blacklist it">
+        Remove species…</button>
+    </div>
+  </div>
+</section>
+
+{# Registry stepping. Real links, so ←/→ in app.js is an enhancement, not a requirement. #}
+<nav class="dex-steps" id="dexSteps">
+  {% if dex_prev %}
+  <a class="dex-step prev" rel="prev" href="{{ u('species_detail', name=dex_prev.common_name) }}">
+    <span class="dex-tri dex-tri-l" aria-hidden="true"></span>
+    <span class="label"><span class="no">No.{{ '%03d' | format(dex_prev.dex_no) }}</span>
+      {{ dex_prev.common_name }}</span>
+  </a>
+  {% else %}<span class="dex-step end">Start of registry</span>{% endif %}
+  {% if dex_next %}
+  <a class="dex-step next" rel="next" href="{{ u('species_detail', name=dex_next.common_name) }}">
+    <span class="label"><span class="no">No.{{ '%03d' | format(dex_next.dex_no) }}</span>
+      {{ dex_next.common_name }}</span>
+    <span class="dex-tri dex-tri-r" aria-hidden="true"></span>
+  </a>
+  {% else %}<span class="dex-step end next">End of registry</span>{% endif %}
+</nav>
+
+<section id="about" class="card species-about" hidden>
+  <h2>About</h2>
+  <p class="about-descriptor"></p>
+  <p class="about-extract"></p>
+  <div class="about-tax"></div>
+  <a class="about-link" target="_blank" rel="noopener noreferrer" hidden>Read more on Wikipedia →</a>
+  <div class="about-credit">Info from Wikipedia &amp; iNaturalist</div>
+</section>
+
+<section class="grid2">
+  <div class="card"><h2>Detections per day (30d)</h2><div class="chart-box"><canvas id="perDay"></canvas></div></div>
+  <div class="card"><h2>Activity by hour (all time)</h2><div class="chart-box"><canvas id="hourly"></canvas></div></div>
+</section>
+
+{% if has_both %}
+<div class="controls">
+  <form method="get" action="{{ u('species_detail', name=species) }}">
+    <label>Show
+      <select name="source" onchange="this.form.submit()">
+        <option value="frigate" {{ 'selected' if source == 'frigate' }}>Video (Frigate)</option>
+        <option value="birdnet" {{ 'selected' if source == 'birdnet' }}>Audio (BirdNET-Go)</option>
+        <option value="all" {{ 'selected' if source == 'all' }}>All</option>
+      </select>
+    </label>
+  </form>
+</div>
+{% endif %}
+
+<div id="groups">
+  {% include "_groups.html" %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.aviaryInitSpecies({
+    species: {{ species | tojson }},
+    scientific: {{ (stats.scientific_name or '') | tojson }},
+  });
+  window.aviaryInitDexEntry();
+</script>
+{% endblock %}

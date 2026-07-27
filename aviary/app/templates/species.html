@@ -5,8 +5,7 @@
   <a class="back" href="{{ u('dashboard') }}">← Dashboard</a>
 </div>
 
-<section class="card species-hero{{ ' heard-only' if not stats.frigate_total }}"
-         {% if dex_no %}data-dex="{{ '%03d' | format(dex_no) }}"{% endif %}>
+<section class="card species-hero">
   {% if thumb %}
   <img class="hero-thumb" alt="{{ species }}"
        src="{{ u('frigate_snapshot', event_id=thumb) }}">

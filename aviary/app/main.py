@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import mimetypes
 import os
 import time
 from contextlib import asynccontextmanager
@@ -18,6 +19,11 @@ from .routes import ASSET_VER, register_routes
 from .settings import load_settings
 
 _APP_DIR = os.path.dirname(__file__)
+
+# Python's mimetypes table has no web-font entries, so StaticFiles would serve the
+# vendored dex font as text/plain.
+mimetypes.add_type("font/woff2", ".woff2")
+mimetypes.add_type("font/woff", ".woff")
 
 
 class NoCacheStaticFiles(StaticFiles):

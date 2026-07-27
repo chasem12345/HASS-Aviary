@@ -1,0 +1,81 @@
+{# Pokedex-theme registry: a numbered list of every species detected, in first-detection
+   order. Selected by routes.render() when the dex theme is active; the default
+   species_index.html is unchanged. Rows are plain <a> elements so clicking and keyboard
+   activation work with no JS — app.js only adds arrow-key cursor movement on top. #}
+{% extends "base.html" %}
+{% block title %} · {{ 'New entries' if only_new else 'Registry' }}{% endblock %}
+{% block content %}
+<div class="controls">
+  <form method="get" action="{{ u('species_index') }}">
+    {% if only_new %}<input type="hidden" name="new" value="1">{% endif %}
+    <label>Source
+      <select name="source" onchange="this.form.submit()">
+        <option value="all" {{ 'selected' if source == 'all' }}>All</option>
+        <option value="frigate" {{ 'selected' if source == 'frigate' }}>Frigate (visual)</option>
+        <option value="birdnet" {{ 'selected' if source == 'birdnet' }}>BirdNET-Go (audio)</option>
+      </select>
+    </label>
+    <label>Range
+      <select name="range" onchange="this.form.submit()">
+        <option value="today" {{ 'selected' if range == 'today' }}>Today</option>
+        <option value="7d" {{ 'selected' if range == '7d' }}>7 days</option>
+        <option value="30d" {{ 'selected' if range == '30d' }}>30 days</option>
+        <option value="all" {{ 'selected' if range == 'all' }}>All time</option>
+      </select>
+    </label>
+    {% if only_new %}
+      <a class="filter-chip" href="{{ u('species_index') }}?range={{ range }}{% if source != 'all' %}&source={{ source }}{% endif %}">New only ✕</a>
+    {% else %}
+      <a class="btn btn-sm" href="{{ u('species_index') }}?new=1&range={{ range }}{% if source != 'all' %}&source={{ source }}{% endif %}">Show new only</a>
+    {% endif %}
+  </form>
+</div>
+
+<div class="dex-head">
+  <span>{{ 'New entries' if only_new else 'Registry' }}</span>
+  <span class="spacer"></span>
+  {# Completion: species caught on camera out of every species detected. Always the
+     full registry, not the filtered view. #}
+  <span title="{{ registry.seen }} of {{ registry.total }} species have been seen on camera">
+    SEEN {{ registry.seen }}/{{ registry.total }}</span>
+  <span class="hint">↑↓ select · ↵ open</span>
+</div>
+
+{% if species %}
+{# Entry numbers come from the whole registry, so a filtered list is legitimately
+   non-contiguous. Sorting here (not in the view) keeps the default theme's
+   count-descending order intact. #}
+<div class="dex-screen dex-registry" id="dexRegistry">
+  {% for s in species | sort(attribute='dex_no') %}
+  {% set is_seen = s.frigate_total or 0 %}
+  {% set is_new = since is not none and s.first_seen is not none and s.first_seen >= since %}
+  <a class="dex-reg-row{{ ' heard-only' if not is_seen }}"
+     href="{{ u('species_detail', name=s.common_name) }}">
+    <span class="dex-tri dex-tri-r cursor" aria-hidden="true"></span>
+    <span class="dex-plate">No.{{ '%03d' | format(s.dex_no) }}</span>
+    <span class="dex-reg-name">
+      {{ s.common_name }}{% if is_new %} <span class="new-badge">NEW</span>{% endif %}
+      {% if s.scientific_name %}<span class="sci">{{ s.scientific_name }}</span>{% endif %}
+    </span>
+    <span class="dex-count">
+      {# Bar length is relative to the busiest species in this view. #}
+      <span class="dex-meter{{ '' if is_seen else ' heard' }}"
+            style="--fill: {{ (100 * s.count / (species | map(attribute='count') | max)) | round(0) }}%"></span>
+      <span class="n">×{{ s.count }}</span>
+    </span>
+    <span class="dex-state">{{ 'SEEN' if is_seen else 'HEARD' }}</span>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="dex-screen dex-registry">
+  <p class="empty">{{ 'No new entries in this range.' if only_new else 'Registry empty — no species detected yet.' }}</p>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.aviaryInitDexRegistry();
+</script>
+{% endblock %}

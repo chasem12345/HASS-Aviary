@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.0
+
+- **Pokédex mode is now a real dex, not a recolour.** Two pages are rebuilt rather than
+  restyled, on inset LCD-style screens with a bundled pixel typeface
+  ([Silkscreen](https://github.com/googlefonts/silkscreen), SIL OFL, served locally so the
+  theme works offline):
+  - **Registry** (Species page): a numbered list in first-detection order with a
+    `SEEN n/total` completion readout, per-row detection gauges and HEARD/SEEN state.
+  - **Entry** (species page): the photo in one screen and a data readout in another —
+    order, family, conservation status, first/last detection, best confidence and
+    seen/heard gauges — plus a **CRY** button that plays the species' reference recording.
+  - **Dex navigation**: `↑`/`↓` move the registry cursor, `↵` opens an entry, `Home`/`End`
+    jump to either end, and `←`/`→` step between neighbouring entries. Built from ordinary
+    links, so clicking (and JavaScript being disabled) still works.
+  - Dashboard, Recent and Settings keep their normal layout in the dex palette.
+- **Fixed: slow startup could make Home Assistant's ingress return 502.** The
+  species-name canonicalisation pass ran on every start with an unindexed
+  `COLLATE NOCASE` correlated subquery — quadratic in the size of the detections table,
+  and it runs before the web server binds its port. Measured on a synthetic database:
+  18.5s at 20k detections (and ~2min at the sizes real installs reach). Adding a NOCASE
+  index on `scientific_name` and skipping the pass when there's nothing to remap brings
+  that to **0.01s**, and the one-time upgrade (including building the index) to 0.09s at
+  60k rows. The same index removes a full table scan that previously ran *per ingested
+  detection*, so MQTT ingest and backfill are much cheaper too.
+- The top bar now wraps instead of staying one row, so four nav links plus the theme
+  toggle can't widen the page on a narrow screen.
+- Web fonts are served with a correct `font/woff2` content type (Python's MIME table has
+  no font entries, so they were being sent as `text/plain`).
+
 ## 0.5.0
 
 - **Species blacklist**: "Blacklist — remove and never record again" on the

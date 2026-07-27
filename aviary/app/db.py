@@ -38,6 +38,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_source_ref
     ON detections (source, source_ref);
 CREATE INDEX IF NOT EXISTS idx_detections_start_time ON detections (start_time);
 CREATE INDEX IF NOT EXISTS idx_detections_common_name ON detections (common_name);
+-- The collation has to be declared on the index, not just in the query, or SQLite won't
+-- use it for a `= ? COLLATE NOCASE` comparison. Without this, canonical_species() does a
+-- full table scan for every single ingested detection, and the startup remap below is
+-- quadratic in the table size (measured: 18s at 20k rows, ~2min at 50k).
+CREATE INDEX IF NOT EXISTS idx_detections_scientific_nocase
+    ON detections (scientific_name COLLATE NOCASE);
 
 -- Tombstones for user-deleted detections: ingest and backfill skip these refs so a
 -- deleted misclassification can't be re-imported from the source's history.
@@ -126,25 +132,43 @@ def init_db(db_path: str) -> None:
         # name (e.g. Frigate's classifier) onto the species' real common name, when
         # another source has recorded the pairing. Keeps species pages and
         # new-species notifications from splitting one bird into two species.
-        conn.execute(
+        #
+        # Probe first and skip the UPDATE when there is nothing to remap — the normal
+        # case on every start after the first. This runs before uvicorn binds its port,
+        # so a slow pass here means Home Assistant's ingress serves 502 until it
+        # finishes.
+        needs_remap = conn.execute(
             """
-            UPDATE detections SET
-                scientific_name = COALESCE(scientific_name, common_name),
-                common_name = (
-                    SELECT b.common_name FROM detections b
-                    WHERE b.scientific_name = detections.common_name COLLATE NOCASE
-                      AND b.common_name != ''
-                      AND LOWER(b.common_name) != LOWER(b.scientific_name)
-                    ORDER BY b.start_time DESC LIMIT 1
-                )
-            WHERE common_name != '' AND EXISTS (
+            SELECT 1 FROM detections a
+            WHERE a.common_name != '' AND EXISTS (
                 SELECT 1 FROM detections b
-                WHERE b.scientific_name = detections.common_name COLLATE NOCASE
+                WHERE b.scientific_name = a.common_name COLLATE NOCASE
                   AND b.common_name != ''
                   AND LOWER(b.common_name) != LOWER(b.scientific_name)
             )
+            LIMIT 1
             """
-        )
+        ).fetchone()
+        if needs_remap:
+            conn.execute(
+                """
+                UPDATE detections SET
+                    scientific_name = COALESCE(scientific_name, common_name),
+                    common_name = (
+                        SELECT b.common_name FROM detections b
+                        WHERE b.scientific_name = detections.common_name COLLATE NOCASE
+                          AND b.common_name != ''
+                          AND LOWER(b.common_name) != LOWER(b.scientific_name)
+                        ORDER BY b.start_time DESC LIMIT 1
+                    )
+                WHERE common_name != '' AND EXISTS (
+                    SELECT 1 FROM detections b
+                    WHERE b.scientific_name = detections.common_name COLLATE NOCASE
+                      AND b.common_name != ''
+                      AND LOWER(b.common_name) != LOWER(b.scientific_name)
+                )
+                """
+            )
 
 
 @contextmanager

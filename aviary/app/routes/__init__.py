@@ -56,10 +56,14 @@ def _asset_version() -> str:
 
     Changes whenever any static asset changes (each Docker build re-COPYs them with a
     fresh mtime), so browsers fetch new CSS/JS after an add-on update instead of serving
-    a stale cached copy.
+    a stale cached copy. Recursive so assets in subdirectories (``static/fonts``) count —
+    a directory's own mtime doesn't track edits to the files inside it.
     """
     try:
-        newest = max(os.path.getmtime(p) for p in glob.glob(os.path.join(_STATIC_DIR, "*")))
+        newest = max(
+            os.path.getmtime(p)
+            for p in glob.glob(os.path.join(_STATIC_DIR, "**"), recursive=True)
+        )
         return str(int(newest))
     except ValueError:
         return "0"
@@ -89,6 +93,20 @@ def _ingress_context(request: Request) -> dict:
 
 
 templates = Jinja2Templates(directory=_TEMPLATE_DIR, context_processors=[_ingress_context])
+
+
+def render(name: str, ctx: dict):
+    """Render ``name``, preferring ``templates/dex/<name>`` when the dex theme is active.
+
+    Lets the dex theme restructure a page wholesale — the registry list and the entry
+    screen are genuinely different layouts, not restyled ones — without branching inside
+    the shared templates. Pages with no dex variant fall through unchanged, so they can't
+    regress. Includes still resolve from the template root, so a dex template can reuse
+    partials like ``_groups.html`` directly.
+    """
+    if get_theme() == "dex" and os.path.isfile(os.path.join(_TEMPLATE_DIR, "dex", name)):
+        name = f"dex/{name}"
+    return templates.TemplateResponse(name, ctx)
 
 
 def _fmt_time(epoch) -> str:

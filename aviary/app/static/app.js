@@ -129,11 +129,29 @@
     });
   }
 
+  // The dex entry's ORDER / FAMILY / STATUS rows are fed by the same species-info
+  // fetch as the About card — no second request. Filled before the About card's
+  // early-returns so the rows resolve to "unknown" instead of sitting on placeholders.
+  function fillDexTaxonomy(info) {
+    const fields = {
+      "dex-order": info && info.order,
+      "dex-family": info && info.family,
+      "dex-status": info && info.conservation,
+    };
+    Object.keys(fields).forEach((id) => {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.textContent = fields[id] || "unknown";
+      node.classList.remove("pending");
+    });
+  }
+
   async function loadSpeciesInfo(name, scientific) {
     const el = document.getElementById("about");
     if (!el) return;
     try {
       const info = await getJson("/species-info", { name: name, sci: scientific });
+      fillDexTaxonomy(info);
       if (!info || !info.ok || (!info.extract && !info.family)) return;
       const set = (sel, text) => {
         const node = el.querySelector(sel);
@@ -190,6 +208,83 @@
     hourlyChart({ species: opts.species, days: 3650 });
     loadSpeciesInfo(opts.species, opts.scientific);
     loadReferenceAudio(opts.species, opts.scientific);
+  };
+
+  // ------------------------------------------------------------------ dex mode
+  // Enhancements only: the registry rows and the prev/next steps are real links, so
+  // both screens stay fully navigable with JS disabled.
+
+  /** True when the element would rather handle arrow keys itself. */
+  function ownsArrowKeys(el) {
+    if (!el) return false;
+    const tag = (el.tagName || "").toLowerCase();
+    // select/input: the filter controls. video/audio: arrows seek the clip.
+    return el.isContentEditable ||
+      ["input", "select", "textarea", "video", "audio", "button"].indexOf(tag) !== -1;
+  }
+
+  window.aviaryInitDexRegistry = function () {
+    const list = document.getElementById("dexRegistry");
+    if (!list) return;
+    const rows = Array.prototype.slice.call(list.querySelectorAll(".dex-reg-row"));
+    if (!rows.length) return;
+
+    // Roving tabindex: the whole registry is a single Tab stop, then arrows move the
+    // cursor within it. Enter needs no handler — the rows are anchors.
+    let idx = 0;
+    rows.forEach((row, i) => {
+      row.tabIndex = i === 0 ? 0 : -1;
+      row.addEventListener("focus", () => {
+        rows[idx].tabIndex = -1;
+        idx = i;
+        row.tabIndex = 0;
+      });
+    });
+
+    function move(next) {
+      if (next < 0 || next >= rows.length) return;
+      rows[next].focus();  // the focus handler keeps `idx` and tabindex in sync
+    }
+
+    // Scoped to the list, so arrow keys still scroll the page until a row is focused.
+    list.addEventListener("keydown", (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const step = { ArrowDown: 1, ArrowUp: -1 }[e.key];
+      if (step) { e.preventDefault(); move(idx + step); return; }
+      if (e.key === "Home") { e.preventDefault(); move(0); }
+      else if (e.key === "End") { e.preventDefault(); move(rows.length - 1); }
+    });
+  };
+
+  window.aviaryInitDexEntry = function () {
+    // CRY: the wrapper is revealed by loadReferenceAudio() only when a licensed
+    // recording exists, so the button is never dead.
+    const wrap = document.getElementById("ref-audio");
+    const cry = document.getElementById("dexCry");
+    if (wrap && cry) {
+      const audio = wrap.querySelector("audio");
+      cry.addEventListener("click", () => {
+        if (!audio.paused) {
+          audio.pause();
+          audio.currentTime = 0;
+          return;
+        }
+        audio.play().catch(() => { /* autoplay policy / decode failure: leave it */ });
+      });
+      audio.addEventListener("play", () => cry.classList.add("playing"));
+      ["pause", "ended"].forEach((ev) =>
+        audio.addEventListener(ev, () => cry.classList.remove("playing")));
+    }
+
+    const steps = document.getElementById("dexSteps");
+    if (!steps) return;
+    document.addEventListener("keydown", (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || ownsArrowKeys(e.target)) return;
+      const rel = { ArrowLeft: "prev", ArrowRight: "next" }[e.key];
+      if (!rel) return;
+      const link = steps.querySelector('a[rel="' + rel + '"]');
+      if (link) { e.preventDefault(); window.location = link.href; }
+    });
   };
 
   // ---------------------------------------------------------------- theme toggle

@@ -1,3 +1,19 @@
+/* Pixel font for the Pokedex theme: Silkscreen, SIL OFL 1.1 (see fonts/OFL.txt).
+   Latin subset only (~16KB total) and served locally — the add-on has to work without
+   outbound internet, so no external font host. URLs are relative so they resolve under
+   the versioned /static-<ver>/ mount and inherit its cache-busting. Only the dex theme
+   references the family, so the default theme never downloads it. */
+@font-face {
+  font-family: "Silkscreen";
+  src: url("fonts/silkscreen-400.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Silkscreen";
+  src: url("fonts/silkscreen-700.woff2") format("woff2");
+  font-weight: 700; font-style: normal; font-display: swap;
+}
+
 :root {
   --bg: #f4f6f8;
   --card: #ffffff;
@@ -29,13 +45,18 @@ body {
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
+/* Wraps because the bar holds four nav links plus the theme toggle: without wrapping it
+   sets a min-width wider than a phone, which widens the whole document and pushes page
+   content off-screen. */
 .topbar {
-  display: flex; align-items: center; gap: 24px;
+  display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
   padding: 12px 20px; background: var(--card); border-bottom: 1px solid var(--line);
   position: sticky; top: 0; z-index: 10;
 }
-.brand { font-weight: 700; font-size: 18px; }
-.topbar nav { display: flex; gap: 16px; }
+.brand { font-weight: 700; font-size: 18px; white-space: nowrap; }
+/* min-width:0 lets the nav shrink past its min-content width so its own flex-wrap can
+   take effect; without it the nav stays one long row and widens the document. */
+.topbar nav { display: flex; gap: 16px; flex-wrap: wrap; min-width: 0; }
 .topbar nav a { color: var(--muted); padding: 4px 2px; }
 .topbar nav a.active { color: var(--ink); border-bottom: 2px solid var(--accent); }
 
@@ -311,8 +332,9 @@ img.overlay-img {
   color: var(--muted); font: inherit; font-size: 12px; padding: 4px 12px;
 }
 .theme-toggle:hover { color: var(--ink); border-color: var(--accent); }
-/* Dex-only chrome: inert in the default theme. */
-.dex-led, .dex-state, .page-title .registry { display: none; }
+/* The indicator lamp lives in the shared topbar, so it has to be hidden here rather
+   than in the dex layer. Other dex chrome only exists in templates/dex/. */
+.dex-led { display: none; }
 
 /* -------------------------------------------------------------------- settings */
 .setting-row { display: flex; gap: 20px; align-items: flex-start; }
@@ -341,7 +363,9 @@ img.overlay-img {
   .stats { grid-template-columns: repeat(2, 1fr); }
   .grid2, .grid2-uneven { grid-template-columns: 1fr; }
   .container { padding: 14px; }
-  .topbar { padding: 10px 14px; gap: 14px; }
+  .topbar { padding: 10px 14px; gap: 8px 14px; }
+  /* Sits inline with the nav once the bar wraps, instead of forcing a wide row. */
+  .theme-toggle { margin-left: 0; }
   .controls form { gap: 10px; }
   .species-hero { flex-direction: column; }
   .hero-thumb { width: 100%; aspect-ratio: 16 / 9; }
@@ -369,8 +393,14 @@ img.overlay-img {
   --warn: #e0a72c;
   --danger: #e0553f;
   --radius: 6px;
-  --dex-screen: #8bac5f;    /* LED readout green */
+  --dex-screen: #8bac5f;    /* lit LCD green — 7.2:1 on --dex-well */
+  --dex-dim: #3f4a34;       /* unlit meter segments */
+  --dex-well: #10130f;      /* inset screen background */
+  --dex-well-line: #3d4a33; /* screen bezel */
   --font-body: var(--font-mono);
+  /* Pixel type for numbers/labels/readouts only. Body copy stays monospace — the
+     Wikipedia blurb is unreadable in a bitmap face. */
+  --font-pixel: "Silkscreen", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 /* --- casing: red topbar with indicator lamps --- */
@@ -399,66 +429,222 @@ img.overlay-img {
   border-color: #fff; background: rgba(0, 0, 0, .18);
 }
 
-/* --- readouts --- */
+/* --- shared readouts (pages that keep their default layout) --- */
 [data-theme="dex"] .page-title,
 [data-theme="dex"] .card h2,
 [data-theme="dex"] .day-head {
-  text-transform: uppercase; letter-spacing: .08em;
+  font-family: var(--font-pixel); text-transform: uppercase; letter-spacing: .06em;
 }
-[data-theme="dex"] .page-title .registry {
-  display: inline-block; font-size: 12px; letter-spacing: .12em;
-  color: var(--dex-screen); background: #10130f;
-  border: 1px solid #3d4a33; border-radius: 4px; padding: 3px 10px;
-}
-/* The registry readout already carries the species count. */
-[data-theme="dex"] .page-title .count { display: none; }
-[data-theme="dex"] .tile-meta .badge { text-transform: uppercase; }
-[data-theme="dex"] .stat .num,
-[data-theme="dex"] .hero-stats .num { color: var(--dex-screen); }
-
-/* --- registry entries --- */
-[data-theme="dex"] .species-tile,
-[data-theme="dex"] .det-card,
-[data-theme="dex"] .species-hero {
+[data-theme="dex"] .stat .num { font-family: var(--font-pixel); color: var(--dex-screen); }
+[data-theme="dex"] .det-card {
   border-width: 2px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .35);
 }
-/* Entry number plate, from data-dex on the tile/hero. */
-[data-theme="dex"] .species-tile[data-dex]::before,
-[data-theme="dex"] .species-hero[data-dex]::before {
-  content: "No." attr(data-dex);
-  position: absolute; top: 0; left: 0; z-index: 4;
-  background: #10130f; color: var(--dex-screen);
-  font-size: 11px; letter-spacing: .08em; padding: 2px 8px;
-  border-right: 1px solid #3d4a33; border-bottom: 1px solid #3d4a33;
-  border-bottom-right-radius: 4px;
-}
-[data-theme="dex"] .species-tile { position: relative; }
-[data-theme="dex"] .tile-name { text-transform: uppercase; letter-spacing: .04em; }
-
-/* HEARD vs SEEN state stamp. */
-[data-theme="dex"] .dex-state {
-  display: block; position: absolute; bottom: 6px; right: 6px; z-index: 4;
-  font-size: 10px; font-weight: 700; letter-spacing: .1em;
-  padding: 2px 7px; border-radius: 3px; color: #14170f;
-  background: var(--frigate);
-}
-[data-theme="dex"] .heard-only .dex-state { background: var(--birdnet); color: #fff; }
-/* A species only ever heard stays a silhouette until a camera completes the entry. */
-[data-theme="dex"] .species-tile.heard-only .tile-thumb img {
-  filter: grayscale(1) brightness(.45) contrast(1.15);
-}
-[data-theme="dex"] .species-tile.heard-only .thumb-mark { filter: grayscale(1); opacity: .35; }
-[data-theme="dex"] .species-hero.heard-only .hero-thumb {
-  filter: grayscale(1) brightness(.55) contrast(1.1);
-}
-
 [data-theme="dex"] .badge { border-radius: 3px; letter-spacing: .08em; }
 [data-theme="dex"] .badge-frigate { color: #14170f; }
 [data-theme="dex"] .new-badge { border-radius: 3px; letter-spacing: .1em; color: #fff; }
 
-/* --- reference call reads as a dex cry readout --- */
-[data-theme="dex"] .ref-audio h2::after {
-  content: " · CRY"; color: var(--dex-screen);
+/* ------------------------------------------------------------ LCD primitives
+   Shared by the registry and entry screens. Glyphs like ► ▓ ░ are deliberately
+   NOT used: the font's latin subset has no box-drawing or geometric-shape
+   characters, so cursors and meters are built from CSS instead and can't fall
+   back to a mismatched system face. */
+[data-theme="dex"] .dex-screen {
+  position: relative; background: var(--dex-well);
+  border: 2px solid var(--dex-well-line); border-radius: 4px;
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, .75);
+  overflow: hidden;
+}
+/* Scanline overlay. pointer-events:none so it never swallows clicks on rows beneath. */
+[data-theme="dex"] .dex-screen::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg, rgba(0, 0, 0, .20) 0 1px, transparent 1px 3px);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="dex"] .dex-screen::after { background: none; }
+}
+
+[data-theme="dex"] .dex-plate {
+  font-family: var(--font-pixel); font-size: 11px; letter-spacing: .04em;
+  color: var(--dex-screen); background: rgba(0, 0, 0, .45);
+  border: 1px solid var(--dex-well-line); border-radius: 3px;
+  padding: 2px 6px; white-space: nowrap;
+}
+
+/* Segmented meter. Fill comes from an inline `--fill: <pct>`; the mask cuts the bar
+   into cells so it reads as an LCD gauge rather than a progress bar. */
+[data-theme="dex"] .dex-meter {
+  --fill: 0%;
+  display: block; width: 100%; height: 9px; min-width: 40px;
+  background: linear-gradient(90deg,
+    var(--dex-screen) 0 var(--fill), var(--dex-dim) var(--fill) 100%);
+  -webkit-mask: repeating-linear-gradient(90deg, #000 0 4px, transparent 4px 6px);
+          mask: repeating-linear-gradient(90deg, #000 0 4px, transparent 4px 6px);
+}
+[data-theme="dex"] .dex-meter.heard {
+  background: linear-gradient(90deg,
+    var(--birdnet) 0 var(--fill), var(--dex-dim) var(--fill) 100%);
+}
+
+/* Label · dotted leader · value data line. */
+[data-theme="dex"] .dex-row {
+  display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 12px;
+}
+[data-theme="dex"] .dex-row .k {
+  color: var(--muted); text-transform: uppercase; letter-spacing: .1em; white-space: nowrap;
+}
+[data-theme="dex"] .dex-row .lead {
+  flex: 1; align-self: center; border-bottom: 1px dotted var(--dex-well-line); min-width: 12px;
+}
+[data-theme="dex"] .dex-row .v {
+  font-family: var(--font-pixel); color: var(--dex-screen); white-space: nowrap;
+  text-align: right;
+}
+[data-theme="dex"] .dex-row .v.pending { color: var(--dex-dim); }
+/* A meter inside a data row is a fixed gauge, not a fill-the-row bar — the dotted
+   leader is what absorbs the slack. */
+[data-theme="dex"] .dex-row .dex-meter { flex: none; width: 92px; }
+/* The data screen already lists order and family, so the About card's chips would just
+   repeat them. */
+[data-theme="dex"] .dex-entry ~ .species-about .about-tax { display: none; }
+
+/* CSS triangles — see the note above about missing glyphs. */
+[data-theme="dex"] .dex-tri {
+  display: inline-block; width: 0; height: 0; flex: none;
+  border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+}
+[data-theme="dex"] .dex-tri-r { border-left: 8px solid currentColor; }
+[data-theme="dex"] .dex-tri-l { border-right: 8px solid currentColor; }
+
+/* ------------------------------------------------------------- registry screen */
+[data-theme="dex"] .dex-head {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  font-family: var(--font-pixel); text-transform: uppercase; letter-spacing: .08em;
+  color: var(--dex-screen); font-size: 13px;
+  padding: 8px 12px; margin: 0 0 12px;
+  background: var(--dex-well); border: 2px solid var(--dex-well-line); border-radius: 4px;
+}
+[data-theme="dex"] .dex-head .spacer { flex: 1; }
+[data-theme="dex"] .dex-head .hint { color: var(--muted); font-size: 11px; letter-spacing: .06em; }
+
+[data-theme="dex"] .dex-registry { padding: 4px; }
+[data-theme="dex"] .dex-reg-row {
+  position: relative; z-index: 1;
+  display: grid; align-items: center; gap: 10px;
+  grid-template-columns: 10px auto minmax(0, 1fr) 116px 62px;
+  /* Uniform rows whether or not the species has a scientific name to show. */
+  min-height: 44px;
+  padding: 6px 8px; color: var(--ink); text-decoration: none;
+  border-bottom: 1px solid rgba(255, 255, 255, .05);
+}
+[data-theme="dex"] .dex-reg-row:last-child { border-bottom: none; }
+[data-theme="dex"] .dex-reg-row .cursor { color: var(--accent); opacity: 0; }
+[data-theme="dex"] .dex-reg-row:hover,
+[data-theme="dex"] .dex-reg-row:focus {
+  background: rgba(139, 172, 95, .12); text-decoration: none; outline: none;
+}
+[data-theme="dex"] .dex-reg-row:hover .cursor,
+[data-theme="dex"] .dex-reg-row:focus .cursor { opacity: 1; }
+[data-theme="dex"] .dex-reg-name {
+  min-width: 0; font-family: var(--font-pixel); font-size: 12px;
+  text-transform: uppercase; letter-spacing: .04em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+[data-theme="dex"] .dex-reg-name .sci {
+  display: block; font-family: var(--font-mono); font-style: italic;
+  text-transform: none; letter-spacing: 0; color: var(--muted); font-size: 11px;
+}
+[data-theme="dex"] .dex-count {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--font-pixel); font-size: 11px; color: var(--muted);
+}
+[data-theme="dex"] .dex-count .n { width: 34px; text-align: right; flex: none; }
+
+/* HEARD / SEEN state chip. */
+[data-theme="dex"] .dex-state {
+  font-family: var(--font-pixel); font-size: 10px; letter-spacing: .08em;
+  padding: 2px 6px; border-radius: 3px; text-align: center;
+  background: var(--frigate); color: #14170f;
+}
+[data-theme="dex"] .heard-only .dex-state { background: var(--birdnet); color: #fff; }
+
+/* --------------------------------------------------------------- entry screen */
+[data-theme="dex"] .dex-entry { display: grid; gap: 14px; grid-template-columns: 260px 1fr; }
+[data-theme="dex"] .dex-photo { aspect-ratio: 4 / 3; display: grid; place-items: center; }
+[data-theme="dex"] .dex-photo img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+[data-theme="dex"] .dex-photo .thumb-mark { font-size: 46px; opacity: .4; }
+/* Heard but never seen: the entry stays a silhouette until a camera completes it. */
+[data-theme="dex"] .heard-only .dex-photo img { filter: grayscale(1) brightness(.4) contrast(1.2); }
+[data-theme="dex"] .heard-only .dex-photo .thumb-mark { filter: grayscale(1); opacity: .3; }
+[data-theme="dex"] .dex-side { display: flex; flex-direction: column; gap: 10px; }
+[data-theme="dex"] .dex-data { padding: 10px 14px; }
+[data-theme="dex"] .dex-title {
+  font-family: var(--font-pixel); font-size: 18px; letter-spacing: .04em;
+  text-transform: uppercase; margin: 0;
+}
+[data-theme="dex"] .dex-title .sci {
+  display: block; font-family: var(--font-mono); font-size: 12px; font-style: italic;
+  text-transform: none; letter-spacing: 0; color: var(--muted); margin-top: 4px;
+}
+
+[data-theme="dex"] .dex-cry {
+  display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
+  font-family: var(--font-pixel); font-size: 12px; letter-spacing: .1em;
+  color: var(--dex-screen); background: var(--dex-well);
+  border: 2px solid var(--dex-well-line); border-radius: 4px;
+  padding: 8px 14px; cursor: pointer;
+}
+/* The dex entry drives playback from the CRY button, so the native controls are hidden
+   (the element still carries the source and the play/pause events). */
+[data-theme="dex"] .ref-audio audio { display: none; }
+[data-theme="dex"] .dex-cry:hover { border-color: var(--dex-screen); }
+[data-theme="dex"] .dex-cry[disabled] { opacity: .45; cursor: default; }
+[data-theme="dex"] .dex-cry.playing { background: rgba(139, 172, 95, .18); }
+
+[data-theme="dex"] .dex-steps {
+  display: flex; align-items: stretch; gap: 10px; margin: 14px 0 18px;
+}
+[data-theme="dex"] .dex-step {
+  flex: 1; display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; text-decoration: none; color: var(--ink);
+  background: var(--card); border: 2px solid var(--line); border-radius: 4px;
+  font-family: var(--font-pixel); font-size: 11px; letter-spacing: .04em;
+  text-transform: uppercase; overflow: hidden;
+}
+[data-theme="dex"] .dex-step:hover { border-color: var(--accent); text-decoration: none; }
+[data-theme="dex"] .dex-step.next { justify-content: flex-end; text-align: right; }
+[data-theme="dex"] .dex-step .label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+[data-theme="dex"] .dex-step .no { color: var(--dex-screen); }
+/* At either end of the registry, say so rather than leaving a gap that reads as a
+   layout bug. */
+[data-theme="dex"] .dex-step.end {
+  color: var(--muted); border-style: dashed; justify-content: center; cursor: default;
+}
+
+/* The delete control is shared markup; give it the dex chrome so it isn't the one
+   rounded sans-serif element on the screen. */
+[data-theme="dex"] .btn {
+  border-radius: 4px; font-family: var(--font-pixel); font-size: 11px;
+  letter-spacing: .06em; text-transform: uppercase;
+}
+
+@media (max-width: 720px) {
+  [data-theme="dex"] .dex-entry { grid-template-columns: 1fr; }
+  [data-theme="dex"] .dex-photo { aspect-ratio: 16 / 9; }
+  /* Drop the meter column first — the number, name and state carry the row. */
+  [data-theme="dex"] .dex-reg-row {
+    grid-template-columns: 10px auto minmax(0, 1fr) 56px; gap: 8px;
+  }
+  [data-theme="dex"] .dex-reg-row .dex-count { display: none; }
+  /* Keyboard hints are noise on a touch device. */
+  [data-theme="dex"] .dex-head .hint { display: none; }
+  /* The dex nav's tracking is expensive at phone widths. */
+  [data-theme="dex"] .topbar nav a { letter-spacing: .04em; }
+  [data-theme="dex"] .dex-row .dex-meter { width: 64px; }
 }
 
 @media (prefers-reduced-motion: no-preference) {
