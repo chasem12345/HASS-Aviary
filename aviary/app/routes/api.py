@@ -265,19 +265,29 @@ async def reference_audio(
     name: str = Query(..., min_length=1),
     sci: Optional[str] = Query(None),
 ):
-    """Metadata for a species' reference recording (cached; lazy-loaded).
+    """Metadata for a species' reference recordings (cached; lazy-loaded).
 
-    ``media_url`` points at Aviary's own proxy rather than iNaturalist, so the upstream
+    Returns every variant that resolved — ``song`` and ``call`` from xeno-canto, or the
+    untyped ``any`` from iNaturalist — so the page can offer a button per sound type.
+
+    ``media_url`` points at Aviary's own proxy rather than the provider, so the upstream
     URL stays server-side and playback works on http-served instances. Attribution and
     licence are always returned — the UI is required to display them.
     """
-    info = await species_audio.resolve(name, sci)
+    variants = await species_audio.resolve_all(name, sci)
     return {
-        "ok": info["ok"],
-        "attribution": info["attribution"],
-        "license_code": info["license_code"],
-        "observation_url": info["observation_url"],
-        "media_url": (
-            ingress_url(request, "species_reference_audio", name=name) if info["ok"] else None
-        ),
+        "ok": bool(variants),
+        "variants": {
+            kind: {
+                "provider": info["provider"],
+                "attribution": info["attribution"],
+                "license_code": info["license_code"],
+                "quality": info["quality"],
+                "source_url": info["source_url"],
+                "media_url": ingress_url(
+                    request, "species_reference_audio", name=name
+                ) + f"?kind={kind}",
+            }
+            for kind, info in variants.items()
+        },
     }

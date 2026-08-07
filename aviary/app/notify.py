@@ -5,8 +5,8 @@ event bus (through the Supervisor's Core API proxy — ``homeassistant_api: true
 carrying everything a notification automation needs to filter: seen/heard verb,
 ``is_new_species``, how long the species had been quiet
 (``seconds_since_species_last_detected``), the Frigate event id (``source_ref``),
-and the Aviary panel path for tap actions. First-ever species ALSO fire the legacy
-``aviary_new_species`` event for older automations.
+and a deep link to the species' Aviary page for tap actions. First-ever species ALSO
+fire the legacy ``aviary_new_species`` event for older automations.
 
 A notification image — the Frigate snapshot, else BirdNET-Go's generic species
 photo — is staged under HA's ``www`` folder first so companion apps can fetch it at
@@ -31,6 +31,7 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -55,9 +56,9 @@ _EXT_BY_TYPE = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "
 
 _client: Optional[httpx.AsyncClient] = None
 _settings: Optional[Settings] = None
-# Aviary's HA sidebar path (/hassio/ingress/<slug>) for notification tap actions.
-# Discovered lazily from the Supervisor self-info API; False = lookup failed, retry.
-_panel_path_cache: Optional[str | bool] = None
+# Aviary's add-on slug, which doubles as its HA sidebar path (/<slug>) for notification
+# tap actions. Discovered lazily from the Supervisor self-info API; False = lookup failed, retry.
+_panel_slug_cache: Optional[str | bool] = None
 
 
 def configure(settings: Settings) -> None:
@@ -154,6 +155,11 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
     if fetched:
         image_url = _save_image(*fetched, slug=species_slug(common_name))
 
+    # Tap target: this species' Aviary page. HA's app panel hands the path tail after
+    # /<addon_slug> to the ingress iframe, which base.html turns into a real navigation.
+    panel_slug = await _panel_slug()
+    panel_path = f"/{panel_slug}/species/{quote(common_name, safe='')}" if panel_slug else None
+
     payload = {
         "common_name": common_name,
         "scientific_name": row.get("scientific_name"),
@@ -168,7 +174,7 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
         "seconds_since_species_last_detected": _gap("any"),
         "seconds_since_species_last_seen": _gap("seen"),
         "seconds_since_species_last_heard": _gap("heard"),
-        "panel_path": await _panel_path(),
+        "panel_path": panel_path,
     }
     if test:
         payload["test"] = True
@@ -188,15 +194,16 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
     return {"fired": True, "image": image_url, "error": None}
 
 
-async def _panel_path() -> Optional[str]:
-    """``/hassio/ingress/<slug>`` for this add-on, from the Supervisor self-info API.
+async def _panel_slug() -> Optional[str]:
+    """This add-on's repository-prefixed slug (e.g. ``local_aviary``), from the Supervisor.
 
-    Needs ``hassio_api: true``. Cached after the first success; a failure is cached
-    as False and retried on the next detection.
+    HA registers the sidebar panel under exactly this slug, so ``/<slug>`` is the panel
+    URL that tap actions navigate to. Needs ``hassio_api: true``. Cached after the first
+    success; a failure is cached as False and retried on the next detection.
     """
-    global _panel_path_cache
-    if isinstance(_panel_path_cache, str):
-        return _panel_path_cache
+    global _panel_slug_cache
+    if isinstance(_panel_slug_cache, str):
+        return _panel_slug_cache
     if _client is None:
         return None
     try:
@@ -208,12 +215,12 @@ async def _panel_path() -> Optional[str]:
     except (httpx.HTTPError, ValueError):
         slug = None
     if slug:
-        _panel_path_cache = f"/hassio/ingress/{slug}"
-        return _panel_path_cache
-    if _panel_path_cache is None:  # log the first failure only
+        _panel_slug_cache = slug
+        return _panel_slug_cache
+    if _panel_slug_cache is None:  # log the first failure only
         log.warning("Could not resolve add-on slug from the Supervisor (is hassio_api enabled?); "
                     "notification tap actions for audio detections will be omitted.")
-    _panel_path_cache = False
+    _panel_slug_cache = False
     return None
 
 

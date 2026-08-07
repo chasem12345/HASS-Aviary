@@ -36,9 +36,9 @@ dashboard embedded in the Home Assistant sidebar.
   paginates with *Load older*, and refreshes itself (~30s) as new detections arrive.
 - **Species pages** show totals, first/last seen, best confidence, and per-day /
   hour-of-day activity charts for that species.
-- Species pages also offer a **reference call** — a community-confirmed recording of that
-  species from iNaturalist — so you can hear what the bird actually sounds like and judge
-  a BirdNET-Go classification for yourself. See [Reference calls](#reference-calls).
+- Species pages also offer **reference recordings** — a known song and call for that
+  species — so you can hear what the bird actually sounds like and judge a BirdNET-Go
+  classification for yourself. See [Reference recordings](#reference-recordings).
 
 ## Removing misclassifications
 
@@ -81,21 +81,45 @@ blacklisted it — those are gone.
 > silences notifications while still recording the species. Use it when you want the data
 > but not the alerts; use the blacklist here when you want neither.
 
-## Reference calls
+## Reference recordings
 
-Each species page lazily loads a **reference recording** from
-[iNaturalist](https://www.inaturalist.org) — the quickest way to sanity-check an audio
-classification against a known example of the species.
+Each species page lazily loads **reference recordings** — the quickest way to sanity-check
+an audio classification against a known example of the species.
 
-- Only **research-grade** observations are used (the identification has been confirmed by
-  the community), under a reusable Creative Commons licence. The recordist and licence are
-  always shown, with a link through to the original observation.
-- No API key or configuration is needed, and it works even if Frigate and BirdNET-Go are
-  unreachable.
-- Results are cached in Aviary's database for 30 days, so each species hits the API at most
-  once a month. The audio itself is not cached — it's streamed from iNaturalist on demand,
-  the same way Frigate and BirdNET-Go media are.
-- If iNaturalist has no suitable recording for a species, the card is simply not shown.
+### Get better recordings: set `xeno_canto_api_key`
+
+By default recordings come from [iNaturalist](https://www.inaturalist.org) observation
+sounds. Those are incidental field recordings of a *sighting*: the only quality signal
+available is whether the identification was confirmed, so clips often carry background
+birds, barking dogs and other noise.
+
+[xeno-canto](https://xeno-canto.org) is a dedicated bird-sound archive whose recordings
+carry a quality rating, a sound type and a list of other species audible in the clip.
+Aviary uses that metadata to pick clean, single-species audio. Setting the key gives you:
+
+- **Separate SONG and CALL buttons**, since they're different sounds worth hearing.
+- Only **quality A** recordings (falling back to B), 3–30 seconds long, strongly
+  preferring clips with **no other species audible**.
+
+To enable it, register a free account at [xeno-canto.org](https://xeno-canto.org), then
+copy the API key from [your account page](https://xeno-canto.org/account) into the
+`xeno_canto_api_key` add-on option and restart. The key is stored in your add-on config
+only — it is never sent to the browser, and audio is fetched server-side.
+
+### Behaviour
+
+- Aviary tries **xeno-canto quality A**, then **quality B**, then falls back to
+  **iNaturalist** research-grade observation sounds. Without a key — or for a species with
+  no scientific name on record — it goes straight to iNaturalist and behaves exactly as it
+  did before, with a single **CRY** button.
+- Only recordings under a **reusable Creative Commons licence** are used, and the licence
+  is re-checked on every result rather than trusted to the provider's filter. The recordist
+  and licence are always shown, with a link through to the original recording — a condition
+  of those licences, so a recording with nothing to credit is never played.
+- Results are cached in Aviary's database for 30 days, so each species hits the APIs at
+  most once a month. The audio itself is not cached — it's streamed from the provider on
+  demand, the same way Frigate and BirdNET-Go media are.
+- If no provider has a suitable recording, the card is simply not shown.
 
 ## Diet and habitat
 
@@ -140,8 +164,10 @@ Two pages are rebuilt rather than recoloured:
   list is legitimately non-contiguous.
 - **Entry** (a species page) becomes a dex readout: the photo in one screen, and
   order/family/conservation status, [diet](#diet-and-habitat), first/last detection, best
-  confidence and seen/heard gauges in another, with a **CRY** button that plays the
-  species' reference recording (see [Reference calls](#reference-calls)). The entry photo
+  confidence and seen/heard gauges in another, with **SONG** and **CALL** buttons that
+  play the species' reference recordings — a single **CRY** button when only the
+  iNaturalist fallback is available (see [Reference recordings](#reference-recordings)).
+  The entry photo
   is **always full colour**, even for a species you've only heard — the entry is where you
   go to see what the bird actually looks like.
 
@@ -184,7 +210,7 @@ deduplicated):
   "seconds_since_species_last_detected": 5400.0,  // any source; null = first ever
   "seconds_since_species_last_seen": 5400.0,      // Frigate only; null = never seen
   "seconds_since_species_last_heard": 120.0,      // BirdNET-Go only; null = never heard
-  "panel_path": "/hassio/ingress/<slug>"   // Aviary's sidebar panel, for tap actions
+  "panel_path": "/<addon_slug>/species/Blue%20Jay"  // this species' Aviary page, for tap actions
 }
 ```
 
@@ -210,8 +236,10 @@ update, run *Developer Tools → YAML → Reload Automations* so HA re-reads it)
    - **Frigate notification proxy base** (advanced) — powers the seen-bird tap
      action; needs the Frigate integration. Clear to disable.
 3. **Tap behavior**: seen-bird notifications open the Frigate clip; heard-bird
-   notifications open the Aviary panel. (HA ingress can't deep-link to a specific
-   Aviary page yet.)
+   notifications open that species' Aviary page. The species deep link needs **Home
+   Assistant 2026.2 or newer** — that release moved add-on panels from
+   `/hassio/ingress/<slug>` to `/<addon_slug>` and added the iframe routing Aviary
+   uses to land on the right page.
 4. Press **"Test notification"** on the Aviary dashboard — it fires a test event
    through the full pipeline (image included) and reports errors inline.
 
@@ -236,6 +264,7 @@ Notes:
 | `ignore_unclassified` | Skip detections with no species — i.e. Frigate `bird` objects with no `sub_label` (default `true`). Set `false` to also record generic "bird" sightings. |
 | `notify_new_species` | Fire `aviary_detection` HA events for live detections (default `true`). See *Bird notifications*. |
 | `mqtt_host` / `mqtt_port` / `mqtt_user` / `mqtt_password` | Optional broker overrides. Leave `mqtt_host` empty to use the HA Mosquitto broker automatically. |
+| `xeno_canto_api_key` | Optional free key from [xeno-canto.org/account](https://xeno-canto.org/account). Unlocks curated song/call reference recordings; blank keeps the iNaturalist fallback. See [Reference recordings](#reference-recordings). |
 | `log_level` | Logging verbosity. |
 
 Changing any of these needs an add-on restart. The **Settings** page inside Aviary holds

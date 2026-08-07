@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.8.0
+
+- **Much better reference recordings, from xeno-canto.** The CRY button used to play
+  iNaturalist observation sounds — incidental recordings of a sighting, with no quality
+  metadata at all, which is why clips so often carried other birds, barking dogs and
+  creaking doors. [xeno-canto](https://xeno-canto.org) is a dedicated bird-sound archive
+  where every recording is rated and lists the other species audible in it. Aviary now
+  picks **quality A** (falling back to B), 3–30 seconds, strongly preferring clips with
+  **nothing else audible**.
+- **Separate SONG and CALL buttons** on the species page — they're different sounds, and
+  both are worth hearing. Species that only resolve through the fallback keep the single
+  CRY button they have today.
+- Needs a **free API key**: register at xeno-canto.org, copy the key from your account
+  page into the new `xeno_canto_api_key` option, and restart. xeno-canto has required a
+  key since October 2025. The key never reaches the browser — audio is fetched
+  server-side through Aviary's existing media proxy.
+- **Leave the option blank and nothing changes**: no key, no scientific name on record, or
+  no acceptable xeno-canto recording all fall back to the previous iNaturalist behaviour.
+  Licence checks and the always-visible recordist/licence credit apply to both sources,
+  and the credit now follows whichever clip you're playing.
+- The `species_audio` cache table is rebuilt on first start to hold one row per species
+  *and* sound type. It is a pure metadata cache, so entries simply refill on next view.
+
+## 0.7.1
+
+- **Fixed: tapping a heard-bird or new-species notification opened a broken page.** The tap
+  action pointed at `/hassio/ingress/<slug>`, a route Home Assistant removed in 2026.2 when
+  add-ons became "apps" — the panel now lives at `/<addon_slug>`, and the old path falls
+  through to HA's *not found* page. Seen-bird notifications were unaffected: they open the
+  Frigate clip directly.
+- **Notification taps now open the species' own page**, not the dashboard. HA's app panel
+  loads the ingress iframe at its root and passes the rest of the URL over `postMessage`, so
+  Aviary now listens for that and navigates itself.
+- Notification tap actions require **Home Assistant 2026.2 or newer**. Everything else in the
+  add-on is unchanged on older cores.
+- Requires an add-on restart to take effect — the resolved slug is cached for the process
+  lifetime.
+
 ## 0.7.0
 
 - **Diet, foraging and habitat** on every species page — "Eats: Seeds & grain",

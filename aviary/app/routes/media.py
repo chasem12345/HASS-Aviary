@@ -60,15 +60,19 @@ async def species_image(name: str, request: Request):
 
 
 @router.get("/species/{name}/reference-audio", name="species_reference_audio")
-async def species_reference_audio(name: str, request: Request):
-    """Stream a species' reference recording from iNaturalist.
+async def species_reference_audio(name: str, request: Request, kind: str = "song"):
+    """Stream one of a species' reference recordings from its provider.
 
-    Proxied rather than linked directly so the upstream URL stays server-side and the
-    audio loads on http-served Home Assistant instances. Needs no configured upstream —
-    unlike the Frigate/BirdNET-Go media routes, this works on a fresh install.
+    ``kind`` selects the variant — ``song``/``call`` (xeno-canto) or ``any`` (the
+    iNaturalist fallback); the API endpoint tells the page which ones exist.
+
+    Proxied rather than linked directly so the upstream URL — and the xeno-canto API key
+    that may be needed to fetch it — stays server-side, and so the audio loads on
+    http-served Home Assistant instances. Needs no configured upstream — unlike the
+    Frigate/BirdNET-Go media routes, this works on a fresh install.
     """
     sci = await run_in_threadpool(db.scientific_name_for, name)
-    url = await species_audio.file_url(name, sci)
+    url = await species_audio.file_url(name, sci, kind)
     if not url:
         return JSONResponse({"error": "no reference audio for species"}, status_code=404)
     return await proxy.stream_upstream(

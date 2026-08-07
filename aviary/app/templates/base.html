@@ -28,6 +28,33 @@
     // Ingress-aware URL bases (root-relative; X-Ingress-Path prefix already applied).
     window.AVIARY_BASE = "{{ ingress_path }}";
     window.AVIARY_API = "{{ ingress_path }}/api";
+
+    // HA's app panel always loads this iframe at its root and delivers the URL tail after
+    // /<addon_slug> separately, over postMessage — so a notification tap action can only
+    // deep-link to a species page if we navigate there ourselves. Inline and ahead of
+    // app.js to keep the flash of the dashboard as short as possible.
+    (function () {
+      if (window.parent === window) return;
+      var base = window.AVIARY_BASE || "", handled = false;
+      window.addEventListener("message", function (e) {
+        if (!e.data || e.data.type !== "home-assistant/properties" || handled) return;
+        // Only the first route deep-links. HA re-sends properties on resize too, and acting
+        // on those would yank the user back here after they navigated inside the panel.
+        handled = true;
+        var r = e.data.route;
+        if (!r) return;
+        // prefix + path is the full pathname however many times HA took the route tail
+        // (twice for a sidebar panel, once for the /app/<slug>/... form).
+        var target = ((r.prefix || "") + (r.path || ""))
+          .replace(/^\/app(?=\/|$)/, "")
+          .replace(/^\/[^/]+/, "");   // drop the add-on slug segment
+        var here = window.location.pathname.slice(base.length) || "/";
+        if (target && target !== "/" && target !== here) {
+          window.location.replace(base + target);
+        }
+      });
+      window.parent.postMessage({ type: "home-assistant/subscribe-properties" }, "*");
+    })();
   </script>
   <script src="{{ u('static', path='/chart.umd.js') }}"></script>
   <script src="{{ u('static', path='/app.js') }}"></script>

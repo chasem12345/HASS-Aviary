@@ -188,29 +188,95 @@
     } catch (e) { /* leave the About card hidden */ }
   }
 
+  // Variant order and labels. "CRY" is kept for the untyped iNaturalist fallback so a
+  // species without xeno-canto coverage looks exactly as it always did.
+  const REF_ORDER = ["song", "call", "any"];
+  const REF_LABELS = { song: "SONG", call: "CALL", any: "CRY" };
+  const REF_PROVIDERS = { "xeno-canto": "xeno-canto", inaturalist: "iNaturalist" };
+
+  /** Credit line for one variant, or "" when there's nothing to attribute. */
+  function refCredit(v) {
+    if (!v) return "";
+    // The provider's attribution may already name the licence ("... some rights
+    // reserved (CC BY-NC)"), so the bare code is only appended when it would
+    // otherwise go unstated.
+    const license = (v.license_code || "").toUpperCase();
+    const attribution = v.attribution || "";
+    const stated = license && attribution.toUpperCase().replace(/[\s-]/g, "")
+      .includes(license.replace(/[\s-]/g, ""));
+    return [attribution, !stated ? license : ""].filter(Boolean).join(" · ");
+  }
+
   async function loadReferenceAudio(name, scientific) {
     const el = document.getElementById("ref-audio");
     if (!el) return;
     try {
       const info = await getJson("/reference-audio", { name: name, sci: scientific });
-      if (!info || !info.ok || !info.media_url) return;
-      el.querySelector("audio").src = info.media_url;
-      // Attribution is a licence condition for these CC recordings, so the card is
-      // only revealed once we have something to credit. iNaturalist's attribution
-      // string already names the licence ("... some rights reserved (CC BY-NC)"), so
-      // the bare code is only appended when it would otherwise go unstated.
-      const license = (info.license_code || "").toUpperCase();
-      const attribution = info.attribution || "";
-      const stated = license && attribution.toUpperCase().replace(/[\s-]/g, "")
-        .includes(license.replace(/[\s-]/g, ""));
-      const credit = [attribution, !stated ? license : ""].filter(Boolean).join(" · ");
-      if (!credit) return;
-      el.querySelector(".ref-attribution").textContent = credit;
-      if (info.observation_url) {
-        const link = el.querySelector(".ref-link");
-        link.href = info.observation_url;
-        link.hidden = false;
+      const variants = (info && info.variants) || {};
+      // Attribution is a licence condition for these CC recordings, so a variant is
+      // only offered once we have something to credit for it.
+      const kinds = REF_ORDER.filter((k) => variants[k] && variants[k].media_url &&
+        refCredit(variants[k]));
+      if (!kinds.length) return;
+
+      const audio = el.querySelector("audio");
+      const box = el.querySelector(".ref-buttons");
+      const creditEl = el.querySelector(".ref-attribution");
+      const link = el.querySelector(".ref-link");
+      const buttons = [];
+      let active = "";
+
+      // Each recording has its own recordist, licence and page, so the credit has to
+      // follow the clip rather than being set once.
+      function activate(kind, play) {
+        if (active !== kind) {
+          audio.pause();
+          audio.currentTime = 0;
+          audio.src = variants[kind].media_url;
+          active = kind;
+          creditEl.textContent = refCredit(variants[kind]);
+          const url = variants[kind].source_url;
+          if (url) {
+            link.href = url;
+            link.textContent =
+              (REF_PROVIDERS[variants[kind].provider] || "Source") + " →";
+            link.hidden = false;
+          } else {
+            link.hidden = true;
+          }
+          buttons.forEach((b) => b.classList.toggle("active", b.dataset.kind === kind));
+        }
+        if (play) audio.play().catch(() => { /* autoplay policy / decode failure */ });
       }
+
+      kinds.forEach((kind) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        // Both classes always: .dex-cry is styled only under the dex theme, .btn only
+        // outside it, so one button works in both.
+        b.className = "btn btn-sm ref-cry dex-cry";
+        b.dataset.kind = kind;
+        b.innerHTML = '<span class="dex-tri dex-tri-r" aria-hidden="true"></span>';
+        b.appendChild(document.createTextNode(" " + (REF_LABELS[kind] || "CRY")));
+        b.addEventListener("click", () => {
+          if (active === kind && !audio.paused) {
+            audio.pause();
+            audio.currentTime = 0;
+            return;
+          }
+          activate(kind, true);
+        });
+        box.appendChild(b);
+        buttons.push(b);
+      });
+
+      // The playing indicator belongs to whichever button is currently selected.
+      audio.addEventListener("play", () =>
+        buttons.forEach((b) => b.classList.toggle("playing", b.dataset.kind === active)));
+      ["pause", "ended"].forEach((ev) => audio.addEventListener(ev, () =>
+        buttons.forEach((b) => b.classList.remove("playing"))));
+
+      activate(kinds[0], false);
       el.hidden = false;
     } catch (e) { /* leave the reference card hidden */ }
   }
@@ -269,25 +335,8 @@
   };
 
   window.aviaryInitDexEntry = function () {
-    // CRY: the wrapper is revealed by loadReferenceAudio() only when a licensed
-    // recording exists, so the button is never dead.
-    const wrap = document.getElementById("ref-audio");
-    const cry = document.getElementById("dexCry");
-    if (wrap && cry) {
-      const audio = wrap.querySelector("audio");
-      cry.addEventListener("click", () => {
-        if (!audio.paused) {
-          audio.pause();
-          audio.currentTime = 0;
-          return;
-        }
-        audio.play().catch(() => { /* autoplay policy / decode failure: leave it */ });
-      });
-      audio.addEventListener("play", () => cry.classList.add("playing"));
-      ["pause", "ended"].forEach((ev) =>
-        audio.addEventListener(ev, () => cry.classList.remove("playing")));
-    }
-
+    // The CRY/SONG/CALL buttons are created and wired by loadReferenceAudio() once it
+    // knows which variants exist, so there is nothing to bind here.
     const steps = document.getElementById("dexSteps");
     if (!steps) return;
     document.addEventListener("keydown", (e) => {

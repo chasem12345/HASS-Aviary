@@ -37,16 +37,18 @@
   </div>
 </section>
 
-{# Reference recording from iNaturalist, to compare against what BirdNET-Go classified.
-   Lazy-loaded and hidden unless a licensed research-grade recording exists. #}
+{# Reference recordings (xeno-canto, or iNaturalist when no API key is configured), to
+   compare against what BirdNET-Go classified. Lazy-loaded and hidden unless a licensed
+   recording exists; the buttons are built per available variant by loadReferenceAudio(). #}
 <section id="ref-audio" class="card ref-audio" hidden>
-  <h2>Reference call</h2>
-  <p class="ref-help">A confirmed recording of this species — compare it against the
+  <h2>Reference recording</h2>
+  <p class="ref-help">A known recording of this species — compare it against the
     detections below.</p>
+  <div class="ref-buttons"></div>
   <audio controls preload="none"></audio>
   <div class="ref-credit">
     <span class="ref-attribution"></span>
-    <a class="ref-link" target="_blank" rel="noopener noreferrer" hidden>View on iNaturalist →</a>
+    <a class="ref-link" target="_blank" rel="noopener noreferrer" hidden></a>
   </div>
 </section>
 

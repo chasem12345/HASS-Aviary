@@ -89,20 +89,30 @@ CREATE TABLE IF NOT EXISTS app_prefs (
     value TEXT
 );
 
--- Cached reference recording per species (an iNaturalist research-grade observation),
--- so a questionable classification can be compared against a known call. Only the
--- metadata is stored; the audio itself is streamed from iNaturalist on demand.
+"""
+
+# Split out of _SCHEMA so the kind-column migration below can recreate just this table.
+#
+# Cached reference recordings per species, so a questionable classification can be
+# compared against a known song or call. One row per (species, kind): xeno-canto supplies
+# 'song' and 'call' separately, iNaturalist has no type information and yields 'any'.
+# Only the metadata is stored; the audio itself is streamed from the provider on demand.
+_SCHEMA_SPECIES_AUDIO = """
 CREATE TABLE IF NOT EXISTS species_audio (
-    common_name    TEXT PRIMARY KEY COLLATE NOCASE,
-    taxon_id       INTEGER,
-    sound_id       INTEGER,
-    observation_id INTEGER,
+    common_name    TEXT COLLATE NOCASE,
+    kind           TEXT NOT NULL,   -- 'song' | 'call' | 'any'
+    provider       TEXT,            -- 'xeno-canto' | 'inaturalist'
+    taxon_id       INTEGER,         -- iNaturalist only; reused from species_info
+    sound_id       TEXT,            -- XC recording id or iNat sound id
+    source_url     TEXT,            -- recording page, for the credit backlink
     file_url       TEXT,
     content_type   TEXT,
     license_code   TEXT,
-    attribution    TEXT,       -- must always be displayed: these are CC recordings
+    attribution    TEXT,            -- must always be displayed: these are CC recordings
+    quality        TEXT,            -- XC A-E; NULL for iNaturalist
     fetched_at     REAL,
-    ok             INTEGER NOT NULL DEFAULT 0
+    ok             INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (common_name, kind)
 );
 """
 
@@ -116,6 +126,15 @@ def init_db(db_path: str) -> None:
     with _connect() as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.executescript(_SCHEMA)
+        conn.executescript(_SCHEMA_SPECIES_AUDIO)
+        # species_audio gained a `kind` column and a composite primary key when reference
+        # audio grew separate song/call variants. SQLite can't alter a primary key, and
+        # this table is a pure metadata cache (no audio bytes, nothing user-authored,
+        # TTL-refilled on next view), so the old shape is simply dropped and rebuilt.
+        audio_cols = {r[1] for r in conn.execute("PRAGMA table_info(species_audio)")}
+        if "kind" not in audio_cols:
+            conn.execute("DROP TABLE species_audio")
+            conn.executescript(_SCHEMA_SPECIES_AUDIO)
         # Additive migrations for databases created by older versions.
         cols = {r[1] for r in conn.execute("PRAGMA table_info(detections)")}
         if "native_id" not in cols:
@@ -717,11 +736,11 @@ def put_species_info(row: dict[str, Any]) -> None:
         )
 
 
-def get_species_audio(common_name: str) -> Optional[dict]:
+def get_species_audio(common_name: str, kind: str) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute(
-            "SELECT * FROM species_audio WHERE common_name = ? COLLATE NOCASE",
-            (common_name,),
+            "SELECT * FROM species_audio WHERE common_name = ? COLLATE NOCASE AND kind = ?",
+            (common_name, kind),
         ).fetchone()
     return dict(row) if row else None
 
@@ -731,20 +750,22 @@ def put_species_audio(row: dict[str, Any]) -> None:
         conn.execute(
             """
             INSERT INTO species_audio (
-                common_name, taxon_id, sound_id, observation_id, file_url,
-                content_type, license_code, attribution, fetched_at, ok
+                common_name, kind, provider, taxon_id, sound_id, source_url, file_url,
+                content_type, license_code, attribution, quality, fetched_at, ok
             ) VALUES (
-                :common_name, :taxon_id, :sound_id, :observation_id, :file_url,
-                :content_type, :license_code, :attribution, :fetched_at, :ok
+                :common_name, :kind, :provider, :taxon_id, :sound_id, :source_url, :file_url,
+                :content_type, :license_code, :attribution, :quality, :fetched_at, :ok
             )
-            ON CONFLICT(common_name) DO UPDATE SET
+            ON CONFLICT(common_name, kind) DO UPDATE SET
+                provider       = excluded.provider,
                 taxon_id       = COALESCE(excluded.taxon_id, species_audio.taxon_id),
                 sound_id       = excluded.sound_id,
-                observation_id = excluded.observation_id,
+                source_url     = excluded.source_url,
                 file_url       = excluded.file_url,
                 content_type   = excluded.content_type,
                 license_code   = excluded.license_code,
                 attribution    = excluded.attribution,
+                quality        = excluded.quality,
                 fetched_at     = excluded.fetched_at,
                 ok             = excluded.ok
             """,

@@ -86,6 +86,7 @@ def create_app() -> FastAPI:
     db.init_db(settings.db_path)
     ingest.configure(ignore_unclassified=settings.ignore_unclassified)
     notify.configure(settings)
+    species_audio.configure(settings)
     # Seed BEFORE MQTT/backfill start so existing species/refs never fire notifications.
     ingest.seed_notify_state()
 

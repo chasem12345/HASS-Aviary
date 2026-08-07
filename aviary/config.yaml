@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.7.0"
+version: "0.8.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -40,6 +40,7 @@ options:
   mqtt_port: 1883
   mqtt_user: ""
   mqtt_password: ""
+  xeno_canto_api_key: ""
   log_level: "info"
 schema:
   frigate_url: "url"
@@ -53,4 +54,7 @@ schema:
   mqtt_port: "port"
   mqtt_user: "str?"
   mqtt_password: "password?"
+  # Free key from https://xeno-canto.org/account. Optional: without it, reference
+  # recordings come from iNaturalist observations as before.
+  xeno_canto_api_key: "password?"
   log_level: "list(debug|info|warning|error)"

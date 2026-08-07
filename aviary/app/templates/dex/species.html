@@ -70,16 +70,16 @@
     </div>
     <div class="dex-credit">Taxonomy: iNaturalist · Traits: AVONET (CC BY 4.0)</div>
 
-    {# Revealed by loadReferenceAudio() only when a licensed recording exists, so there's
-       never a dead CRY button. Attribution and licence are a condition of the CC
-       licences these recordings carry — they stay on screen. #}
+    {# Buttons are built by loadReferenceAudio(), one per variant that actually resolved
+       (SONG/CALL from xeno-canto, or a single CRY from the iNaturalist fallback), so
+       there's never a dead button. Attribution and licence are a condition of the CC
+       licences these recordings carry — they stay on screen, and follow the clip. #}
     <div id="ref-audio" class="ref-audio" hidden>
-      <button type="button" class="dex-cry" id="dexCry">
-        <span class="dex-tri dex-tri-r" aria-hidden="true"></span> CRY</button>
+      <div class="ref-buttons"></div>
       <audio preload="none"></audio>
       <div class="ref-credit">
         <span class="ref-attribution"></span>
-        <a class="ref-link" target="_blank" rel="noopener noreferrer" hidden>iNaturalist →</a>
+        <a class="ref-link" target="_blank" rel="noopener noreferrer" hidden></a>
       </div>
     </div>
 

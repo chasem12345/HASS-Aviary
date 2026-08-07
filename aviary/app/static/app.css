@@ -351,6 +351,14 @@ img.overlay-img {
 /* ------------------------------------------------------------- reference audio */
 .ref-audio .ref-help { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
 .ref-audio audio { width: 100%; max-width: 460px; display: block; }
+/* One button per available variant (song/call, or a single cry). Empty until
+   loadReferenceAudio() knows which ones resolved. */
+.ref-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.ref-buttons:empty { display: none; }
+.ref-cry { cursor: pointer; }
+.ref-cry.active { border-color: var(--accent); color: var(--accent); }
+/* The pixel triangle is dex-only decoration; outside that theme the label stands alone. */
+:not([data-theme="dex"]) .ref-cry .dex-tri { display: none; }
 /* Attribution is a licence condition for the CC recordings served here — it is never
    decoration, so it stays legible rather than being faded out. */
 .ref-credit {
@@ -625,6 +633,8 @@ img.overlay-img {
 [data-theme="dex"] .dex-cry:hover { border-color: var(--dex-screen); }
 [data-theme="dex"] .dex-cry[disabled] { opacity: .45; cursor: default; }
 [data-theme="dex"] .dex-cry.playing { background: rgba(139, 172, 95, .18); }
+/* Which sound is loaded, when a species offers both a song and a call. */
+[data-theme="dex"] .dex-cry.active { border-color: var(--dex-screen); }
 
 [data-theme="dex"] .dex-steps {
   display: flex; align-items: stretch; gap: 10px; margin: 14px 0 18px;
