@@ -19,6 +19,12 @@ log = logging.getLogger("aviary.ingest")
 # both store rows through store_row().
 _ignore_unclassified = False
 
+# Lowercased Frigate camera names whose detections are never recorded — e.g. a wide
+# zone-detection camera pointed at the same feeder as a zoomed classifying camera, whose
+# species guesses would otherwise pollute the registry. Same configure()/store_row() path
+# as above, so it covers backfill too.
+_ignore_cameras: tuple[str, ...] = ()
+
 # Notification state, guarded by one lock because store_row runs on both paho's MQTT
 # thread and the backfill asyncio task:
 #  - _known_species: species already in the DB (seeded at startup); anything not in
@@ -40,9 +46,12 @@ _known_lock = threading.Lock()
 _loop: Optional[asyncio.AbstractEventLoop] = None
 
 
-def configure(ignore_unclassified: bool) -> None:
-    global _ignore_unclassified
+def configure(ignore_unclassified: bool, ignore_cameras: tuple[str, ...] = ()) -> None:
+    global _ignore_unclassified, _ignore_cameras
     _ignore_unclassified = ignore_unclassified
+    _ignore_cameras = tuple(c.strip().lower() for c in ignore_cameras if c.strip())
+    if _ignore_cameras:
+        log.info("Ignoring detections from cameras: %s", ", ".join(_ignore_cameras))
 
 
 def seed_notify_state() -> None:
@@ -132,6 +141,12 @@ def store_row(row: Optional[dict], live: bool = True, announce: bool = True) -> 
         return False
     if _ignore_unclassified and is_unclassified(row):
         log.debug("Skipping unclassified %s detection (%s)", row["source"], row["source_ref"])
+        return False
+    # Frigate only: a BirdNET-Go node that happens to share a camera's name must not be
+    # caught by a camera filter.
+    if row.get("source") == "frigate" and (row.get("location") or "").lower() in _ignore_cameras:
+        log.debug("Skipping detection from ignored camera %s (%s)",
+                  row.get("location"), row["source_ref"])
         return False
     with _known_lock:
         tombstoned = f"{row['source']}:{row['source_ref']}" in _tombstones

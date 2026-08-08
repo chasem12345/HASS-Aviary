@@ -3,8 +3,9 @@ blueprint:
   description: >
     Bird notifications from the Aviary add-on's aviary_detection events.
     Notifies on new species (seen or heard), and optionally on every seen
-    (Frigate) and/or heard (BirdNET-Go) detection, with a species blacklist and
-    a per-species cooldown. Tapping a seen-bird notification opens the Frigate
+    (Frigate) and/or heard (BirdNET-Go) detection, with a species blacklist, a
+    per-species cooldown, and an optional list of cameras to notify on.
+    Tapping a seen-bird notification opens the Frigate
     clip (requires the Frigate integration); a heard-bird notification opens
     the Aviary panel. Pick a companion-app device, a notify group/action, or
     both — at least one is required for anything to happen.
@@ -49,6 +50,18 @@ blueprint:
       default: false
       selector:
         boolean:
+    cameras:
+      name: Cameras to notify on (optional)
+      description: >
+        Only these Frigate cameras produce notifications — useful when one
+        camera does zone detection and another does the actual classifying.
+        Leave empty for all cameras. Use the camera's Frigate name exactly as
+        it appears on the detection in Aviary (case-insensitive), e.g.
+        bird_pole_zoom. Audio (BirdNET-Go) detections are never affected.
+      default: []
+      selector:
+        text:
+          multiple: true
     blacklist:
       name: Blacklist (optional)
       description: >
@@ -117,6 +130,7 @@ variables:
   notify_new_species: !input notify_new_species
   notify_all_seen: !input notify_all_seen
   notify_all_heard: !input notify_all_heard
+  cameras: !input cameras
   blacklist: !input blacklist
   species_cooldown: !input species_cooldown
   seen_image: !input seen_image
@@ -135,6 +149,14 @@ variables:
   blacklisted: >-
     {{ trigger.event.data.common_name | lower
        in (blacklist | default([]) | map('lower') | list) }}
+  # Seen-only: BirdNET-Go puts a node name in `location`, so applying a camera
+  # allowlist to heard detections would silence every audio notification. A seen
+  # detection with no location fails the check — an unverifiable camera isn't
+  # assumed to be an allowed one.
+  camera_ok: >-
+    {{ verb != 'seen' or (cameras | default([]) | length) == 0
+       or (trigger.event.data.location | default('', true) | lower)
+          in (cameras | map('lower') | list) }}
   passes_toggle: >-
     {{ (is_new and notify_new_species)
        or (verb == 'seen' and notify_all_seen)
@@ -172,7 +194,7 @@ variables:
 
 conditions:
   - condition: template
-    value_template: "{{ not blacklisted and passes_toggle and passes_cooldown }}"
+    value_template: "{{ not blacklisted and camera_ok and passes_toggle and passes_cooldown }}"
 
 actions:
   - if:

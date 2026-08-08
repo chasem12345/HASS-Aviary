@@ -84,7 +84,10 @@ def create_app() -> FastAPI:
 
     os.makedirs(settings.data_dir, exist_ok=True)
     db.init_db(settings.db_path)
-    ingest.configure(ignore_unclassified=settings.ignore_unclassified)
+    ingest.configure(
+        ignore_unclassified=settings.ignore_unclassified,
+        ignore_cameras=settings.ignore_cameras,
+    )
     notify.configure(settings)
     species_audio.configure(settings)
     # Seed BEFORE MQTT/backfill start so existing species/refs never fire notifications.

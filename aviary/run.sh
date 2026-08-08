@@ -13,7 +13,15 @@ export BIRDNET_TOPIC="$(bashio::config 'birdnet_topic')"
 export BACKFILL_ON_START="$(bashio::config 'backfill_on_start')"
 export IGNORE_UNCLASSIFIED="$(bashio::config 'ignore_unclassified')"
 export NOTIFY_NEW_SPECIES="$(bashio::config 'notify_new_species')"
+export XENO_CANTO_API_KEY="$(bashio::config 'xeno_canto_api_key')"
 export LOG_LEVEL="$(bashio::config 'log_level')"
+# List option: bashio emits one item per line, and the app parses this comma-separated.
+# An unset list yields "null", which must not become a camera name.
+ignore_cameras="$(bashio::config 'ignore_cameras' | tr '\n' ',')"
+if [ "${ignore_cameras}" = "null," ] || [ "${ignore_cameras}" = "null" ]; then
+    ignore_cameras=""
+fi
+export IGNORE_CAMERAS="${ignore_cameras}"
 export DATA_DIR="/data"
 
 # --- MQTT broker resolution ---------------------------------------------------

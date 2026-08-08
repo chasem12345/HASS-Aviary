@@ -38,6 +38,21 @@ def _pick(env_key: str, opts: dict, opt_key: str, default: str = "") -> str:
     return default
 
 
+def _pick_list(env_key: str, opts: dict, opt_key: str) -> tuple[str, ...]:
+    """List option, lowercased. Env override is comma-separated; options.json is a list.
+
+    Kept separate from ``_pick`` because that stringifies its value, which would turn a
+    JSON list into its repr.
+    """
+    raw = os.environ.get(env_key)
+    if raw:
+        values = raw.split(",")
+    else:
+        opt_val = opts.get(opt_key)
+        values = opt_val if isinstance(opt_val, list) else []
+    return tuple(v for v in (str(x).strip().lower() for x in values) if v)
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: str
@@ -55,6 +70,8 @@ class Settings:
 
     backfill_on_start: bool
     ignore_unclassified: bool
+    # Frigate camera names (lowercased) whose detections are never recorded.
+    ignore_cameras: tuple[str, ...]
     notify_new_species: bool
 
     # Optional xeno-canto API key (https://xeno-canto.org/account). Unlocks the curated
@@ -96,6 +113,7 @@ def load_settings() -> Settings:
         birdnet_topic=_pick("BIRDNET_TOPIC", opts, "birdnet_topic", "birdnet"),
         backfill_on_start=_as_bool(_pick("BACKFILL_ON_START", opts, "backfill_on_start", "true")),
         ignore_unclassified=_as_bool(_pick("IGNORE_UNCLASSIFIED", opts, "ignore_unclassified", "true")),
+        ignore_cameras=_pick_list("IGNORE_CAMERAS", opts, "ignore_cameras"),
         notify_new_species=_as_bool(_pick("NOTIFY_NEW_SPECIES", opts, "notify_new_species", "true")),
         xeno_canto_api_key=_pick("XENO_CANTO_API_KEY", opts, "xeno_canto_api_key", "").strip(),
         # Matches the explicit `path:` on the homeassistant_config map entry.

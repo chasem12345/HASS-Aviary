@@ -229,6 +229,8 @@ update, run *Developer Tools → YAML → Reload Automations* so HA re-reads it)
    - **Always notify on new species** (default on) — seen *or* heard.
    - **Notify on every seen bird** (default on) / **every heard bird** (default off).
    - **Blacklist** — species that never notify, even as new species.
+   - **Cameras to notify on** (default: all) — only these Frigate cameras notify. See
+     [Filtering by camera](#filtering-by-camera).
    - **Per-species cooldown** (default 10 min) — a species re-notifies only after it
      has been quiet that long, counting only detections of the same kind (camera
      cooldown ignores audio detections and vice versa); other species are
@@ -252,6 +254,35 @@ Notes:
 - Set `notify_new_species: false` in the add-on options to turn all detection events
   off.
 
+## Filtering by camera
+
+A common setup is two cameras on one feeder: a wide one for zone detection, and a zoomed
+one that produces the classifications actually worth trusting. There are two independent
+controls, and which you want depends on whether you still care about the wide camera's
+detections at all.
+
+| | Where | Effect |
+|---|---|---|
+| **Cameras to notify on** | blueprint input | Only the listed cameras notify. Detections from every camera are still recorded and still show on the dashboard. Empty = all cameras. |
+| `ignore_cameras` | add-on option | The listed cameras are **never recorded** — no detections, no species stats, no dex entries. Empty = record everything. |
+
+Use the blueprint input to stop the pings; use `ignore_cameras` as well if the camera's
+classifications are wrong often enough to be polluting your species registry.
+
+Both take the camera's **Frigate name** (the key from your Frigate config, e.g.
+`bird_pole_zoom`), matched case-insensitively. The easiest way to get it exactly right is
+to look at a detection from that camera on Aviary's Recent page — the location shown is
+the string being matched.
+
+Neither affects **BirdNET-Go audio detections**. Audio events carry a node name in the
+same field, so a camera filter that applied to them would silence every audio
+notification.
+
+> `ignore_cameras` only applies to detections ingested *after* you set it. Anything that
+> camera already recorded stays in the database — there's no purge-by-camera. To clean up
+> a species it wrongly added, use **Remove species…** on that species' page (which removes
+> it across all cameras).
+
 ## Configuration
 
 | Option | Description |
@@ -262,6 +293,7 @@ Notes:
 | `birdnet_topic` | MQTT topic BirdNET-Go publishes to (default `birdnet`). |
 | `backfill_on_start` | Import existing detections from Frigate/BirdNET-Go HTTP APIs on startup (default `true`). Idempotent. |
 | `ignore_unclassified` | Skip detections with no species — i.e. Frigate `bird` objects with no `sub_label` (default `true`). Set `false` to also record generic "bird" sightings. |
+| `ignore_cameras` | Frigate camera names whose detections are **never recorded** (default: none). Use it for a wide zone-detection camera whose species guesses would pollute the registry. Applies to live ingest and backfill; BirdNET-Go audio is unaffected. Only affects detections from when it's set — see *Filtering by camera*. |
 | `notify_new_species` | Fire `aviary_detection` HA events for live detections (default `true`). See *Bird notifications*. |
 | `mqtt_host` / `mqtt_port` / `mqtt_user` / `mqtt_password` | Optional broker overrides. Leave `mqtt_host` empty to use the HA Mosquitto broker automatically. |
 | `xeno_canto_api_key` | Optional free key from [xeno-canto.org/account](https://xeno-canto.org/account). Unlocks curated song/call reference recordings; blank keeps the iNaturalist fallback. See [Reference recordings](#reference-recordings). |

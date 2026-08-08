@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.0
+
+- **Notify from only the cameras you choose.** New **Cameras to notify on** input in the
+  notification blueprint: list the Frigate cameras that should produce notifications and
+  the rest go quiet. Built for the two-camera feeder setup — a wide camera for zone
+  detection, a zoomed one for the classifications you actually trust. Empty (the default)
+  means every camera notifies, so existing automations are unchanged.
+- **New `ignore_cameras` add-on option** for the stronger version: detections from the
+  listed cameras are never recorded at all — no dashboard entries, no species stats, no
+  dex entries — so a low-quality camera can't pollute the registry. Applies to live ingest
+  *and* backfill, so restarting won't re-import that camera's history.
+- Both match the camera's Frigate name case-insensitively, and **neither affects
+  BirdNET-Go audio detections** — audio events carry a node name in the same field, so a
+  camera filter reaching them would silence every audio notification.
+- `ignore_cameras` only affects detections ingested after it's set; anything already
+  recorded stays. See *Filtering by camera* in the docs.
+- Fixed `xeno_canto_api_key` not being exported by `run.sh`. It was still picked up from
+  the options file, so the feature worked, but it now follows the same path as every other
+  option.
+
 ## 0.8.0
 
 - **Much better reference recordings, from xeno-canto.** The CRY button used to play
