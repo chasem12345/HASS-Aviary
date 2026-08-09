@@ -16,8 +16,25 @@
   <a class="back" href="{{ u('species_index') }}">← Registry</a>
   <span class="spacer"></span>
   {% if dex_no %}<span>No.{{ '%03d' | format(dex_no) }}</span>{% endif %}
+  {% if gated and not confirmed %}<span class="dex-state pending">PENDING</span>{% endif %}
   <span class="dex-state{{ ' heard-only' if not is_seen }}">{{ 'SEEN' if is_seen else 'HEARD' }}</span>
 </div>
+
+{# Unregistered until approved — the entry above already reads No.??? for it. #}
+{% if gated and not confirmed %}
+<section class="dex-screen review-banner">
+  <div>
+    <strong>AWAITING REVIEW</strong>
+    <p>No registry number yet, and not counted in your totals. Check the entry, then decide.</p>
+  </div>
+  <div class="review-actions">
+    <button type="button" class="dex-cry species-confirm" data-species="{{ species }}">
+      <span class="dex-tri dex-tri-r" aria-hidden="true"></span> CONFIRM</button>
+    <button type="button" class="dex-cry species-delete" data-species="{{ species }}"
+            title="Remove this species and all {{ total }} of its detections">REJECT…</button>
+  </div>
+</section>
+{% endif %}
 
 {# No heard-only modifier here on purpose: the entry photo always shows in full colour. #}
 <section class="dex-entry">
@@ -89,6 +106,13 @@
         Remove species…</button>
     </div>
   </div>
+</section>
+
+{# Reference photos: what the species is supposed to look like, next to what the camera
+   caught. Filled by loadReferencePhotos(). #}
+<section id="ref-photos" class="dex-screen ref-photos" hidden>
+  <div class="dex-head"><span>REFERENCE</span></div>
+  <div class="ref-photo-strip"></div>
 </section>
 
 {# Registry stepping. Real links, so ←/→ in app.js is an enhancement, not a requirement. #}

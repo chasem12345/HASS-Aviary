@@ -36,9 +36,48 @@ dashboard embedded in the Home Assistant sidebar.
   paginates with *Load older*, and refreshes itself (~30s) as new detections arrive.
 - **Species pages** show totals, first/last seen, best confidence, and per-day /
   hour-of-day activity charts for that species.
-- Species pages also offer **reference recordings** — a known song and call for that
-  species — so you can hear what the bird actually sounds like and judge a BirdNET-Go
-  classification for yourself. See [Reference recordings](#reference-recordings).
+- Species pages also offer **reference photos and recordings** — known pictures of the
+  bird plus its song and call — so you can see and hear what it actually looks and sounds
+  like, and judge a classification for yourself. See
+  [Reference photos and recordings](#reference-photos-and-recordings).
+- **New species wait for your approval** before joining the registry, so a single
+  misclassification can't inflate your species count. See
+  [Confirming new species](#confirming-new-species).
+
+## Confirming new species
+
+By default (`require_species_confirmation`, on) a newly detected species does **not** join
+the registry automatically. It waits for you to approve it — so one bad classification
+can't permanently inflate your species count or take a dex number.
+
+An unconfirmed species:
+
+- is **kept out of** the registry/species list, dex numbering, the species and new-species
+  counts, and the top-species leaderboard;
+- **still records detections normally** — they appear on Recent and on the species' own
+  page, which is exactly the evidence you need to judge it;
+- **still fires its new-species notification**, because that's what tells you there's
+  something to review.
+
+To review: open **Awaiting review** (a dashboard tile and a button on the Species page,
+both shown only when something is pending). The species page gives you its detections,
+clips and spectrograms, plus [reference photos](#reference-photos) and recordings of
+what the bird should look and sound like. Then either:
+
+- **Confirm species** — it joins the registry and takes the next dex number, or
+- **Reject…** — the same menu as *Remove species…*, including the blacklist option that
+  stops it being recorded ever again. See [Removing misclassifications](#removing-misclassifications).
+
+Notes:
+
+- **Upgrading doesn't create a backlog.** Every species already in your database is marked
+  confirmed once, on the first start after updating.
+- Approving is reversible (the species returns to the queue); rejecting deletes detections
+  and is not.
+- Rejecting a species also clears its approval, so if it genuinely turns up later it
+  queues for review again rather than silently rejoining the registry.
+- Set `require_species_confirmation: false` to turn the whole thing off — every query goes
+  back to counting all species immediately, and nothing is left stranded in a queue.
 
 ## Removing misclassifications
 
@@ -81,10 +120,22 @@ blacklisted it — those are gone.
 > silences notifications while still recording the species. Use it when you want the data
 > but not the alerts; use the blacklist here when you want neither.
 
-## Reference recordings
+## Reference photos and recordings
 
-Each species page lazily loads **reference recordings** — the quickest way to sanity-check
-an audio classification against a known example of the species.
+Each species page lazily loads reference material — the quickest way to sanity-check a
+classification against a known example of the species, and what makes the
+[review queue](#confirming-new-species) usable.
+
+### Reference photos
+
+Up to three licensed photos from [iNaturalist](https://www.inaturalist.org), shown in their
+own card **below** the hero image rather than replacing it: the hero is whatever your
+camera caught, these are what the bird is supposed to look like, and having both on screen
+is the point. Only reusably-licensed photos are used — iNaturalist marks all-rights-reserved
+photos with no licence at all, and those are skipped — and the photographer and licence are
+always shown. Needs no configuration and works on a Frigate-only install.
+
+### Reference recordings
 
 ### Get better recordings: set `xeno_canto_api_key`
 
@@ -293,6 +344,7 @@ notification.
 | `birdnet_topic` | MQTT topic BirdNET-Go publishes to (default `birdnet`). |
 | `backfill_on_start` | Import existing detections from Frigate/BirdNET-Go HTTP APIs on startup (default `true`). Idempotent. |
 | `ignore_unclassified` | Skip detections with no species — i.e. Frigate `bird` objects with no `sub_label` (default `true`). Set `false` to also record generic "bird" sightings. |
+| `require_species_confirmation` | New species wait in a review queue instead of joining the registry automatically (default `true`). See [Confirming new species](#confirming-new-species). |
 | `ignore_cameras` | Frigate camera names whose detections are **never recorded** (default: none). Use it for a wide zone-detection camera whose species guesses would pollute the registry. Applies to live ingest and backfill; BirdNET-Go audio is unaffected. Only affects detections from when it's set — see *Filtering by camera*. |
 | `notify_new_species` | Fire `aviary_detection` HA events for live detections (default `true`). See *Bird notifications*. |
 | `mqtt_host` / `mqtt_port` / `mqtt_user` / `mqtt_password` | Optional broker overrides. Leave `mqtt_host` empty to use the HA Mosquitto broker automatically. |

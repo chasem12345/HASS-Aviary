@@ -5,6 +5,23 @@
   <a class="back" href="{{ u('dashboard') }}">← Dashboard</a>
 </div>
 
+{# Review banner: this species isn't in the registry until it's approved. Reject reuses
+   the same menu as Remove species…, so a misclassification is handled one way only. #}
+{% if gated and not confirmed %}
+<section class="card review-banner">
+  <div>
+    <strong>Awaiting review</strong>
+    <p>Not in the registry yet, and not counted in your species totals. Check the
+      detections and reference material below, then decide.</p>
+  </div>
+  <div class="review-actions">
+    <button type="button" class="btn btn-sm species-confirm" data-species="{{ species }}">Confirm species</button>
+    <button type="button" class="btn btn-sm species-delete" data-species="{{ species }}"
+            title="Remove this species and all {{ stats.total or 0 }} of its detections">Reject…</button>
+  </div>
+</section>
+{% endif %}
+
 <section class="card species-hero">
   {% if thumb %}
   <img class="hero-thumb" alt="{{ species }}"
@@ -35,6 +52,15 @@
         Remove species…</button>
     </div>
   </div>
+</section>
+
+{# Reference photos from iNaturalist. Separate from the hero on purpose: the hero is
+   whatever the camera caught, these are what the species is supposed to look like, and
+   comparing the two is the whole point. Built by loadReferencePhotos(). #}
+<section id="ref-photos" class="card ref-photos" hidden>
+  <h2>Reference photos</h2>
+  <p class="ref-help">Known photos of this species — compare them against the snapshot above.</p>
+  <div class="ref-photo-strip"></div>
 </section>
 
 {# Reference recordings (xeno-canto, or iNaturalist when no API key is configured), to

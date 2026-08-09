@@ -207,6 +207,51 @@
     return [attribution, !stated ? license : ""].filter(Boolean).join(" · ");
   }
 
+  async function loadReferencePhotos(name, scientific) {
+    const el = document.getElementById("ref-photos");
+    if (!el) return;
+    try {
+      const info = await getJson("/reference-photos", { name: name, sci: scientific });
+      const photos = (info && info.photos) || [];
+      const strip = el.querySelector(".ref-photo-strip");
+      let shown = 0;
+      photos.forEach((p) => {
+        // Attribution is a licence condition for these CC photos, so one we can't
+        // credit is simply not shown.
+        if (!p.media_url || !p.attribution) return;
+        const fig = document.createElement("figure");
+        fig.className = "ref-photo";
+        const img = document.createElement("img");
+        img.loading = "lazy";
+        img.alt = name;
+        img.src = p.media_url;
+        // A photo that fails to load takes its whole credit block with it, rather than
+        // leaving an orphaned attribution for a missing image.
+        img.addEventListener("error", () => fig.remove());
+        const cap = document.createElement("figcaption");
+        cap.className = "ref-credit";
+        const who = document.createElement("span");
+        who.className = "ref-attribution";
+        who.textContent = p.attribution;
+        cap.appendChild(who);
+        if (p.source_url) {
+          const link = document.createElement("a");
+          link.className = "ref-link";
+          link.href = p.source_url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = "iNaturalist →";
+          cap.appendChild(link);
+        }
+        fig.appendChild(img);
+        fig.appendChild(cap);
+        strip.appendChild(fig);
+        shown += 1;
+      });
+      if (shown) el.hidden = false;
+    } catch (e) { /* leave the reference photos hidden */ }
+  }
+
   async function loadReferenceAudio(name, scientific) {
     const el = document.getElementById("ref-audio");
     if (!el) return;
@@ -285,6 +330,7 @@
     perDayChart({ species: opts.species, days: 30 });
     hourlyChart({ species: opts.species, days: 3650 });
     loadSpeciesInfo(opts.species, opts.scientific);
+    loadReferencePhotos(opts.species, opts.scientific);
     loadReferenceAudio(opts.species, opts.scientific);
   };
 
@@ -550,5 +596,29 @@
       return;
     }
     if (!e.target.closest(".del-menu")) closeDeleteMenu();
+  });
+
+  // Confirming a species into the registry. Rejecting deliberately has no handler here —
+  // it reuses .species-delete above, so a misclassification is disposed of exactly one way.
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".species-confirm");
+    if (!btn) return;
+    e.preventDefault();
+    const species = btn.dataset.species;
+    btn.disabled = true;
+    try {
+      const res = await fetch(API + "/species-confirm?species=" + encodeURIComponent(species),
+        { method: "POST" });
+      const data = await res.json();
+      if (!data.ok) {
+        alert("Confirm failed: " + (data.error || res.status));
+        btn.disabled = false;
+        return;
+      }
+      window.location.reload();  // dex number, stats and banner all change at once
+    } catch (err) {
+      alert("Confirm failed: " + err);
+      btn.disabled = false;
+    }
   });
 })();

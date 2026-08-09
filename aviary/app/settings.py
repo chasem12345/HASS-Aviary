@@ -72,6 +72,8 @@ class Settings:
     ignore_unclassified: bool
     # Frigate camera names (lowercased) whose detections are never recorded.
     ignore_cameras: tuple[str, ...]
+    # New species queue for review instead of entering the registry automatically.
+    require_species_confirmation: bool
     notify_new_species: bool
 
     # Optional xeno-canto API key (https://xeno-canto.org/account). Unlocks the curated
@@ -114,6 +116,8 @@ def load_settings() -> Settings:
         backfill_on_start=_as_bool(_pick("BACKFILL_ON_START", opts, "backfill_on_start", "true")),
         ignore_unclassified=_as_bool(_pick("IGNORE_UNCLASSIFIED", opts, "ignore_unclassified", "true")),
         ignore_cameras=_pick_list("IGNORE_CAMERAS", opts, "ignore_cameras"),
+        require_species_confirmation=_as_bool(
+            _pick("REQUIRE_SPECIES_CONFIRMATION", opts, "require_species_confirmation", "true")),
         notify_new_species=_as_bool(_pick("NOTIFY_NEW_SPECIES", opts, "notify_new_species", "true")),
         xeno_canto_api_key=_pick("XENO_CANTO_API_KEY", opts, "xeno_canto_api_key", "").strip(),
         # Matches the explicit `path:` on the homeassistant_config map entry.

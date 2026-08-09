@@ -89,8 +89,9 @@ def dashboard(
     src = _norm_source(source)
     range_key = _norm_range(range_key)
     since = _since(range_key)
+    gated = request.app.state.settings.require_species_confirmation
 
-    leaders = db.top_species(limit=10, source=src, since=since)
+    leaders = db.top_species(limit=10, source=src, since=since, only_confirmed=gated)
     latest = db.recent_detections(limit=1, source=src)
     ingestor = getattr(request.app.state, "ingestor", None)
 
@@ -102,8 +103,11 @@ def dashboard(
         # Charts use the same boundary as the stat cards ("today" = local midnight).
         "chart_since": since or "",
         "chart_days": _RANGE_DAYS[range_key],
-        "stats": db.summary_stats(source=src, since=since),
-        "new_species": db.new_species_count(source=src, since=since),
+        "stats": db.summary_stats(source=src, since=since, only_confirmed=gated),
+        "new_species": db.new_species_count(source=src, since=since, only_confirmed=gated),
+        # Review queue size. Always the whole queue, not the filtered window — it's a
+        # to-do count, not a statistic.
+        "unconfirmed": db.unconfirmed_count() if gated else 0,
         "leaders": leaders,
         "thumbs": db.latest_snapshot_refs([s["common_name"] for s in leaders]),
         "latest": latest[0] if latest else None,
@@ -182,16 +186,26 @@ def species_index(
     source: Optional[str] = Query(None),
     range_key: str = Query("all", alias="range"),
     new: int = Query(0),
+    state: Optional[str] = Query(None),
 ):
     src = _norm_source(source)
     range_key = _norm_range(range_key, default="all")
     since = _since(range_key)
     only_new = bool(new)
-    species = db.species_list(source=src, since=since, only_new=only_new)
+    gated = request.app.state.settings.require_species_confirmation
+    # ?state=unconfirmed is the review queue. It only means anything while the gate is on;
+    # with it off there is no queue, so the parameter is ignored rather than showing an
+    # empty page.
+    reviewing = gated and state == "unconfirmed"
+    species = db.species_list(
+        source=src, since=since, only_new=only_new,
+        only_confirmed=gated and not reviewing,
+        only_unconfirmed=reviewing,
+    )
     # Registry framing for the Pokedex theme. The number is attached to each row rather
     # than reordering here, because the default theme's ordering (count DESC) must not
     # change — the dex template sorts by dex_no itself.
-    dex = db.species_dex_numbers()
+    dex = db.species_dex_numbers(only_confirmed=gated)
     for s in species:
         s["dex_no"] = dex.get(s["common_name"], 0)
     ctx = {
@@ -200,10 +214,12 @@ def species_index(
         "source": src or "all",
         "range": range_key,
         "only_new": only_new,
+        "reviewing": reviewing,
+        "gated": gated,
         "species": species,
         "since": since,
         "thumbs": db.latest_snapshot_refs([s["common_name"] for s in species]),
-        "registry": db.registry_stats(),
+        "registry": db.registry_stats(only_confirmed=gated),
     }
     return render("species_index.html", ctx)
 
@@ -232,6 +248,7 @@ def species_detail(
         if has_both and sel != "all":
             q["source"] = sel
         older_url = f"{base}?{urlencode(q)}"
+    gated = request.app.state.settings.require_species_confirmation
     ctx = {
         "request": request,
         "page": "species",
@@ -239,24 +256,29 @@ def species_detail(
         "stats": stats,
         "source": sel,
         "has_both": has_both,
+        # Drives the review banner. With the gate off nothing is pending, so no banner.
+        "gated": gated,
+        "confirmed": (not gated) or db.is_species_confirmed(name),
         "thumb": db.latest_snapshot_refs([name]).get(name),
         "groups": _day_groups(detections),
         "next_before": next_before,
         "older_url": older_url,
         "paged": before is not None,
     }
-    ctx.update(_registry_position(name))
+    ctx.update(_registry_position(name, only_confirmed=gated))
     return render("species.html", ctx)
 
 
-def _registry_position(name: str) -> dict:
+def _registry_position(name: str, only_confirmed: bool = False) -> dict:
     """This species' registry number plus its neighbours, for dex prev/next stepping.
 
     Neighbours traverse the whole registry in first-detection order, not whatever filter
     the user was browsing. Either side is None at the ends, and all three are None for a
-    species with no detections (e.g. an old link to something since removed).
+    species with no detections (e.g. an old link to something since removed) — which is
+    also where an unconfirmed species lands, so the entry renders as ``No.???`` until it
+    is approved.
     """
-    numbers = db.species_dex_numbers()
+    numbers = db.species_dex_numbers(only_confirmed=only_confirmed)
     ordered = sorted(numbers, key=lambda n: (numbers[n], n))
     try:
         idx = ordered.index(name)

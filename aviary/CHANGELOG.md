@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.10.0
+
+- **New species now wait for your approval.** A species Aviary has never recorded before
+  lands in an **Awaiting review** queue instead of joining the registry automatically, so
+  one bad classification can no longer take a dex number and inflate your species count
+  forever. While it waits it's kept out of the registry, dex numbering, species and
+  new-species counts and the leaderboard — but its detections still record normally and
+  its new-species notification still fires, because that's what tells you to go look.
+- **Review screen**: open the species and you get its clips and spectrograms alongside
+  reference photos and recordings of what the bird should look and sound like, then
+  **Confirm species** or **Reject…**. Reject is the existing *Remove species…* menu,
+  blacklist option included, so a misclassification is disposed of exactly one way.
+  Confirming is reversible; rejecting deletes detections and isn't.
+- **Reference photos**: up to three licensed iNaturalist photos per species, in their own
+  card below the hero rather than replacing it — previously, once a camera had seen a
+  species, the only picture available was your own snapshot. Only reusably-licensed photos
+  are used (iNaturalist leaves all-rights-reserved photos unlicensed, and those are
+  skipped) and the photographer and licence are always shown. No configuration needed;
+  works on a Frigate-only install.
+- New `require_species_confirmation` option, default **on**. Turn it off and every count
+  goes back to including all species immediately, with nothing stranded in a queue.
+- **Upgrading creates no backlog** — every species already in your database is marked
+  confirmed once, on the first start after updating.
+- Rejecting a species clears its approval too, so if it genuinely shows up later it queues
+  for review again rather than silently rejoining the registry.
+
 ## 0.9.0
 
 - **Notify from only the cameras you choose.** New **Cameras to notify on** input in the

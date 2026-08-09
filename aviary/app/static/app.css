@@ -348,6 +348,29 @@ img.overlay-img {
   background: var(--line); border-radius: 20px; padding: 2px 9px; margin-left: 6px;
 }
 
+/* --------------------------------------------------------- confirmation review */
+.review-banner {
+  display: flex; flex-wrap: wrap; gap: 12px 20px;
+  align-items: center; justify-content: space-between;
+  border-color: var(--accent);
+}
+.review-banner p { color: var(--muted); font-size: 13px; margin: 4px 0 0; max-width: 60ch; }
+.review-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.stat-review .num { color: var(--accent); }
+/* Reuses .new-badge's shape; the wording is what distinguishes it. */
+.unconfirmed-badge { background: var(--accent); }
+
+/* -------------------------------------------------------- reference photos */
+.ref-photos .ref-help { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+.ref-photo-strip { display: flex; flex-wrap: wrap; gap: 12px; }
+.ref-photo { margin: 0; max-width: 220px; }
+.ref-photo img {
+  width: 100%; height: 150px; object-fit: cover;
+  border-radius: var(--radius); background: var(--line); display: block;
+}
+/* Attribution is a licence condition, so it is never truncated away. */
+.ref-photo .ref-credit { margin-top: 6px; font-size: 11px; }
+
 /* ------------------------------------------------------------- reference audio */
 .ref-audio .ref-help { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
 .ref-audio audio { width: 100%; max-width: 460px; display: block; }
@@ -635,6 +658,18 @@ img.overlay-img {
 [data-theme="dex"] .dex-cry.playing { background: rgba(139, 172, 95, .18); }
 /* Which sound is loaded, when a species offers both a song and a call. */
 [data-theme="dex"] .dex-cry.active { border-color: var(--dex-screen); }
+
+/* Awaiting-review state: an entry with no registry number yet. */
+[data-theme="dex"] .dex-state.pending { color: var(--dex-screen); opacity: .9; }
+[data-theme="dex"] .review-banner {
+  display: flex; flex-wrap: wrap; gap: 12px 20px;
+  align-items: center; justify-content: space-between; margin-bottom: 14px;
+}
+[data-theme="dex"] .review-banner strong {
+  font-family: var(--font-pixel); font-size: 12px; letter-spacing: .1em;
+}
+[data-theme="dex"] .ref-photos { margin-top: 14px; padding: 10px; }
+[data-theme="dex"] .ref-photo img { height: 120px; }
 
 [data-theme="dex"] .dex-steps {
   display: flex; align-items: stretch; gap: 10px; margin: 14px 0 18px;

@@ -23,21 +23,30 @@
         <option value="all" {{ 'selected' if range == 'all' }}>All time</option>
       </select>
     </label>
-    {% if only_new %}
+    {% if reviewing %}
+      <a class="filter-chip" href="{{ u('species_index') }}?range={{ range }}{% if source != 'all' %}&source={{ source }}{% endif %}">Pending ✕</a>
+    {% elif only_new %}
       <a class="filter-chip" href="{{ u('species_index') }}?range={{ range }}{% if source != 'all' %}&source={{ source }}{% endif %}">New only ✕</a>
     {% else %}
       <a class="btn btn-sm" href="{{ u('species_index') }}?new=1&range={{ range }}{% if source != 'all' %}&source={{ source }}{% endif %}">Show new only</a>
+    {% endif %}
+    {% if gated and not reviewing and registry.unconfirmed %}
+      <a class="btn btn-sm" href="{{ u('species_index') }}?state=unconfirmed">Review {{ registry.unconfirmed }}</a>
     {% endif %}
   </form>
 </div>
 
 <div class="dex-head">
-  <span>{{ 'New entries' if only_new else 'Registry' }}</span>
+  <span>{{ 'Pending' if reviewing else ('New entries' if only_new else 'Registry') }}</span>
   <span class="spacer"></span>
   {# Completion: species caught on camera out of every species detected. Always the
      full registry, not the filtered view. #}
   <span title="{{ registry.seen }} of {{ registry.total }} species have been seen on camera">
     SEEN {{ registry.seen }}/{{ registry.total }}</span>
+  {% if gated and registry.unconfirmed %}
+  <span title="{{ registry.unconfirmed }} species awaiting review">
+    PENDING {{ registry.unconfirmed }}</span>
+  {% endif %}
   <span class="hint">↑↓ select · ↵ open</span>
 </div>
 
@@ -60,7 +69,8 @@
       <img loading="lazy" alt="" onerror="this.remove()"
            src="{% if thumb_ref %}{{ u('frigate_snapshot', event_id=thumb_ref) }}?thumbnail=true{% else %}{{ u('species_image', name=s.common_name) }}{% endif %}">
     </span>
-    <span class="dex-plate">No.{{ '%03d' | format(s.dex_no) }}</span>
+    {# Unconfirmed species have no registry number yet — they earn one on approval. #}
+    <span class="dex-plate">No.{{ '%03d' | format(s.dex_no) if s.dex_no else '???' }}</span>
     <span class="dex-reg-name">
       {{ s.common_name }}{% if is_new %} <span class="new-badge">NEW</span>{% endif %}
       {% if s.scientific_name %}<span class="sci">{{ s.scientific_name }}</span>{% endif %}
@@ -71,7 +81,8 @@
             style="--fill: {{ (100 * s.count / (species | map(attribute='count') | max)) | round(0) }}%"></span>
       <span class="n">×{{ s.count }}</span>
     </span>
-    <span class="dex-state">{{ 'SEEN' if is_seen else 'HEARD' }}</span>
+    <span class="dex-state{{ ' pending' if reviewing }}">
+      {{ 'PENDING' if reviewing else ('SEEN' if is_seen else 'HEARD') }}</span>
   </a>
   {% endfor %}
 </div>

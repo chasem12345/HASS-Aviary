@@ -51,6 +51,11 @@
     <span class="num">{{ stats.species or 0 }}</span><span class="lbl">Species</span></a>
   <a class="stat" href="{{ u('species_index') }}?new=1&range={{ range }}{{ src_q }}">
     <span class="num">{{ new_species or 0 }}</span><span class="lbl">New species</span></a>
+  {# Only while there's actually something waiting — a permanent zero tile is noise. #}
+  {% if unconfirmed %}
+  <a class="stat stat-review" href="{{ u('species_index') }}?state=unconfirmed">
+    <span class="num">{{ unconfirmed }}</span><span class="lbl">Awaiting review</span></a>
+  {% endif %}
   <a class="stat" href="{{ u('recent') }}?source=frigate&range={{ range }}">
     <span class="num">{{ stats.frigate_total or 0 }}</span><span class="lbl">Frigate</span></a>
   <a class="stat" href="{{ u('recent') }}?source=birdnet&range={{ range }}">

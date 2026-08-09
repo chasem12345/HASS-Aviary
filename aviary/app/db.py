@@ -89,6 +89,35 @@ CREATE TABLE IF NOT EXISTS app_prefs (
     value TEXT
 );
 
+-- Species the user has approved into the registry. ABSENCE MEANS UNCONFIRMED, which is
+-- what lets a brand-new species queue for review without ingest having to write anything:
+-- a species nobody has approved simply has no row here. Existing species are stamped
+-- confirmed by a one-time migration, so enabling the gate never dumps a whole registry
+-- into the review queue. NOCASE matches every other species lookup.
+CREATE TABLE IF NOT EXISTS species_confirmed (
+    common_name  TEXT PRIMARY KEY COLLATE NOCASE,
+    confirmed_at REAL NOT NULL
+);
+
+-- Cached reference photos per species (licensed iNaturalist taxon photos), so a
+-- questionable detection can be compared against known pictures of the bird — the camera
+-- snapshot answers "what did we catch", these answer "what should it look like". Ordered
+-- by `position` (0 = the taxon's default photo). Metadata only; the image bytes are
+-- streamed from the provider on demand, like every other media asset in Aviary.
+CREATE TABLE IF NOT EXISTS species_photos (
+    common_name  TEXT COLLATE NOCASE,
+    position     INTEGER NOT NULL,   -- 0-based rank within the species' photo strip
+    photo_id     TEXT,
+    file_url     TEXT,               -- medium size, for display
+    thumb_url    TEXT,               -- square size, for the strip
+    license_code TEXT,
+    attribution  TEXT,               -- must always be displayed: these are CC photos
+    source_url   TEXT,               -- photo page, for the credit backlink
+    fetched_at   REAL,
+    ok           INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (common_name, position)
+);
+
 """
 
 # Split out of _SCHEMA so the kind-column migration below can recreate just this table.
@@ -147,6 +176,24 @@ def init_db(db_path: str) -> None:
             # nothing for up to a month. Expire them so the next lookup refills the id.
             # One-time, and only for rows that predate the column.
             conn.execute("UPDATE species_info SET fetched_at = 0 WHERE inat_taxon_id IS NULL")
+        # Everything already in the registry counts as approved: enabling the confirmation
+        # gate must not dump an existing collection into the review queue. Guarded by a
+        # marker rather than "is species_confirmed empty", which would re-stamp for someone
+        # who has since rejected every species. One indexed pass, once, ever.
+        migrated = conn.execute(
+            "SELECT value FROM app_prefs WHERE key = 'species_confirm_migrated'"
+        ).fetchone()
+        if not migrated:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO species_confirmed (common_name, confirmed_at)
+                SELECT DISTINCT common_name, ? FROM detections WHERE common_name != ''
+                """,
+                (time.time(),),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO app_prefs (key, value) VALUES ('species_confirm_migrated', '1')"
+            )
         # Idempotent cleanup: remap rows whose common_name is actually a scientific
         # name (e.g. Frigate's classifier) onto the species' real common name, when
         # another source has recorded the pairing. Keeps species pages and
@@ -328,14 +375,71 @@ def species_stats(name: str) -> dict:
     return dict(row) if row else {}
 
 
-def new_species_count(source: Optional[str] = None, since: Optional[float] = None) -> int:
+# Registry queries hide unconfirmed species while the confirmation gate is on. "Unconfirmed"
+# means *absent from* species_confirmed, so this is an EXISTS test rather than a join —
+# a join would risk duplicating detection rows and would need an outer join to express
+# absence anyway. Callers pass only_confirmed=settings.require_species_confirmation, so with
+# the gate off every query runs exactly as it did before and nothing is stranded.
+def _confirmed_clause(only_confirmed: bool, table: str = "detections") -> str:
+    if not only_confirmed:
+        return ""
+    return (f" AND EXISTS (SELECT 1 FROM species_confirmed sc"
+            f" WHERE sc.common_name = {table}.common_name COLLATE NOCASE)")
+
+
+def confirm_species(common_name: str) -> None:
+    """Approve a species into the registry (idempotent; keeps the original timestamp)."""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO species_confirmed (common_name, confirmed_at) VALUES (?, ?)",
+            (common_name, time.time()),
+        )
+
+
+def unconfirm_species(common_name: str) -> bool:
+    """Send a species back to the review queue. True if it had been confirmed."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM species_confirmed WHERE common_name = ? COLLATE NOCASE", (common_name,)
+        )
+        return cur.rowcount > 0
+
+
+def is_species_confirmed(common_name: str) -> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM species_confirmed WHERE common_name = ? COLLATE NOCASE", (common_name,)
+        ).fetchone()
+    return row is not None
+
+
+def unconfirmed_count() -> int:
+    """How many detected species are still awaiting review."""
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS c FROM (
+                SELECT common_name FROM detections
+                WHERE common_name != '' AND NOT EXISTS (
+                    SELECT 1 FROM species_confirmed sc
+                    WHERE sc.common_name = detections.common_name COLLATE NOCASE
+                )
+                GROUP BY common_name
+            )
+            """
+        ).fetchone()
+    return row["c"] if row else 0
+
+
+def new_species_count(source: Optional[str] = None, since: Optional[float] = None,
+                      only_confirmed: bool = False) -> int:
     """Number of species whose *first-ever* detection falls at/after ``since``.
 
     With ``since`` None (all-time), every species is "new", so this returns the distinct
     species count.
     """
     params: list = []
-    src = _source_clause(source, params)
+    src = _source_clause(source, params) + _confirmed_clause(only_confirmed)
     if since is None:
         with _connect() as conn:
             row = conn.execute(
@@ -361,15 +465,25 @@ def species_list(
     source: Optional[str] = None,
     since: Optional[float] = None,
     only_new: bool = False,
+    only_confirmed: bool = False,
+    only_unconfirmed: bool = False,
 ) -> list[dict]:
     """Per-species aggregates for the species index.
 
     ``only_new`` keeps just species whose first-ever detection is at/after ``since``
     (first_seen/count are all-time). Otherwise, when ``since`` is given, results are
     limited to species active within the window (count is the in-window count).
+
+    ``only_unconfirmed`` inverts the confirmation filter to build the review queue; it
+    ignores ``only_confirmed``, since asking for both would always be empty.
     """
     params: list = []
     where = "WHERE 1=1" + _source_clause(source, params)
+    if only_unconfirmed:
+        where += (" AND NOT EXISTS (SELECT 1 FROM species_confirmed sc"
+                  " WHERE sc.common_name = detections.common_name COLLATE NOCASE)")
+    else:
+        where += _confirmed_clause(only_confirmed)
     having = ""
     if only_new and since is not None:
         having = " HAVING MIN(start_time) >= ?"
@@ -411,51 +525,63 @@ def distinct_species(source: Optional[str] = None) -> list[str]:
     return [r["common_name"] for r in rows]
 
 
-def species_dex_numbers() -> dict[str, int]:
+def species_dex_numbers(only_confirmed: bool = False) -> dict[str, int]:
     """Registry number per species: 1-based order of first-ever detection.
 
     Derived rather than stored, so there's no counter to keep in sync with deletions.
     Removing a species renumbers the ones after it, which is fine — the number is a
     display flourish for the Pokedex theme, not an identifier anything keys on.
+
+    Unconfirmed species get no number at all while the gate is on: the templates already
+    render ``No.???`` for a missing one, so a species earns its entry by being approved.
     """
     with _connect() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT common_name,
                    ROW_NUMBER() OVER (ORDER BY MIN(start_time), common_name) AS dex_no
             FROM detections
+            WHERE 1=1{_confirmed_clause(only_confirmed)}
             GROUP BY common_name
             """
         ).fetchall()
     return {r["common_name"]: r["dex_no"] for r in rows}
 
 
-def registry_stats() -> dict:
+def registry_stats(only_confirmed: bool = False) -> dict:
     """Species counts for the Pokedex completion readout.
 
     ``seen`` (on camera, the "caught" analogue) is the subset of ``total`` that has at
     least one Frigate detection; ``heard`` likewise for BirdNET-Go. A species can be
     both. There is no master checklist, so ``total`` is only what's been detected.
+
+    ``unconfirmed`` is the review queue's size and is deliberately NOT filtered — it
+    counts what's missing from the registry, so it's the one figure that has to look past
+    the gate.
     """
     with _connect() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT COUNT(*) AS total,
                    SUM(seen)  AS seen,
                    SUM(heard) AS heard
             FROM (
                 SELECT MAX(source = 'frigate') AS seen,
                        MAX(source = 'birdnet') AS heard
-                FROM detections GROUP BY common_name
+                FROM detections
+                WHERE 1=1{_confirmed_clause(only_confirmed)}
+                GROUP BY common_name
             )
             """
         ).fetchone()
+    pending = unconfirmed_count() if only_confirmed else 0
     if not row:
-        return {"total": 0, "seen": 0, "heard": 0}
+        return {"total": 0, "seen": 0, "heard": 0, "unconfirmed": pending}
     return {
         "total": row["total"] or 0,
         "seen": row["seen"] or 0,
         "heard": row["heard"] or 0,
+        "unconfirmed": pending,
     }
 
 
@@ -548,6 +674,10 @@ def delete_species(common_name: str) -> list[dict]:
             )
         conn.execute("DELETE FROM species_info WHERE common_name = ? COLLATE NOCASE", (common_name,))
         conn.execute("DELETE FROM species_audio WHERE common_name = ? COLLATE NOCASE", (common_name,))
+        conn.execute("DELETE FROM species_photos WHERE common_name = ? COLLATE NOCASE", (common_name,))
+        # Drop the approval too, so a species removed as a misclassification queues for
+        # review again if it genuinely turns up later.
+        conn.execute("DELETE FROM species_confirmed WHERE common_name = ? COLLATE NOCASE", (common_name,))
     return rows
 
 
@@ -773,10 +903,46 @@ def put_species_audio(row: dict[str, Any]) -> None:
         )
 
 
-def summary_stats(source: Optional[str] = None, since: Optional[float] = None) -> dict:
+def get_species_photos(common_name: str) -> list[dict]:
+    """Cached reference photos for a species, in strip order."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM species_photos WHERE common_name = ? COLLATE NOCASE ORDER BY position",
+            (common_name,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def put_species_photos(common_name: str, rows: list[dict]) -> None:
+    """Replace a species' cached photos wholesale.
+
+    A rewrite rather than an upsert: a refetch can return fewer photos than last time (a
+    photo relicensed or removed upstream), and leftover rows would keep a stale image in
+    the strip.
+    """
+    with _connect() as conn:
+        conn.execute("DELETE FROM species_photos WHERE common_name = ? COLLATE NOCASE",
+                     (common_name,))
+        conn.executemany(
+            """
+            INSERT INTO species_photos (
+                common_name, position, photo_id, file_url, thumb_url,
+                license_code, attribution, source_url, fetched_at, ok
+            ) VALUES (
+                :common_name, :position, :photo_id, :file_url, :thumb_url,
+                :license_code, :attribution, :source_url, :fetched_at, :ok
+            )
+            """,
+            rows,
+        )
+
+
+def summary_stats(source: Optional[str] = None, since: Optional[float] = None,
+                  only_confirmed: bool = False) -> dict:
     params: list = []
     where = "WHERE 1=1"
     where += _source_clause(source, params)
+    where += _confirmed_clause(only_confirmed)
     if since is not None:
         where += " AND start_time >= ?"
         params.append(since)
@@ -799,10 +965,12 @@ def top_species(
     limit: int = 10,
     source: Optional[str] = None,
     since: Optional[float] = None,
+    only_confirmed: bool = False,
 ) -> list[dict]:
     params: list = []
     where = "WHERE 1=1"
     where += _source_clause(source, params)
+    where += _confirmed_clause(only_confirmed)
     if since is not None:
         where += " AND start_time >= ?"
         params.append(since)

@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.9.0"
+version: "0.10.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -36,6 +36,7 @@ options:
   backfill_on_start: true
   ignore_unclassified: true
   ignore_cameras: []
+  require_species_confirmation: true
   notify_new_species: true
   mqtt_host: ""
   mqtt_port: 1883
@@ -54,6 +55,8 @@ schema:
   # camera whose classifications aren't trustworthy). Empty records every camera.
   ignore_cameras:
     - "str"
+  # New species wait in a review queue instead of joining the registry automatically.
+  require_species_confirmation: "bool"
   notify_new_species: "bool"
   mqtt_host: "str?"
   mqtt_port: "port"

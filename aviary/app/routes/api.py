@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, Query, Request
 from fastapi.concurrency import run_in_threadpool
 
-from .. import db, ingest, notify, proxy, species_audio, species_info, traits
+from .. import db, ingest, notify, proxy, species_audio, species_info, species_photos, traits
 from . import ingress_url, set_theme
 
 router = APIRouter()
@@ -20,12 +20,16 @@ def _norm_source(source: Optional[str]) -> Optional[str]:
 
 
 @router.get("/summary")
-def summary(source: Optional[str] = Query(None), days: int = Query(7, ge=1, le=3650)):
+def summary(request: Request, source: Optional[str] = Query(None),
+            days: int = Query(7, ge=1, le=3650)):
     src = _norm_source(source)
     since = time.time() - days * 86400
+    # Same confirmation filter as the dashboard view, or the JSON and the page it backs
+    # would report different species counts.
+    gated = request.app.state.settings.require_species_confirmation
     return {
-        "stats": db.summary_stats(source=src, since=since),
-        "top_species": db.top_species(limit=10, source=src, since=since),
+        "stats": db.summary_stats(source=src, since=since, only_confirmed=gated),
+        "top_species": db.top_species(limit=10, source=src, since=since, only_confirmed=gated),
     }
 
 
@@ -148,6 +152,30 @@ async def delete_species(name: str, request: Request, source_action: Optional[st
     }
 
 
+# --------------------------------------------------------------------- confirmation
+# Top-level for the same reason as the blacklist routes below: a path nested under
+# /species/{name} would be swallowed by `DELETE /species/{name:path}`.
+#
+# Rejecting a species needs no endpoint of its own — it reuses DELETE /species/{name}
+# and POST /blacklist, which already purge, tombstone, act at the source and forget the
+# species. Confirming is the only genuinely new verb.
+
+@router.post("/species-confirm")
+async def confirm_species(species: str = Query(..., min_length=1)):
+    """Approve a species into the registry, giving it a dex number and its place in the stats."""
+    await run_in_threadpool(db.confirm_species, species)
+    return {"ok": True, "species": species, "confirmed": True}
+
+
+@router.delete("/species-confirm/{name:path}")
+async def unconfirm_species(name: str):
+    """Send an approved species back to the review queue (undo a mistaken confirmation)."""
+    removed = await run_in_threadpool(db.unconfirm_species, name)
+    if not removed:
+        return {"ok": False, "error": "species was not confirmed"}
+    return {"ok": True, "species": name, "confirmed": False}
+
+
 # ------------------------------------------------------------------------- blacklist
 # Deliberately *not* nested under /species/{name} — the existing
 # `DELETE /species/{name:path}` route would greedily match a trailing "/blacklist" as
@@ -257,6 +285,34 @@ async def species_info_endpoint(
     # First call decompresses the bundled table; keep that off the event loop.
     info["traits"] = await run_in_threadpool(traits.lookup, scientific)
     return info
+
+
+@router.get("/reference-photos")
+async def reference_photos(
+    request: Request,
+    name: str = Query(..., min_length=1),
+    sci: Optional[str] = Query(None),
+):
+    """Licensed reference photos for a species (cached; lazy-loaded).
+
+    ``media_url`` points at Aviary's own proxy so the upstream URL stays server-side.
+    Attribution is always returned — the UI is required to display it.
+    """
+    photos = await species_photos.resolve(name, sci)
+    return {
+        "ok": bool(photos),
+        "photos": [
+            {
+                "attribution": p["attribution"],
+                "license_code": p["license_code"],
+                "source_url": p["source_url"],
+                "media_url": ingress_url(
+                    request, "species_reference_photo", name=name, position=p["position"]
+                ),
+            }
+            for p in photos
+        ],
+    }
 
 
 @router.get("/reference-audio")

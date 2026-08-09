@@ -1,9 +1,10 @@
 {% extends "base.html" %}
-{% block title %} · {{ 'New species' if only_new else 'Species' }}{% endblock %}
+{% block title %} · {{ 'Unconfirmed' if reviewing else ('New species' if only_new else 'Species') }}{% endblock %}
 {% block content %}
 <div class="controls">
   <form method="get" action="{{ u('species_index') }}">
     {% if only_new %}<input type="hidden" name="new" value="1">{% endif %}
+    {% if reviewing %}<input type="hidden" name="state" value="unconfirmed">{% endif %}
     <label>Source
       <select name="source" onchange="this.form.submit()">
         <option value="all" {{ 'selected' if source == 'all' }}>All</option>
@@ -19,16 +20,27 @@
         <option value="all" {{ 'selected' if range == 'all' }}>All time</option>
       </select>
     </label>
-    {% if only_new %}
+    {% if reviewing %}
+      <a class="filter-chip" href="{{ u('species_index') }}?range={{ range }}{% if source != 'all' %}&source={{ source }}{% endif %}">Awaiting review ✕</a>
+    {% elif only_new %}
       <a class="filter-chip" href="{{ u('species_index') }}?range={{ range }}{% if source != 'all' %}&source={{ source }}{% endif %}">New species only ✕</a>
     {% else %}
       <a class="btn btn-sm" href="{{ u('species_index') }}?new=1&range={{ range }}{% if source != 'all' %}&source={{ source }}{% endif %}">Show new only</a>
     {% endif %}
+    {# The review queue is only a thing while the confirmation gate is on. #}
+    {% if gated and not reviewing and registry.unconfirmed %}
+      <a class="btn btn-sm" href="{{ u('species_index') }}?state=unconfirmed">Review {{ registry.unconfirmed }} awaiting</a>
+    {% endif %}
   </form>
 </div>
 
-<h1 class="page-title">{{ 'New species' if only_new else 'Species' }}
+<h1 class="page-title">{{ 'Awaiting review' if reviewing else ('New species' if only_new else 'Species') }}
   <span class="count">{{ species | length }}</span></h1>
+{% if reviewing %}
+<p class="ref-help">These species aren't in the registry yet. Open one to compare its
+  detections against reference photos and recordings, then confirm it or remove it as a
+  misclassification.</p>
+{% endif %}
 
 <div class="species-grid">
   {% for s in species %}
@@ -42,7 +54,8 @@
       <img loading="lazy" class="overlay-img" alt=""
            src="{{ u('species_image', name=s.common_name) }}" onerror="this.remove()">
       {% endif %}
-      {% if is_new %}<span class="new-badge">NEW</span>{% endif %}
+      {% if reviewing %}<span class="new-badge unconfirmed-badge">UNCONFIRMED</span>
+      {% elif is_new %}<span class="new-badge">NEW</span>{% endif %}
     </div>
     <div class="tile-body">
       <div class="tile-name">{{ s.common_name }}</div>
@@ -58,7 +71,7 @@
     </div>
   </a>
   {% else %}
-  <p class="empty">{{ 'No new species in this range.' if only_new else 'No species yet.' }}</p>
+  <p class="empty">{% if reviewing %}Nothing awaiting review.{% elif only_new %}No new species in this range.{% else %}No species yet.{% endif %}</p>
   {% endfor %}
 </div>
 {% endblock %}

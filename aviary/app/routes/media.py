@@ -15,7 +15,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 
-from .. import db, proxy, species_audio, species_info
+from .. import db, proxy, species_audio, species_info, species_photos
 from ..notify import species_slug
 
 log = logging.getLogger("aviary.media")
@@ -57,6 +57,23 @@ async def species_image(name: str, request: Request):
     if not sci:
         return JSONResponse({"error": "no scientific name for species"}, status_code=404)
     return await proxy.stream_upstream(request, proxy.birdnet_species_image_url(base, sci))
+
+
+@router.get("/species/{name}/photo/{position}", name="species_reference_photo")
+async def species_reference_photo(name: str, position: int, request: Request):
+    """Stream one of a species' iNaturalist reference photos.
+
+    Proxied like every other media asset, so the upstream URL stays server-side. Unlike
+    ``/species/{name}/image`` (BirdNET-Go's single generic photo) this needs no configured
+    upstream, so it works on a Frigate-only install.
+    """
+    sci = await run_in_threadpool(db.scientific_name_for, name)
+    url = await species_photos.file_url(name, position, sci)
+    if not url:
+        return JSONResponse({"error": "no reference photo"}, status_code=404)
+    return await proxy.stream_upstream(
+        request, url, headers={"User-Agent": species_info.USER_AGENT}
+    )
 
 
 @router.get("/species/{name}/reference-audio", name="species_reference_audio")
