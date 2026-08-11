@@ -97,14 +97,38 @@ async def _source_action(settings, det: dict, action: str) -> Optional[dict]:
                 return {"ok": False, "error": "birdnet_url not configured"}
             if not det.get("native_id"):
                 return {"ok": False, "error": "no BirdNET-Go id recorded for this detection"}
-            status, text = await proxy.call_upstream(
-                "DELETE", proxy.birdnet_detection_url(settings.birdnet_url, det["native_id"])
-            )
+            status, text = await _birdnet_delete(settings.birdnet_url, det["native_id"])
     except httpx.HTTPError as exc:
         return {"ok": False, "error": f"source unreachable: {exc}"}
     if status >= 400:
         return {"ok": False, "error": f"source returned {status}: {text}"}
     return {"ok": True, "error": None}
+
+
+async def _birdnet_delete(base: str, native_id: str) -> tuple[int, str]:
+    """DELETE a BirdNET-Go detection, satisfying its CSRF middleware.
+
+    BirdNET-Go compares an ``X-CSRF-Token`` header against a ``csrf`` cookie; the shared
+    proxy client replays the cookie, so only the header needs adding. A 403 is retried
+    once with a freshly minted token — the cached one goes stale whenever BirdNET-Go
+    restarts, and the first delete after that would otherwise fail for no visible reason.
+    """
+    url = proxy.birdnet_detection_url(base, native_id)
+    token = await proxy.birdnet_csrf_token(base)
+    status, text = await proxy.call_upstream(
+        "DELETE", url, headers={"X-CSRF-Token": token} if token else None
+    )
+    if status == 403:
+        token = await proxy.birdnet_csrf_token(base, refresh=True)
+        if token:
+            status, text = await proxy.call_upstream(
+                "DELETE", url, headers={"X-CSRF-Token": token}
+            )
+        if status == 403:
+            # Distinguish this from an auth failure, which also surfaces as 403 once
+            # BirdNET-Go has authentication enabled.
+            text = f"{text} (CSRF token rejected; is BirdNET-Go authentication enabled?)"
+    return status, text
 
 
 def _forget_if_gone(common_name: str) -> None:

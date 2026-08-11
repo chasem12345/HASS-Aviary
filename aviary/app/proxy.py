@@ -38,10 +38,13 @@ def init_client() -> None:
 
 
 async def close_client() -> None:
-    global _client
+    global _client, _csrf_token_cache
     if _client is not None:
         await _client.aclose()
         _client = None
+    # The token belongs to the closed client's cookie jar; keeping it would pair a live
+    # header with a cookie the next client doesn't have.
+    _csrf_token_cache = None
 
 
 async def stream_upstream(
@@ -118,15 +121,57 @@ async def fetch_to_file(url: str, dest: str) -> bool:
         return False
 
 
-async def call_upstream(method: str, url: str, json: Optional[dict] = None) -> tuple[int, str]:
+async def call_upstream(method: str, url: str, json: Optional[dict] = None,
+                        headers: Optional[dict[str, str]] = None) -> tuple[int, str]:
     """One-off upstream API call (e.g. deleting an event). Returns (status, body[:200]).
 
     Raises httpx.HTTPError on transport failure; callers surface it to the UI.
     """
     if _client is None:
         raise httpx.TransportError("proxy client not initialized")
-    resp = await _client.request(method, url, json=json)
+    resp = await _client.request(method, url, json=json, headers=headers)
     return resp.status_code, resp.text[:200]
+
+
+# ------------------------------------------------------------------ BirdNET-Go CSRF
+# BirdNET-Go guards state-changing API calls (e.g. DELETE /api/v2/detections/<id>) with
+# Echo's CSRF middleware: it compares an `X-CSRF-Token` header against a `csrf` cookie.
+# Without both, the request fails with 403 {"message":"Invalid CSRF token"}.
+#
+# The token is minted by GET /api/v2/app/config, which calls EnsureCSRFToken() precisely
+# so a non-browser client can obtain one (Echo's Sec-Fetch-Site optimisation would
+# otherwise skip generating it). The cookie half is handled for us: the shared client
+# keeps a cookie jar, so it is replayed automatically on the follow-up request.
+_CSRF_COOKIE = "csrf"
+_csrf_token_cache: Optional[str] = None
+
+
+async def birdnet_csrf_token(base: str, refresh: bool = False) -> Optional[str]:
+    """A CSRF token for BirdNET-Go, or None if one couldn't be obtained.
+
+    Cached, because the token is stable for the life of the cookie jar. ``refresh``
+    re-fetches, for retrying a 403 after BirdNET-Go rotated tokens (e.g. it restarted
+    since we cached ours). Never raises: a failure here should degrade to attempting the
+    call without a token, not break deletion outright.
+    """
+    global _csrf_token_cache
+    if _csrf_token_cache and not refresh:
+        return _csrf_token_cache
+    if _client is None:
+        return None
+    if refresh:
+        # Drop the stale pair; the jar would otherwise keep replaying the old cookie.
+        _client.cookies.delete(_CSRF_COOKIE)
+        _csrf_token_cache = None
+    try:
+        await _client.get(birdnet_app_config_url(base))
+    except httpx.HTTPError as exc:
+        log.debug("Could not reach BirdNET-Go for a CSRF token: %s", exc)
+        return None
+    _csrf_token_cache = _client.cookies.get(_CSRF_COOKIE)
+    if not _csrf_token_cache:
+        log.debug("BirdNET-Go returned no %s cookie; deleting may fail.", _CSRF_COOKIE)
+    return _csrf_token_cache
 
 
 # ------------------------------------------------------------------- URL builders
@@ -141,6 +186,11 @@ def frigate_sub_label_url(base: str, event_id: str) -> str:
 
 def birdnet_detection_url(base: str, native_id: str) -> str:
     return f"{base}/api/v2/detections/{quote(str(native_id), safe='')}"
+
+
+def birdnet_app_config_url(base: str) -> str:
+    """The endpoint that mints a CSRF token (see ``birdnet_csrf_token``)."""
+    return f"{base}/api/v2/app/config"
 
 
 def frigate_clip_url(base: str, event_id: str) -> str:

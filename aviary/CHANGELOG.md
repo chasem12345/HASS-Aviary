@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.12.0
+
+- **Fixed: deleting a BirdNET-Go detection failed with `403 Invalid CSRF token`**, so the
+  detection vanished from Aviary but stayed in BirdNET-Go. BirdNET-Go guards its
+  state-changing API with Echo's CSRF middleware, which compares an `X-CSRF-Token` header
+  against a `csrf` cookie; Aviary sent neither. It now fetches a token from
+  `/api/v2/app/config` before deleting, and the shared HTTP client replays the cookie.
+- The token is cached and **retried once** if BirdNET-Go rejects it — a cached token goes
+  stale whenever BirdNET-Go restarts, and the first delete afterwards would otherwise fail
+  for no visible reason. A 403 that survives the retry now says so explicitly, so it can
+  be told apart from an authentication failure.
+- **Deleting at the source is now the default.** The remove menu leads with **Remove
+  everywhere (Aviary + source)**; **Remove from Aviary only** is still there, second, and
+  now says plainly that the source keeps its copy.
+- **Blacklisting deletes at the source too.** It previously purged only Aviary's rows,
+  which rather defeated "never record again" — the BirdNET-Go entries stayed put. The
+  confirmation dialog says so before you agree.
+- Note: deleting cleans up history, but BirdNET-Go stores its learned per-species dynamic
+  thresholds separately, so deletions are unlikely to reset one. Use BirdNET-Go's own
+  excluded-species list as well — see *Removing misclassifications* in the docs.
+
+## 0.11.0
+
+- **First sightings now notify.** `is_new_species` has always been source-agnostic — true
+  only on a species' very first detection from any source — so a bird you had been hearing
+  for months could finally appear on camera in complete silence, quietly flipping the dex
+  from HEARD to SEEN with no alert. The new **Notify on first sighting** toggle (default
+  **on**) covers exactly that moment, with **Notify on first recording** (default off) as
+  the audio equivalent.
+- Messages distinguish the milestones: **"First sighting! Wood Thrush detected on feeder
+  camera"** versus **"New species! …"**, so a first photo of an old friend can't be
+  mistaken for a bird you have never had. A brand-new species still reads "New species!"
+  and notifies once, not twice.
+- Both bypass the per-species cooldown — a once-ever event should never be swallowed
+  because the same bird happened to be around a few minutes ago. The camera allowlist
+  still applies: a first sighting on a camera you have excluded stays silent.
+- Detection events gained `is_first_seen` and `is_first_heard` for custom automations.
+  A detection never claims the other source's flag — a *heard* detection of a bird no
+  camera has caught reports `is_first_seen: false`.
+- Older automations are unaffected, and an updated blueprint running against an older
+  add-on build simply never fires the new toggles. Run *Developer Tools → YAML → Reload
+  Automations* after updating to pick up the new inputs.
+
 ## 0.10.0
 
 - **New species now wait for your approval.** A species Aviary has never recorded before

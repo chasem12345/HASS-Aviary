@@ -2,7 +2,8 @@ blueprint:
   name: "Aviary: bird notifications"
   description: >
     Bird notifications from the Aviary add-on's aviary_detection events.
-    Notifies on new species (seen or heard), and optionally on every seen
+    Notifies on new species (seen or heard), on the first time a known species
+    is caught on camera or picked up on audio, and optionally on every seen
     (Frigate) and/or heard (BirdNET-Go) detection, with a species blacklist, a
     per-species cooldown, and an optional list of cameras to notify on.
     Tapping a seen-bird notification opens the Frigate
@@ -47,6 +48,23 @@ blueprint:
       description: >
         Every BirdNET-Go (audio) detection, not just new species. Audio
         detections can be frequent — consider the cooldown below.
+      default: false
+      selector:
+        boolean:
+    notify_first_seen:
+      name: Notify on first sighting
+      description: >
+        The first time a species is caught on camera, even if you have been
+        hearing it for months. Fires once per species. (A brand-new species is
+        covered by the new-species toggle above and won't notify twice.)
+      default: true
+      selector:
+        boolean:
+    notify_first_heard:
+      name: Notify on first recording
+      description: >
+        The first time a species is picked up on audio, even if the camera has
+        seen it before. Fires once per species.
       default: false
       selector:
         boolean:
@@ -130,6 +148,8 @@ variables:
   notify_new_species: !input notify_new_species
   notify_all_seen: !input notify_all_seen
   notify_all_heard: !input notify_all_heard
+  notify_first_seen: !input notify_first_seen
+  notify_first_heard: !input notify_first_heard
   cameras: !input cameras
   blacklist: !input blacklist
   species_cooldown: !input species_cooldown
@@ -137,6 +157,14 @@ variables:
   frigate_proxy_base: !input frigate_proxy_base
   is_new: "{{ trigger.event.data.is_new_species | default(false) }}"
   verb: "{{ trigger.event.data.verb | default('seen') }}"
+  # First time this species has been recorded by this kind of source — the moment a
+  # long-heard bird finally shows up on camera, which is_new_species can't express
+  # because it means "never detected at all". `default(false, true)` also covers events
+  # from add-on builds before 0.11.0, where the fields simply don't exist.
+  is_first_seen: "{{ trigger.event.data.is_first_seen | default(false, true) }}"
+  is_first_heard: "{{ trigger.event.data.is_first_heard | default(false, true) }}"
+  milestone: >-
+    {{ (is_first_seen and notify_first_seen) or (is_first_heard and notify_first_heard) }}
   # Cooldown counts only detections of the same kind (seen vs heard), so audio
   # chatter never suppresses camera notifications. Falls back to the any-source
   # gap for events from add-on versions before 0.4.2.
@@ -159,15 +187,22 @@ variables:
           in (cameras | map('lower') | list) }}
   passes_toggle: >-
     {{ (is_new and notify_new_species)
+       or milestone
        or (verb == 'seen' and notify_all_seen)
        or (verb == 'heard' and notify_all_heard) }}
+  # Milestones bypass the cooldown alongside new species: a once-ever event must never be
+  # swallowed because the same bird happened to be around a few minutes ago.
   passes_cooldown: >-
-    {{ is_new or (species_cooldown | default(0)) == 0 or since_last in (none, '')
+    {{ is_new or milestone or (species_cooldown | default(0)) == 0
+       or since_last in (none, '')
        or (since_last | float(0)) >= (species_cooldown | float(0)) * 60 }}
-  # e.g. "Northern Cardinal detected on bird camera" / "Wood Thrush heard at yard",
-  # prefixed with "New species! " for first-ever species (notifications have no title).
+  # e.g. "Northern Cardinal detected on bird camera" / "Wood Thrush heard at yard".
+  # Prefixed for milestones (notifications have no title), most significant first: a
+  # brand-new species reads "New species!" even though its first_seen flag is also set.
   message: >-
-    {{ 'New species! ' if is_new else '' }}{{ trigger.event.data.common_name }}
+    {{ 'New species! ' if is_new
+       else ('First sighting! ' if is_first_seen
+             else ('First recording! ' if is_first_heard else '')) }}{{ trigger.event.data.common_name }}
     {%- if verb == 'seen' %} detected{% if trigger.event.data.location %} on
     {{ trigger.event.data.location }} camera{% endif %}
     {%- else %} heard{% if trigger.event.data.location %} at

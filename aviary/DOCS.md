@@ -84,25 +84,38 @@ Notes:
 Classifiers get it wrong sometimes (a sparrow labeled as a heron). Hover a detection
 card and click **×**, or use **Remove species…** on a species page, then pick:
 
-- **Remove from Aviary** — deletes it here only.
+- **Remove everywhere** — deletes it from Aviary *and* from the source: the Frigate event
+  (clip and all) or the BirdNET-Go entry. This is the first option, because a
+  misclassification you're deleting is usually one you want gone from the source too.
+- **Remove from Aviary only** — deletes it here and leaves the source untouched.
 - **Remove + clear species label in Frigate** — also blanks the event's `sub_label`
   at the source, so the video stays in Frigate as a plain "bird" event.
-- **Remove + delete at the source** — also deletes the Frigate event (clip and all)
-  or the BirdNET-Go detection.
-- **Blacklist — remove and never record again** — see below.
+- **Blacklist — remove everywhere, never record again** — see below.
 
 Removed detections are tombstoned: the startup backfill will not re-import them.
-Source-side actions need `frigate_url` / `birdnet_url` to be reachable; BirdNET-Go
-deletion requires its API to allow it (and the detection's BirdNET-Go id to be
-known, which is the case for detections ingested from current builds).
+Source-side actions need `frigate_url` / `birdnet_url` to be reachable, and BirdNET-Go
+deletion needs the detection's BirdNET-Go id (recorded for anything ingested from current
+builds). Aviary handles BirdNET-Go's CSRF protection automatically — it fetches a token
+before deleting and retries once if BirdNET-Go has since rotated it.
+
+> If a source deletion fails, Aviary still removes its own copy and reports the error, so
+> the two can end up out of step. The message tells you what the source said.
+
+**A caveat on "stop BirdNET-Go learning from it":** deleting detections cleans up the
+history, but BirdNET-Go keeps its learned per-species **dynamic thresholds** in separate
+storage, and its maintainer describes user deletion as *soft rejection* that only tags.
+So deleting is unlikely to reset a threshold it has already learned. To stop a species
+influencing anything, also add it to BirdNET-Go's own **excluded species** list in its
+settings — Aviary has no API to reach that list.
 
 ### Blacklisting a species
 
 Removing is retroactive: if a classifier is *reliably* wrong about a species, it comes
 straight back on the next detection. Blacklisting stops that permanently.
 
-**Blacklist — remove and never record again** (on the **Remove species…** menu) deletes
-every detection of the species and then refuses it at ingest from that point on — for
+**Blacklist — remove everywhere, never record again** (on the **Remove species…** menu)
+deletes every detection of the species **from Aviary and from the source**, then refuses
+it at ingest from that point on — for
 **both** live MQTT and the startup backfill. A blacklisted species produces no rows, so
 it never appears in stats or charts, and no `aviary_detection` event fires for it, so it
 can't notify either.
@@ -257,13 +270,22 @@ deduplicated):
   "location": "backyard",
   "image": "/local/aviary/blue-jay.jpg",   // or null when no image was available
   "detected_at": "2026-07-02T09:15:00-05:00",
-  "is_new_species": false,                 // first time Aviary has ever recorded it
+  "is_new_species": false,                 // first time Aviary has ever recorded it, any source
+  "is_first_seen": true,                   // first time on camera (may be an old friend on audio)
+  "is_first_heard": false,                 // first time on audio
   "seconds_since_species_last_detected": 5400.0,  // any source; null = first ever
   "seconds_since_species_last_seen": 5400.0,      // Frigate only; null = never seen
   "seconds_since_species_last_heard": 120.0,      // BirdNET-Go only; null = never heard
   "panel_path": "/<addon_slug>/species/Blue%20Jay"  // this species' Aviary page, for tap actions
 }
 ```
+
+`is_new_species` means **never detected at all**, from any source. `is_first_seen` and
+`is_first_heard` mean **never recorded by that kind of source before** — so a bird you have
+been hearing for months finally turning up on camera sets `is_first_seen` while
+`is_new_species` stays false. A genuinely new species sets both. A detection never claims
+the flag for the other source: a *heard* detection of a bird no camera has caught has
+`is_first_seen: false`, because it isn't a sighting.
 
 First-ever species also fire the legacy `aviary_new_species` event (same payload) for
 older automations. The image is the Frigate snapshot for visual detections (Aviary
@@ -278,6 +300,10 @@ update, run *Developer Tools → YAML → Reload Automations* so HA re-reads it)
    **Create automation**; pick a companion-app device and/or a notify group action.
 2. Configure the filters:
    - **Always notify on new species** (default on) — seen *or* heard.
+   - **Notify on first sighting** (default on) — the first time a species is caught on
+     camera, even if you have been hearing it for months. **Notify on first recording**
+     (default off) is the audio equivalent. Both fire once per species and bypass the
+     cooldown; a brand-new species notifies once, not twice.
    - **Notify on every seen bird** (default on) / **every heard bird** (default off).
    - **Blacklist** — species that never notify, even as new species.
    - **Cameras to notify on** (default: all) — only these Frigate cameras notify. See

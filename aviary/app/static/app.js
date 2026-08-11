@@ -497,25 +497,28 @@
   // species label / delete the event at the source (Frigate / BirdNET-Go).
   // Delegated so cards injected by the live refresh keep working.
 
+  // Source deletion leads: a misclassification you're removing is one you want gone from
+  // Frigate/BirdNET-Go too, not just hidden from Aviary. Removing locally only is still
+  // offered, second, and says explicitly that the source keeps its copy.
   function deleteMenuItems(ds) {
     if (ds.species) {
       return [
-        ["Remove species from Aviary", "none"],
+        ["Remove everywhere (Aviary + source)", "delete"],
+        ["Remove from Aviary only (keeps source events)", "none"],
         ["Remove + clear Frigate labels (keeps video; deletes BirdNET-Go entries)", "clear"],
-        ["Remove + delete events at the source", "delete"],
-        ["Blacklist — remove and never record again", "blacklist"],
+        ["Blacklist — remove everywhere, never record again", "blacklist"],
       ];
     }
     if (ds.source === "frigate") {
       return [
-        ["Remove from Aviary", "none"],
+        ["Remove everywhere (deletes the Frigate event)", "delete"],
+        ["Remove from Aviary only (keeps the Frigate event)", "none"],
         ["Remove + clear species label in Frigate (keeps video)", "clear"],
-        ["Remove + delete Frigate event", "delete"],
       ];
     }
     return [
-      ["Remove from Aviary", "none"],
-      ["Remove + delete from BirdNET-Go", "delete"],
+      ["Remove everywhere (deletes from BirdNET-Go)", "delete"],
+      ["Remove from Aviary only (keeps the BirdNET-Go entry)", "none"],
     ];
   }
 
@@ -551,13 +554,16 @@
     const blacklisting = action === "blacklist";
     if (blacklisting && !window.confirm(
       "Blacklist " + ds.species + "?\n\n" +
-      "Every detection of it is deleted, and new ones are ignored from now on " +
-      "(no stats, no notifications). You can allow it again from Settings, but the " +
-      "deleted detections do not come back."
+      "Every detection of it is deleted here AND at the source (Frigate events / " +
+      "BirdNET-Go entries), and new ones are ignored from now on (no stats, no " +
+      "notifications). You can allow it again from Settings, but the deleted " +
+      "detections do not come back."
     )) return;
 
+    // Blacklisting means "never record this again", so leaving the source's copies in
+    // place would defeat the point — it deletes at the source like the menu's first entry.
     const path = blacklisting
-      ? "/blacklist?species=" + encodeURIComponent(ds.species)
+      ? "/blacklist?species=" + encodeURIComponent(ds.species) + "&source_action=delete"
       : (isSpecies
         ? "/species/" + encodeURIComponent(ds.species) + "?source_action=" + action
         : "/detections/" + ds.id + "?source_action=" + action);

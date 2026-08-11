@@ -3,7 +3,8 @@
 Every classified detection fires an ``aviary_detection`` event on the Home Assistant
 event bus (through the Supervisor's Core API proxy — ``homeassistant_api: true``),
 carrying everything a notification automation needs to filter: seen/heard verb,
-``is_new_species``, how long the species had been quiet
+``is_new_species`` (never detected at all) and ``is_first_seen``/``is_first_heard``
+(never recorded by this kind of source before), how long the species had been quiet
 (``seconds_since_species_last_detected``), the Frigate event id (``source_ref``),
 and a deep link to the species' Aviary page for tap actions. First-ever species ALSO
 fire the legacy ``aviary_new_species`` event for older automations.
@@ -160,17 +161,29 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
     panel_slug = await _panel_slug()
     panel_path = f"/{panel_slug}/species/{quote(common_name, safe='')}" if panel_slug else None
 
+    verb = "seen" if source == "frigate" else "heard"
+    # The first time a species is recorded by THIS kind of source — the moment a bird you
+    # have only ever heard finally turns up on camera. ``is_new_species`` can't express
+    # that: it means "never detected at all", so the HEARD→SEEN transition is invisible to
+    # it. Read from last_times directly rather than via _gap(), which also returns None for
+    # a missing start_time and would report a milestone that hasn't happened. Gating on
+    # `verb` stops a heard detection of a never-photographed species claiming a sighting.
+    is_first_seen = verb == "seen" and last_times.get("seen") is None
+    is_first_heard = verb == "heard" and last_times.get("heard") is None
+
     payload = {
         "common_name": common_name,
         "scientific_name": row.get("scientific_name"),
         "source": source,
         "source_ref": source_ref,  # Frigate event id — used for the clip tap action
-        "verb": "seen" if source == "frigate" else "heard",
+        "verb": verb,
         "confidence": row.get("confidence"),
         "location": row.get("location"),
         "image": image_url,
         "detected_at": _iso(row.get("start_time")),
         "is_new_species": bool(is_new),
+        "is_first_seen": is_first_seen,
+        "is_first_heard": is_first_heard,
         "seconds_since_species_last_detected": _gap("any"),
         "seconds_since_species_last_seen": _gap("seen"),
         "seconds_since_species_last_heard": _gap("heard"),
