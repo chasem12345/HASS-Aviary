@@ -5,7 +5,10 @@
   <div class="det-media">
     {% if d.source == 'frigate' %}
       {% if d.has_clip %}
-        <video controls preload="none"
+        {# Inline preview plays the clip straight from Frigate: instant, but not seekable
+           (fragmented MP4, zero-duration header). The ⤢ button below opens the player
+           that is. playsinline keeps iOS from hijacking it into the system player. #}
+        <video controls playsinline preload="none"
                poster="{{ u('frigate_snapshot', event_id=d.source_ref) }}?thumbnail=true">
           <source src="{{ u('frigate_clip', event_id=d.source_ref) }}" type="video/mp4">
         </video>
@@ -48,6 +51,10 @@
       {% if d.location %}<span>{{ d.location }}</span>{% endif %}
       <span title="{{ d.start_time | fmt_time }}">{{ d.start_time | fmt_rel }}</span>
       {% if d.source == 'frigate' and d.has_clip %}
+      <button type="button" class="clip-open"
+              title="Open the full player: scrub the clip and save a still at full resolution"
+              data-event="{{ d.source_ref }}" data-name="{{ d.common_name }}"
+              data-time="{{ d.start_time }}">⤢ scrub / still</button>
       <a class="dl-link" title="Download video — remuxed so the duration shows correctly when shared"
          href="{{ u('frigate_download', event_id=d.source_ref) }}">⬇ video</a>
       {% endif %}

@@ -342,6 +342,9 @@
   function ownsArrowKeys(el) {
     if (!el) return false;
     const tag = (el.tagName || "").toLowerCase();
+    // The clip player seeks with the arrows; without this, ←/→ would also step the dex
+    // entry and navigate the page out from under an open player.
+    if (el.closest && el.closest(".clip-player")) return true;
     // select/input: the filter controls. video/audio: arrows seek the clip.
     return el.isContentEditable ||
       ["input", "select", "textarea", "video", "audio", "button"].indexOf(tag) !== -1;
@@ -453,7 +456,10 @@
     let newest = Number(opts.newest) || 0;
     let refreshing = false;
 
+    // Also true while the clip player is open: the refresh replaces #groups wholesale,
+    // and doing that under someone who is paused mid-scrub is worse than a late refresh.
     function mediaPlaying() {
+      if (playerOpen()) return true;
       return Array.from(groupsEl.querySelectorAll("video, audio"))
         .some((el) => !el.paused && !el.ended);
     }
@@ -491,6 +497,158 @@
 
     setInterval(tick, 30000);
   };
+
+  // ------------------------------------------------------------------ clip player
+  // Frigate's clips are fragmented MP4s with a zero-duration header, so a browser can't
+  // seek them — the progress bar just grows as it plays. /play.mp4 serves an ffmpeg
+  // faststart remux instead, and this player pulls that down ONCE into a blob: every seek
+  // after that is against bytes already in memory, so scrubbing is instant and the server
+  // is never touched again. That is what makes remux-per-request affordable.
+  //
+  // It also gives the cramped 260px card scrubber somewhere roomier to live, and a place
+  // for a still-capture button.
+
+  let player = null;          // the open overlay, or null
+  let playerObjectUrl = null; // revoked on close; each open allocates a fresh blob
+
+  function playerOpen() {
+    return player !== null;
+  }
+
+  function closePlayer() {
+    if (!player) return;
+    const video = player.querySelector("video");
+    if (video) { video.pause(); video.removeAttribute("src"); video.load(); }
+    if (playerObjectUrl) { URL.revokeObjectURL(playerObjectUrl); playerObjectUrl = null; }
+    player.remove();
+    player = null;
+    document.body.classList.remove("player-open");
+  }
+
+  /** "blue-jay-20260811-142233-4.20s.png" — mirrors the download route's naming. */
+  function stillFilename(name, startTime, at) {
+    const slug = (name || "bird").toLowerCase().normalize("NFKD")
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "bird";
+    const d = new Date((Number(startTime) || Date.now() / 1000) * 1000);
+    const p = (n) => String(n).padStart(2, "0");
+    const stamp = d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" +
+      p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+    return slug + "-" + stamp + "-" + at.toFixed(2) + "s.png";
+  }
+
+  function saveStill(video, name, startTime, button) {
+    // videoWidth/Height is the clip's encoded resolution, not the on-screen size, so the
+    // still is full quality regardless of how small the player is drawn.
+    if (!video.videoWidth) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    // PNG: lossless for the decoded frame. The blob is same-origin, so the canvas is
+    // never tainted and toBlob can't throw a security error.
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = stillFilename(name, startTime, video.currentTime);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      if (button) {
+        const was = button.textContent;
+        button.textContent = "✓ saved";
+        setTimeout(() => { button.textContent = was; }, 1500);
+      }
+    }, "image/png");
+  }
+
+  /** Advance exactly one frame where the browser can tell us, else a 30fps guess. */
+  function stepFrame(video, dir) {
+    video.pause();
+    if (dir > 0 && typeof video.requestVideoFrameCallback === "function") {
+      video.requestVideoFrameCallback(() => {});
+    }
+    video.currentTime = Math.max(0, Math.min(
+      (video.duration || Infinity), video.currentTime + dir * (1 / 30)));
+  }
+
+  function openPlayer(ds) {
+    closePlayer();
+    const clipBase = BASE + "/media/frigate/" + encodeURIComponent(ds.event);
+
+    player = document.createElement("div");
+    player.className = "clip-player";
+    player.innerHTML =
+      '<div class="clip-backdrop"></div>' +
+      '<div class="clip-panel" role="dialog" aria-modal="true" aria-label="Clip player">' +
+        '<div class="clip-head"><span class="clip-title"></span>' +
+          '<button type="button" class="clip-close" title="Close (Esc)">✕</button></div>' +
+        '<div class="clip-stage"><video controls playsinline preload="auto"></video>' +
+          '<div class="clip-loading">Preparing a seekable copy…</div></div>' +
+        '<div class="clip-controls">' +
+          '<button type="button" data-seek="-1">⏪ 1s</button>' +
+          '<button type="button" data-step="-1">◀ step</button>' +
+          '<button type="button" data-step="1">step ▶</button>' +
+          '<button type="button" data-seek="1">1s ⏩</button>' +
+          '<button type="button" class="clip-still">⬇ save still</button>' +
+        "</div>" +
+      "</div>";
+    document.body.appendChild(player);
+    document.body.classList.add("player-open");
+
+    player.querySelector(".clip-title").textContent = ds.name || "Clip";
+    const video = player.querySelector("video");
+    const loading = player.querySelector(".clip-loading");
+
+    // Fetch the remuxed clip whole, then play from memory. Falls back to streaming the
+    // un-remuxed clip if the remux route fails (e.g. no ffmpeg) — playable, not seekable.
+    fetch(clipBase + "/play.mp4")
+      .then((res) => { if (!res.ok) throw new Error(res.status); return res.blob(); })
+      .then((blob) => {
+        playerObjectUrl = URL.createObjectURL(blob);
+        video.src = playerObjectUrl;
+        loading.hidden = true;
+      })
+      .catch(() => {
+        video.src = clipBase + "/clip.mp4";
+        loading.textContent = "Seeking unavailable for this clip.";
+        setTimeout(() => { loading.hidden = true; }, 2500);
+      });
+
+    player.addEventListener("click", (e) => {
+      if (e.target.closest(".clip-backdrop") || e.target.closest(".clip-close")) {
+        closePlayer();
+        return;
+      }
+      const seek = e.target.closest("[data-seek]");
+      if (seek) { video.currentTime += Number(seek.dataset.seek); return; }
+      const step = e.target.closest("[data-step]");
+      if (step) { stepFrame(video, Number(step.dataset.step)); return; }
+      if (e.target.closest(".clip-still")) {
+        saveStill(video, ds.name, ds.time, e.target.closest(".clip-still"));
+      }
+    });
+  }
+
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".clip-open");
+    if (!btn) return;
+    e.preventDefault();
+    openPlayer({ event: btn.dataset.event, name: btn.dataset.name, time: btn.dataset.time });
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (!playerOpen()) return;
+    const video = player.querySelector("video");
+    if (e.key === "Escape") { e.preventDefault(); closePlayer(); return; }
+    // Arrows seek here rather than reaching the dex entry's prev/next navigation.
+    if (e.key === "ArrowLeft") { e.preventDefault(); video.currentTime -= 1; }
+    else if (e.key === "ArrowRight") { e.preventDefault(); video.currentTime += 1; }
+    else if (e.key === "," ) { e.preventDefault(); stepFrame(video, -1); }
+    else if (e.key === "." ) { e.preventDefault(); stepFrame(video, 1); }
+  }, true);
 
   // --------------------------------------------------------- remove detections
   // Delete buttons open a small menu: remove from Aviary only, or also clear the

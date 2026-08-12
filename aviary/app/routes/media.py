@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
 import tempfile
 import time
 from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
@@ -97,46 +99,87 @@ async def species_reference_audio(name: str, request: Request, kind: str = "song
     )
 
 
-@router.get("/frigate/{event_id}/download.mp4")
-async def frigate_download(event_id: str, request: Request):
-    """Download a clip as a standard MP4 with a correct duration header.
+async def _remuxed_clip(base: str, event_id: str) -> Optional[tuple[str, str]]:
+    """Fetch a Frigate clip and remux it into a seekable MP4. Returns (path, tmpdir).
 
     Frigate serves clips as streaming (fragmented) MP4s whose header declares zero
-    duration — they play, but fail upload validation elsewhere (e.g. Discord sees an
-    "empty" video). Remux with ffmpeg (-c copy: lossless, fast) into a regular
-    faststart MP4 before sending; if ffmpeg is unavailable or fails, fall back to
-    the original bytes so the download still works.
-    """
-    base = request.app.state.settings.frigate_url
-    if not base:
-        return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
+    duration. Two consequences: they fail upload validation elsewhere (Discord sees an
+    "empty" video), and a browser can't seek them — it never learns the length, so the
+    progress bar just grows as it plays. ``-c copy`` is lossless and fast (no re-encode);
+    ``+faststart`` puts the moov atom first so playback and seeking work immediately.
 
+    Returns None if the clip couldn't be fetched. If ffmpeg is missing or fails, returns
+    the original bytes instead — degraded (still not seekable) but better than nothing.
+    The caller owns ``tmpdir`` and must arrange its removal.
+    """
     tmpdir = tempfile.mkdtemp(prefix="aviary-dl-")
-    cleanup = BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True)
     src = os.path.join(tmpdir, "src.mp4")
     out = os.path.join(tmpdir, "out.mp4")
 
     if not await proxy.fetch_to_file(proxy.frigate_clip_url(base, event_id), src):
         shutil.rmtree(tmpdir, ignore_errors=True)
-        return JSONResponse({"error": "could not fetch clip from Frigate"}, status_code=502)
+        return None
 
-    path = src
-    if shutil.which("ffmpeg"):
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-y", "-i", src, "-c", "copy", "-movflags", "+faststart", out,
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_FFMPEG_TIMEOUT_S)
-            if proc.returncode == 0 and os.path.getsize(out) > 0:
-                path = out
-            else:
-                log.warning("ffmpeg remux failed for %s (rc=%s): %s",
-                            event_id, proc.returncode, (stderr or b"")[-300:])
-        except (asyncio.TimeoutError, OSError) as exc:
-            log.warning("ffmpeg remux errored for %s: %s", event_id, exc)
-    else:
-        log.warning("ffmpeg not found; serving the original clip for %s", event_id)
+    if not shutil.which("ffmpeg"):
+        log.warning("ffmpeg not found; serving the original clip for %s (not seekable)", event_id)
+        return src, tmpdir
+
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", src, "-c", "copy", "-movflags", "+faststart", out,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_FFMPEG_TIMEOUT_S)
+        if proc.returncode == 0 and os.path.getsize(out) > 0:
+            return out, tmpdir
+        log.warning("ffmpeg remux failed for %s (rc=%s): %s",
+                    event_id, proc.returncode, (stderr or b"")[-300:])
+    except asyncio.TimeoutError:
+        # Kill it: otherwise it keeps writing into a directory we're about to delete.
+        log.warning("ffmpeg remux timed out for %s after %ss", event_id, _FFMPEG_TIMEOUT_S)
+        if proc is not None:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.kill()
+            with contextlib.suppress(Exception):  # noqa: BLE001 - reaping is best-effort
+                await proc.communicate()
+    except OSError as exc:
+        log.warning("ffmpeg remux errored for %s: %s", event_id, exc)
+    log.debug("Falling back to the un-remuxed clip for %s; it will not be seekable.", event_id)
+    return src, tmpdir
+
+
+@router.get("/frigate/{event_id}/play.mp4", name="frigate_play")
+async def frigate_play(event_id: str, request: Request):
+    """A seekable version of a clip, for the expanded player.
+
+    Same remux as the download route but served inline (no Content-Disposition). The
+    player fetches this once into a blob, so all subsequent seeking happens in the
+    browser against bytes it already holds — nothing is cached server-side.
+    """
+    base = request.app.state.settings.frigate_url
+    if not base:
+        return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
+    result = await _remuxed_clip(base, event_id)
+    if result is None:
+        return JSONResponse({"error": "could not fetch clip from Frigate"}, status_code=502)
+    path, tmpdir = result
+    return FileResponse(
+        path, media_type="video/mp4",
+        background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True),
+    )
+
+
+@router.get("/frigate/{event_id}/download.mp4")
+async def frigate_download(event_id: str, request: Request):
+    """Download a clip as a standard MP4 with a correct duration header."""
+    base = request.app.state.settings.frigate_url
+    if not base:
+        return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
+    result = await _remuxed_clip(base, event_id)
+    if result is None:
+        return JSONResponse({"error": "could not fetch clip from Frigate"}, status_code=502)
+    path, tmpdir = result
 
     # Friendly filename: species + local detection time.
     det = await run_in_threadpool(db.detection_by_ref, "frigate", event_id)
@@ -145,7 +188,10 @@ async def frigate_download(event_id: str, request: Request):
         fname = f"{species_slug(det['common_name'])}-{stamp}.mp4"
     else:
         fname = f"aviary-{event_id}.mp4"
-    return FileResponse(path, media_type="video/mp4", filename=fname, background=cleanup)
+    return FileResponse(
+        path, media_type="video/mp4", filename=fname,
+        background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True),
+    )
 
 
 @router.get("/birdnet/{det_id}/clip")

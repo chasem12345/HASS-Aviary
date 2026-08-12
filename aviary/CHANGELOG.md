@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.13.0
+
+- **Clips can be scrubbed properly now.** Frigate serves clips as fragmented MP4s whose
+  header declares zero duration, so the browser never learned the length — the progress
+  bar just grew as it played and there was nothing to seek against. The new **⤢ scrub /
+  still** button opens a player that downloads a losslessly remuxed, seekable copy
+  (ffmpeg `-c copy -movflags +faststart`) and plays it from memory, so dragging the
+  scrubber is instant in both directions and makes no further server requests.
+- **One-button still capture at native resolution.** **⬇ save still** writes the current
+  frame to a PNG at the clip's encoded resolution rather than its on-screen size — lossless
+  for that frame, so it's the best still the clip can produce. Named to match the video
+  download: `blue-jay-20260811-142233-4.20s.png`.
+- The player is built for a phone: full-width video, large transport buttons (⏪ 1s,
+  single-frame stepping both directions, ⏩ 1s), arrow keys to seek, `,`/`.` to step,
+  Escape to close. The inline card video keeps playing straight from Frigate, so quick
+  previews are as fast as before.
+- Inline videos gained `playsinline`, so iOS stops hijacking them into the system player.
+- The live refresh no longer replaces the card list while the player is open — previously
+  it only deferred for *playing* media, so a clip paused mid-scrub could be yanked away.
+- Fixed: a remux that hit its timeout left ffmpeg running, writing into a temp directory
+  that was about to be deleted. It's now killed.
+- Nothing is cached server-side, so each open re-fetches and re-remuxes; if ffmpeg is
+  missing the player falls back to direct playback rather than failing.
+
 ## 0.12.0
 
 - **Fixed: deleting a BirdNET-Go detection failed with `403 Invalid CSRF token`**, so the

@@ -23,6 +23,8 @@ dashboard embedded in the Home Assistant sidebar.
   the source deletes the underlying media. BirdNET-Go audio is resolved via its v2
   by-id API when the detection id is known (with the legacy `/clips/` path as a
   fallback), and audio cards show the detection's spectrogram when available.
+- The **⤢ scrub / still** button on video cards opens the **full player** — see
+  [Scrubbing clips and saving stills](#scrubbing-clips-and-saving-stills).
 - The **⬇ video** link on video cards downloads the clip **remuxed into a standard
   MP4** (ffmpeg `-c copy`, lossless) with a correct duration header — clips saved
   straight from the media player are streaming MP4s that report 00:00 length and can
@@ -43,6 +45,29 @@ dashboard embedded in the Home Assistant sidebar.
 - **New species wait for your approval** before joining the registry, so a single
   misclassification can't inflate your species count. See
   [Confirming new species](#confirming-new-species).
+
+## Scrubbing clips and saving stills
+
+The inline video on a card plays straight from Frigate. That's fast, but those clips are
+**fragmented MP4s with a zero-duration header**: the browser never learns how long the clip
+is, so the progress bar grows as it plays and there is nothing to drag against. On a phone,
+with a scrubber only as wide as the card, it's worse still.
+
+**⤢ scrub / still** opens a full-width player that fixes both:
+
+- Aviary remuxes the clip to a proper seekable MP4 (ffmpeg `-c copy` — lossless, no
+  re-encode) and the player downloads it **whole** before playing. That costs a moment on
+  open, and buys **instant scrubbing**: every seek afterwards happens in your browser
+  against video it already has, with no further requests.
+- Large transport buttons — ⏪ 1s, single-frame stepping both ways, ⏩ 1s — sized for a
+  thumb. Arrow keys seek, `,` / `.` step a frame, Escape closes.
+- **⬇ save still** writes the frame on screen to a PNG at the clip's **native encoded
+  resolution**, not the size it's drawn at. PNG is lossless for that frame, so it's the
+  best still the clip can give. It's named like the video download:
+  `blue-jay-20260811-142233-4.20s.png`.
+
+Nothing is cached server-side, so each open re-fetches and re-remuxes. If ffmpeg is
+unavailable the player falls back to direct playback — watchable, but not seekable.
 
 ## Confirming new species
 
