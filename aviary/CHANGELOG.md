@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.13.1
+
+- **Fixed: "Preparing a seekable copy…" never went away**, sitting over the clip even once
+  it was playing. The code hid it by setting the `hidden` attribute, but the stylesheet gave
+  it `display: flex`, which outranks the `display: none` that `hidden` relies on — so it
+  could never disappear. The overlay is gone entirely; the stage stays black until the clip
+  is ready and the browser's own buffering UI takes it from there.
+- When a clip can't be made seekable (ffmpeg missing, Frigate unreachable) the player still
+  plays the original and now says so in the title — *"Blue Jay · seeking unavailable"* —
+  rather than through an overlay on top of the video.
+
 ## 0.13.0
 
 - **Clips can be scrubbed properly now.** Frigate serves clips as fragmented MP4s whose
@@ -22,10 +33,7 @@
 - Fixed: a remux that hit its timeout left ffmpeg running, writing into a temp directory
   that was about to be deleted. It's now killed.
 - Nothing is cached server-side, so each open re-fetches and re-remuxes; if ffmpeg is
-  missing the player falls back to direct playback rather than failing — the title says so,
-  since that clip won't scrub.
-- No custom loading overlay: the stage stays black until the clip is ready and the
-  browser's own buffering UI takes it from there.
+  missing the player falls back to direct playback rather than failing.
 
 ## 0.12.0
 
