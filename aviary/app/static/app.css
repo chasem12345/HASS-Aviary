@@ -285,13 +285,14 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
   cursor: pointer; flex: none;
 }
 .clip-close:hover { background: rgba(255, 255, 255, .24); }
-.clip-stage { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; }
+.clip-stage {
+  position: relative; background: #000; border-radius: var(--radius); overflow: hidden;
+  /* Holds the box open while the clip downloads, so the panel doesn't jump when the
+     video finally reports its dimensions. */
+  min-height: 180px;
+}
 /* The video sets its own height so a portrait clip isn't letterboxed into 16/9. */
 .clip-stage video { display: block; width: 100%; max-height: 70vh; background: #000; }
-.clip-loading {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  color: #fff; font-size: 13px; background: rgba(0, 0, 0, .55); pointer-events: none;
-}
 .clip-controls { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
 .clip-controls button {
   /* 44px: a comfortable touch target — the whole point of the overlay is that the

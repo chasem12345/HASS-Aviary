@@ -22,7 +22,10 @@
 - Fixed: a remux that hit its timeout left ffmpeg running, writing into a temp directory
   that was about to be deleted. It's now killed.
 - Nothing is cached server-side, so each open re-fetches and re-remuxes; if ffmpeg is
-  missing the player falls back to direct playback rather than failing.
+  missing the player falls back to direct playback rather than failing — the title says so,
+  since that clip won't scrub.
+- No custom loading overlay: the stage stays black until the clip is ready and the
+  browser's own buffering UI takes it from there.
 
 ## 0.12.0
 

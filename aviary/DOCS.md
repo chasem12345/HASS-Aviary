@@ -66,8 +66,9 @@ with a scrubber only as wide as the card, it's worse still.
   best still the clip can give. It's named like the video download:
   `blue-jay-20260811-142233-4.20s.png`.
 
-Nothing is cached server-side, so each open re-fetches and re-remuxes. If ffmpeg is
-unavailable the player falls back to direct playback — watchable, but not seekable.
+Nothing is cached server-side, so each open re-fetches and re-remuxes — the player stays
+black for a moment before the clip appears. If ffmpeg is unavailable it falls back to
+direct playback and the title reads *seeking unavailable*: watchable, but not scrubbable.
 
 ## Confirming new species
 

@@ -585,8 +585,7 @@
       '<div class="clip-panel" role="dialog" aria-modal="true" aria-label="Clip player">' +
         '<div class="clip-head"><span class="clip-title"></span>' +
           '<button type="button" class="clip-close" title="Close (Esc)">✕</button></div>' +
-        '<div class="clip-stage"><video controls playsinline preload="auto"></video>' +
-          '<div class="clip-loading">Preparing a seekable copy…</div></div>' +
+        '<div class="clip-stage"><video controls playsinline preload="auto"></video></div>' +
         '<div class="clip-controls">' +
           '<button type="button" data-seek="-1">⏪ 1s</button>' +
           '<button type="button" data-step="-1">◀ step</button>' +
@@ -598,23 +597,24 @@
     document.body.appendChild(player);
     document.body.classList.add("player-open");
 
-    player.querySelector(".clip-title").textContent = ds.name || "Clip";
+    const title = player.querySelector(".clip-title");
+    title.textContent = ds.name || "Clip";
     const video = player.querySelector("video");
-    const loading = player.querySelector(".clip-loading");
 
-    // Fetch the remuxed clip whole, then play from memory. Falls back to streaming the
-    // un-remuxed clip if the remux route fails (e.g. no ffmpeg) — playable, not seekable.
+    // Fetch the remuxed clip whole, then play from memory. The stage stays black while
+    // that happens and the browser's own buffering UI takes over once src is set — no
+    // custom loading overlay, which is one less thing to sit on top of the video.
     fetch(clipBase + "/play.mp4")
       .then((res) => { if (!res.ok) throw new Error(res.status); return res.blob(); })
       .then((blob) => {
         playerObjectUrl = URL.createObjectURL(blob);
         video.src = playerObjectUrl;
-        loading.hidden = true;
       })
       .catch(() => {
+        // Remux unavailable (no ffmpeg, Frigate unreachable): play the original so there
+        // is still something to watch, and say in the title why it won't scrub.
         video.src = clipBase + "/clip.mp4";
-        loading.textContent = "Seeking unavailable for this clip.";
-        setTimeout(() => { loading.hidden = true; }, 2500);
+        title.textContent = (ds.name || "Clip") + " · seeking unavailable";
       });
 
     player.addEventListener("click", (e) => {
