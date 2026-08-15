@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.13.1"
+version: "0.14.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -43,6 +43,16 @@ options:
   mqtt_user: ""
   mqtt_password: ""
   xeno_canto_api_key: ""
+  identify_url: ""
+  identify_token: ""
+  identify_enabled: false
+  identify_min_score: 0.35
+  identify_min_margin: 0.08
+  identify_workers: 2
+  identify_timeout: 60
+  identify_retain_days: 14
+  identify_use_audio_priors: true
+  identify_exclude_blacklisted: true
   log_level: "info"
 schema:
   frigate_url: "url"
@@ -65,4 +75,39 @@ schema:
   # Free key from https://xeno-canto.org/account. Optional: without it, reference
   # recordings come from iNaturalist observations as before.
   xeno_canto_api_key: "password?"
+  # --- External identification (the aviary-id companion container) -------------
+  # Base URL of the aviary-id service, e.g. http://10.0.0.50:8100. It runs on a
+  # separate host with a GPU and pulls clips from Frigate itself, so that host needs
+  # to reach Frigate — Aviary only sends it the event id.
+  identify_url: "url?"
+  # Shared secret sent as `Authorization: Bearer ...`; must match AVIARY_ID_TOKEN on
+  # the service. Blank means the service is not checking (fine on a trusted LAN).
+  identify_token: "password?"
+  # With this on, Frigate's own bird classification should be turned OFF: Aviary
+  # takes over species identification entirely and only needs Frigate's `bird`
+  # object detection.
+  identify_enabled: "bool"
+  # Below this fused top-1 probability, a result is treated as unidentified and goes
+  # to the review queue instead of the registry.
+  identify_min_score: "float(0.0,1.0)"
+  # Minimum gap between the top two species. A high score with a tiny margin is two
+  # confusable birds (Downy vs. Hairy Woodpecker), not a confident answer.
+  identify_min_margin: "float(0.0,1.0)"
+  # Concurrent identification requests. The service serializes GPU work anyway, so
+  # more than a few only deepens the queue.
+  identify_workers: "int(1,8)"
+  identify_timeout: "int(5,600)"
+  # Unidentified detections are kept for review rather than dropped, then purged
+  # after this many days so a busy feeder can't grow the database without bound.
+  # 0 keeps them forever.
+  identify_retain_days: "int(0,365)"
+  # Bias identification toward species BirdNET-Go heard on the microphone around the
+  # same time. Costs nothing and uses data Aviary already has.
+  identify_use_audio_priors: "bool"
+  # Rule blacklisted species out of the identifier's candidate list entirely, so a bird
+  # it would have misread as one gets named correctly instead of being discarded. Right
+  # when you blacklisted a species because it does not occur here. WRONG if you
+  # blacklisted one that genuinely visits and you simply don't want recorded — every
+  # visit would then be recorded as some other species. Turn off in that case.
+  identify_exclude_blacklisted: "bool"
   log_level: "list(debug|info|warning|error)"

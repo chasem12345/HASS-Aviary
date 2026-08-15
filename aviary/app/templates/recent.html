@@ -1,6 +1,15 @@
 {% extends "base.html" %}
 {% block title %} · Recent{% endblock %}
 {% block content %}
+{% if reviewing_ids %}
+{# The review queue is its own view, not a filter on the normal list: every row in it is
+   an unidentified Frigate detection, so the source/species/range controls would have
+   nothing to act on. #}
+<div class="controls">
+  <span class="filter-chip">Unidentified detections — {{ unidentified }} awaiting review</span>
+  <a class="filter-chip" href="{{ u('recent') }}">Back to all detections ✕</a>
+</div>
+{% else %}
 <div class="controls">
   <form method="get" action="{{ u('recent') }}">
     <label>Source
@@ -30,7 +39,14 @@
       <a class="filter-chip" href="{{ u('recent') }}">Clear filters ✕</a>
     {% endif %}
   </form>
+  {% if identifying and unidentified %}
+    <a class="filter-chip" href="{{ u('recent') }}?state=unidentified"
+       title="Frigate saw a bird but identification couldn't name it confidently">
+      {{ unidentified }} unidentified →
+    </a>
+  {% endif %}
 </div>
+{% endif %}
 
 <div id="live-note" class="live-note" hidden></div>
 <div id="groups">
@@ -39,6 +55,9 @@
 {% endblock %}
 
 {% block scripts %}
+{# No live refresh in the review queue: aviaryInitRecent polls /recent/partial with the
+   source/species/range filters, which would swap the queue out for ordinary detections. #}
+{% if not reviewing_ids %}
 <script>
   window.aviaryInitRecent({
     source: {{ (none if source == 'all' else source) | tojson }},
@@ -48,4 +67,5 @@
     paged: {{ paged | tojson }},
   });
 </script>
+{% endif %}
 {% endblock %}

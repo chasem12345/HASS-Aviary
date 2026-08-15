@@ -9,7 +9,10 @@ import httpx
 from fastapi import APIRouter, Query, Request
 from fastapi.concurrency import run_in_threadpool
 
-from .. import db, ingest, notify, proxy, species_audio, species_info, species_photos, traits
+from .. import (
+    db, identify, ingest, notify, proxy, species_audio, species_info, species_photos,
+    traits,
+)
 from . import ingress_url, set_theme
 
 router = APIRouter()
@@ -174,6 +177,71 @@ async def delete_species(name: str, request: Request, source_action: Optional[st
         "source_errors": source_errors[:5],
         "source_error_count": len(source_errors),
     }
+
+
+# ----------------------------------------------------------------------- identification
+
+@router.post("/detections/{det_id}/identify")
+async def reidentify(
+    det_id: int,
+    reject: int = Query(0, description="record the current species as wrong, then re-run"),
+    reset: int = Query(0, description="clear this detection's rejections first"),
+):
+    """Re-run identification for one detection, waiting for the answer.
+
+    Three uses, all the same call:
+
+    * plain — retry after the GPU host was down, or after changing a threshold.
+    * ``reject=1`` — "that's not what it is". The current species is remembered as wrong
+      for this detection and ruled out of the candidate set, so the model returns its next
+      best answer rather than the same one. Press it repeatedly to walk down the ranking.
+    * ``reset=1`` — clear the rejections and start over, for when they have narrowed
+      things down to nonsense.
+    """
+    if not identify.enabled():
+        return {"ok": False, "error": "identification is not configured"}
+    det = await run_in_threadpool(db.detection_by_id, det_id)
+    if det is None:
+        return {"ok": False, "error": "detection not found"}
+    if det["source"] != "frigate":
+        # BirdNET rows are audio; there is no image to identify.
+        return {"ok": False, "error": "only Frigate detections can be identified"}
+
+    if reset:
+        await run_in_threadpool(db.clear_rejections, det_id)
+    rejected_name = None
+    if reject and det.get("common_name"):
+        rejected_name = det["common_name"]
+        await run_in_threadpool(db.reject_identification, det_id, rejected_name)
+        # Clear the name before re-running. If the reroll lands below threshold it never
+        # re-stores the row, and without this the species the user just rejected would
+        # stay on the card. See db.reset_species.
+        await run_in_threadpool(db.reset_species, det_id)
+        det = dict(det, common_name="bird", scientific_name=None, species_code=None)
+
+    result = await identify.identify_one(det)
+    if result.get("status") == "already_running":
+        return {"ok": False, "error": "identification already in progress"}
+    updated = result.get("detection") or {}
+    # If that was the rejected species' only detection, let it announce as new again
+    # should it genuinely turn up later — same reasoning as deleting a misclassification.
+    if rejected_name and rejected_name != updated.get("common_name"):
+        await run_in_threadpool(_forget_if_gone, rejected_name)
+    rejected = await run_in_threadpool(db.rejections_for, det_id)
+    return {
+        "ok": True,
+        "common_name": updated.get("common_name"),
+        "id_status": updated.get("id_status"),
+        "score": updated.get("id_score"),
+        "margin": updated.get("id_margin"),
+        "rejected": rejected,
+    }
+
+
+@router.get("/identify-health")
+async def identify_health():
+    """Status of the companion identification service, for the settings page."""
+    return await identify.health()
 
 
 # --------------------------------------------------------------------- confirmation

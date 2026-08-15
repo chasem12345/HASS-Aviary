@@ -67,11 +67,18 @@ def _paged(
     species: Optional[str],
     before: Optional[float],
     since: Optional[float],
+    unidentified: bool = False,
 ) -> tuple[list[dict], Optional[float]]:
     """One page of detections plus the next ``before`` cursor (None = no more)."""
-    rows = db.recent_detections(
-        limit=PAGE_SIZE + 1, source=source, species=species, before=before, since=since
-    )
+    if unidentified:
+        # The review queue ignores the source/species/range filters on purpose: every row
+        # in it is a Frigate row with no species, so those filters would either match
+        # everything or nothing.
+        rows = db.unidentified_detections(limit=PAGE_SIZE + 1, before=before)
+    else:
+        rows = db.recent_detections(
+            limit=PAGE_SIZE + 1, source=source, species=species, before=before, since=since
+        )
     has_more = len(rows) > PAGE_SIZE
     rows = rows[:PAGE_SIZE]
     next_before = rows[-1]["start_time"] if has_more and rows else None
@@ -123,20 +130,29 @@ def _recent_ctx(
     species: Optional[str],
     range_key: str,
     before: Optional[float],
+    state: Optional[str] = None,
 ) -> dict:
     src = _norm_source(source)
     range_key = _norm_range(range_key, default="all")
     since = _since(range_key)
-    detections, next_before = _paged(src, species, before, since)
+    # ?state=unidentified is the identification review queue. Like the species review
+    # queue, it only means anything while the feature is on; with it off the parameter is
+    # ignored rather than showing a permanently empty page.
+    identifying = request.app.state.settings.identify_active
+    reviewing = identifying and state == "unidentified"
+    detections, next_before = _paged(src, species, before, since, unidentified=reviewing)
     older_url = None
     if next_before is not None:
         q: dict = {"before": f"{next_before:.6f}"}
-        if src:
-            q["source"] = src
-        if species:
-            q["species"] = species
-        if range_key != "all":
-            q["range"] = range_key
+        if reviewing:
+            q["state"] = "unidentified"
+        else:
+            if src:
+                q["source"] = src
+            if species:
+                q["species"] = species
+            if range_key != "all":
+                q["range"] = range_key
         older_url = f"{ingress_url(request, 'recent')}?{urlencode(q)}"
     return {
         "request": request,
@@ -144,6 +160,10 @@ def _recent_ctx(
         "source": src or "all",
         "species": species,
         "range": range_key,
+        "reviewing_ids": reviewing,
+        "identifying": identifying,
+        # A to-do count, so always the whole queue rather than the filtered window.
+        "unidentified": db.unidentified_count() if identifying else 0,
         "groups": _day_groups(detections),
         "next_before": next_before,
         "older_url": older_url,
@@ -160,8 +180,9 @@ def recent(
     species: Optional[str] = Query(None),
     range_key: str = Query("all", alias="range"),
     before: Optional[float] = Query(None),
+    state: Optional[str] = Query(None),
 ):
-    ctx = _recent_ctx(request, source, species, range_key, before)
+    ctx = _recent_ctx(request, source, species, range_key, before, state)
     return render("recent.html", ctx)
 
 
@@ -173,9 +194,10 @@ def recent_partial(
     range_key: str = Query("all", alias="range"),
     before: Optional[float] = Query(None),
     highlight_after: Optional[float] = Query(None),
+    state: Optional[str] = Query(None),
 ):
     """Server-rendered detection groups for the Recent page's live refresh."""
-    ctx = _recent_ctx(request, source, species, range_key, before)
+    ctx = _recent_ctx(request, source, species, range_key, before, state)
     ctx["highlight_after"] = highlight_after
     return render("_groups.html", ctx)
 
@@ -300,11 +322,16 @@ def settings_page(request: Request):
     Everything here is stored in the add-on's database and applies immediately — unlike
     the add-on options, which need a restart.
     """
+    settings = request.app.state.settings
     ctx = {
         "request": request,
         "page": "settings",
         "themes": THEMES,
         "current_theme": get_theme(),
         "blacklist": db.blacklist_entries(),
+        "identify_configured": settings.identify_active,
+        # The URL is shown so a misconfigured host is obvious at a glance. The token is
+        # deliberately never exposed here — it is a credential.
+        "identify_url": settings.identify_url,
     }
     return render("settings.html", ctx)

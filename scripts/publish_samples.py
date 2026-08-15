@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import time
+from typing import Optional
 
 import paho.mqtt.client as mqtt
 
@@ -22,7 +23,16 @@ FRIGATE_TOPIC = os.environ.get("FRIGATE_TOPIC", "frigate/events")
 BIRDNET_TOPIC = os.environ.get("BIRDNET_TOPIC", "birdnet")
 
 
-def frigate_event(event_id: str, species: str, camera: str, score: float, ts: float) -> dict:
+def frigate_event(event_id: str, species: Optional[str], camera: str, score: float,
+                  ts: float, msg_type: str = "end") -> dict:
+    """A Frigate event message.
+
+    ``species=None`` is the shape Frigate publishes when its own bird classification is
+    turned off — no ``sub_label`` at all. That is the normal case once external
+    identification is enabled, and it exercises a completely different ingest path (the
+    row is stored as pending and handed to aviary-id rather than announced), so it needs
+    covering here.
+    """
     obj = {
         "id": event_id,
         "camera": camera,
@@ -35,7 +45,7 @@ def frigate_event(event_id: str, species: str, camera: str, score: float, ts: fl
         "has_clip": True,
         "has_snapshot": True,
     }
-    return {"type": "end", "before": obj, "after": obj}
+    return {"type": msg_type, "before": obj, "after": obj}
 
 
 def birdnet_event(det_id: int, common: str, sci: str, code: str, conf: float, ts: float) -> dict:
@@ -75,6 +85,13 @@ def main() -> None:
         frigate_event("evt-1001", "Northern Cardinal", "feeder_cam", 0.91, now - 3600),
         frigate_event("evt-1002", "Blue Jay", "feeder_cam", 0.86, now - 7200),
         frigate_event("evt-1003", "American Goldfinch", "yard_cam", 0.78, now - 90000),
+        # No sub_label: what Frigate sends with its bird classification disabled. With
+        # identify_enabled on, this should be stored as pending and sent to aviary-id;
+        # with it off, it should be dropped by the ignore_unclassified gate.
+        frigate_event("evt-1004", None, "feeder_cam", 0.88, now - 600),
+        # The in-progress message for the same shape. It must NOT trigger identification —
+        # only the 'end' message does, or every event would cost several GPU passes.
+        frigate_event("evt-1005", None, "feeder_cam", 0.83, now - 300, msg_type="new"),
     ]
     birdnet_samples = [
         birdnet_event(1, "Rainbow Lorikeet", "Trichoglossus moluccanus", "railor5", 0.88, now - 1800),
@@ -84,7 +101,8 @@ def main() -> None:
 
     for e in frigate_samples:
         client.publish(FRIGATE_TOPIC, json.dumps(e), qos=0)
-        print(f"→ {FRIGATE_TOPIC}: {e['after']['sub_label']}")
+        label = e["after"]["sub_label"] or "(no sub_label)"
+        print(f"→ {FRIGATE_TOPIC}: {label} [{e['type']}]")
     for e in birdnet_samples:
         client.publish(BIRDNET_TOPIC, json.dumps(e), qos=0)
         print(f"→ {BIRDNET_TOPIC}: {e['CommonName']}")

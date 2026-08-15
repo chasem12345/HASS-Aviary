@@ -13,7 +13,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import backfill, db, ingest, notify, proxy, species_audio, species_info, species_photos
+from . import (
+    backfill, db, identify, ingest, notify, proxy, species_audio, species_info,
+    species_photos,
+)
 from .mqtt_client import MqttIngestor
 from .routes import ASSET_VER, register_routes
 from .settings import load_settings
@@ -73,6 +76,18 @@ class IngressStripMiddleware:
         await self.app(scope, receive, send)
 
 
+async def _identify_maintenance() -> None:
+    """Post-start identification housekeeping.
+
+    Deliberately after a short delay rather than inline in startup: requeueing pending
+    rows immediately would race the identification workers into a cold GPU service that
+    is still loading its model, and every one of those requests would fail.
+    """
+    await asyncio.sleep(15)
+    await identify.requeue_pending()
+    await identify.purge_old()
+
+
 def create_app() -> FastAPI:
     settings = load_settings()
 
@@ -90,8 +105,23 @@ def create_app() -> FastAPI:
     )
     notify.configure(settings)
     species_audio.configure(settings)
+    identify.configure(settings)
     # Seed BEFORE MQTT/backfill start so existing species/refs never fire notifications.
     ingest.seed_notify_state()
+
+    if identify.enabled():
+        # Frigate's classifier should be OFF when this is on, so every Frigate event
+        # arrives as generic 'bird' and is routed here instead of being discarded by the
+        # unclassified gate.
+        ingest.set_identify_hook(identify.submit)
+    elif settings.identify_enabled:
+        # Enabled with no URL: without this warning every Frigate detection would simply
+        # vanish (unclassified, no identifier) with nothing in the log to explain it.
+        log.warning(
+            "identify_enabled is on but identify_url is empty; external identification "
+            "is inactive. With Frigate's own bird classification turned off, no Frigate "
+            "detections will be recorded."
+        )
 
     ingestor = MqttIngestor(settings)
 
@@ -102,23 +132,32 @@ def create_app() -> FastAPI:
         species_audio.init_client()
         species_photos.init_client()
         notify.init_client()
-        ingest.set_event_loop(asyncio.get_running_loop())
+        identify.init_client()
+        loop = asyncio.get_running_loop()
+        ingest.set_event_loop(loop)
         notify.install_blueprint()
+        await identify.start(loop)
         ingestor.start()
         backfill_task = None
         if settings.backfill_on_start:
             # Run in the background so startup isn't blocked by the source APIs.
             backfill_task = asyncio.create_task(backfill.run_backfill(settings))
+        # Recover work stranded by a restart, then clear out stale unidentifiable rows.
+        # Both are background tasks: neither should delay serving the UI.
+        identify_maint_task = asyncio.create_task(_identify_maintenance())
         # Charts and the "today" boundary use OS localtime; make misconfiguration visible.
         log.info("Aviary started (timezone: %s, TZ=%s).", time.strftime("%Z"), os.environ.get("TZ", "unset"))
         try:
             yield
         finally:
-            if backfill_task is not None:
-                backfill_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await backfill_task
+            for task in (backfill_task, identify_maint_task):
+                if task is not None:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
             ingestor.stop()
+            await identify.stop()
+            await identify.close_client()
             await proxy.close_client()
             await species_info.close_client()
             await species_audio.close_client()

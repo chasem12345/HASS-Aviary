@@ -422,7 +422,36 @@
 
   // -------------------------------------------------------------------- settings
 
+  // Reports the identification service's state on the settings page. The facts chosen
+  // are the ones that actually go wrong: running on CPU when a GPU was expected (a bad
+  // torch wheel or a missing container toolkit), and a species count that reveals the
+  // eBird region silently fell back to the bundled list.
+  async function loadIdentifyHealth() {
+    const el = document.getElementById("identify-health");
+    if (!el) return;
+    try {
+      const data = await getJson("/identify-health");
+      if (!data.ok) {
+        el.className = "id-health bad";
+        el.textContent = "Unreachable" + (data.error ? " — " + data.error : "");
+        return;
+      }
+      const device = data.cuda ? data.device : "CPU" + (data.cpu_only ? " (forced)" : "");
+      el.className = "id-health" + (data.cuda || data.cpu_only ? " good" : " warn");
+      el.textContent =
+        "Online · " + device +
+        " · " + (data.species_count || 0) + " species from " + (data.species_source || "?");
+      if (!data.cuda && !data.cpu_only) {
+        el.textContent += " — no GPU detected; check nvidia-container-toolkit and the cu126 torch wheel";
+      }
+    } catch (err) {
+      el.className = "id-health bad";
+      el.textContent = "Unreachable — " + err;
+    }
+  }
+
   window.aviaryInitSettings = function () {
+    loadIdentifyHealth();
     document.querySelectorAll(".blacklist-remove").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const species = btn.dataset.species;
@@ -783,6 +812,47 @@
     } catch (err) {
       alert("Confirm failed: " + err);
       btn.disabled = false;
+    }
+  });
+
+  // Re-run identification for one detection. Synchronous by design: the request holds
+  // until the GPU answers (a few seconds), because the whole point is comparing the new
+  // answer against the old one — a fire-and-forget that quietly changed the card later
+  // would be useless for tuning.
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".reidentify");
+    if (!btn) return;
+    e.preventDefault();
+    const rejecting = btn.classList.contains("reject");
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = rejecting ? "✗ trying again…" : "↻ identifying…";
+    try {
+      const res = await fetch(
+        API + "/detections/" + encodeURIComponent(btn.dataset.id) + "/identify" +
+          (rejecting ? "?reject=1" : ""),
+        { method: "POST" });
+      const data = await res.json();
+      if (!data.ok) {
+        alert("Re-identify failed: " + (data.error || res.status));
+        btn.disabled = false;
+        btn.textContent = original;
+        return;
+      }
+      // Say what happened before the reload wipes the page. Rejections accumulate, so
+      // after a few presses it is genuinely unclear what is still in the running.
+      if (rejecting && !data.common_name) {
+        alert("Ruled out " + btn.dataset.name +
+              ". Nothing else cleared the confidence threshold — this detection is now in " +
+              "the review queue.\n\nRuled out so far: " + (data.rejected || []).join(", "));
+      }
+      // Reload rather than patching the card: the species name, confidence bar, badge and
+      // the review-queue count all move together, and the row may have left the queue.
+      window.location.reload();
+    } catch (err) {
+      alert("Re-identify failed: " + err);
+      btn.disabled = false;
+      btn.textContent = original;
     }
   });
 })();

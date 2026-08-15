@@ -1,0 +1,51 @@
+services:
+  aviary-id:
+    build: .
+    image: aviary-id:latest
+    container_name: aviary-id
+    restart: unless-stopped
+    ports:
+      # Reachable from the Home Assistant host. Bind to a specific interface
+      # (e.g. "10.0.0.50:8100:8100") if this box has a public NIC.
+      - "8100:8100"
+    volumes:
+      # Model weights, the eBird caches, and the text-embedding cache. Without this,
+      # every container recreate re-downloads ~2 GB and re-encodes the vocabulary.
+      - aviary-id-models:/models
+    environment:
+      # --- required ---------------------------------------------------------------
+      # This host must be able to reach Frigate directly; it pulls clips itself rather
+      # than having them proxied through Home Assistant.
+      FRIGATE_URL: "http://frigate.lan:5000"
+
+      # --- strongly recommended ---------------------------------------------------
+      # Shared secret Aviary sends as `Authorization: Bearer ...`. Must match the
+      # add-on's identify_token option. Blank disables auth.
+      AVIARY_ID_TOKEN: ""
+      # Free key from https://ebird.org/api/keygen. Without BOTH of these the service
+      # falls back to a generic North American yard-bird list and accuracy drops.
+      EBIRD_API_KEY: ""
+      # County is best (e.g. US-CO-013); state (US-CO) and country (US) also work.
+      EBIRD_REGION: ""
+
+      # --- tuning (defaults shown) ------------------------------------------------
+      # SAMPLE_FRAMES: "8"            # frames decoded from the clip before filtering
+      # CLASSIFY_FRAMES: "3"          # best frames actually classified
+      # DETECTOR_THRESHOLD: "0.5"     # min score for a box to count as a bird
+      # CROP_PADDING: "0.15"          # context added around the bird before cropping
+      # EXTRA_SPECIES: "Painted Bunting,Bobolink"
+      # EXCLUDE_SPECIES: "Rock Pigeon"
+      # CPU_ONLY: "1"                 # skip the GPU entirely (~5s/event, useful for tests)
+      LOG_LEVEL: "info"
+      TZ: "America/Denver"
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  aviary-id-models:

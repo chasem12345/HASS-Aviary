@@ -18,8 +18,30 @@ rebuilds the species pages as a field registry — a numbered list of entries an
 data readout, where a bird BirdNET-Go has only *heard* stays a silhouette until a camera
 *sees* it — navigable with the arrow keys.
 
-> Aviary does **no** classification of its own. It reads the species that Frigate emits in the
-> event `sub_label` and the species BirdNET-Go emits in its MQTT payload.
+> By default Aviary does **no** classification of its own — it reads the species Frigate
+> emits in the event `sub_label` and the species BirdNET-Go emits in its MQTT payload.
+> Optionally it can take over visual identification entirely; see below.
+
+## Better bird identification (optional)
+
+Frigate's built-in bird classifier is a quantized MobileNet running on CPU across ~964 world
+species, and it misidentifies often. **[aviary-id](aviary-id/)** is a companion container
+that replaces it: BioCLIP 2 — a vision-language model trained on 214M biological images —
+running on your own GPU, scoring each bird against **only the species that occur in your
+region** (from a free eBird API key).
+
+It runs on a **separate host** from Home Assistant. Aviary sends it a Frigate event id; it
+pulls the clip from Frigate itself, samples frames, crops to the bird, and returns a species.
+No video passes through Home Assistant, and the GPU box needs no access to Home Assistant,
+MQTT, or Aviary's database.
+
+Because Aviary already ingests BirdNET-Go audio, it also passes species *heard* near the same
+time as a prior — a cardinal that sang on its way to the feeder is more likely to be the bird
+in the picture. No standalone bird identifier can do that.
+
+Turn Frigate's own bird classification off when you enable this. See
+[aviary-id/README.md](aviary-id/README.md) for the service and
+[aviary/DOCS.md](aviary/DOCS.md#better-bird-identification) for the add-on side.
 
 ## Install
 
@@ -45,7 +67,12 @@ data readout, where a bird BirdNET-Go has only *heard* stays a silhouette until 
 | `mqtt_port` | `1883` | Override broker port |
 | `mqtt_user` | `""` | Override broker username |
 | `mqtt_password` | `""` | Override broker password |
+| `identify_url` | `""` | Base URL of the [aviary-id](aviary-id/) service, e.g. `http://10.0.0.50:8100` |
+| `identify_enabled` | `false` | Route unidentified Frigate detections to that service |
 | `log_level` | `info` | `debug` / `info` / `warning` / `error` |
+
+The full option list, including the identification thresholds, is in
+[aviary/DOCS.md](aviary/DOCS.md#configuration).
 
 ## Development
 

@@ -265,6 +265,34 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 /* When both are present the download sits after the player button, so only the first
    one pushed to the right needs the auto margin. */
 .clip-open + .dl-link { margin-left: 0; }
+.reidentify {
+  color: var(--muted); font-size: 12px; white-space: nowrap;
+  background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit;
+}
+.reidentify:hover { color: var(--accent); }
+.reidentify[disabled] { opacity: .5; cursor: default; }
+.reidentify.reject:hover { color: var(--danger); }
+
+/* ------------------------------------------------------------- identification badge */
+/* Deliberately outlined rather than filled like .badge: the source badge names what the
+   detection IS, whereas this qualifies how much to trust the name next to it. Making it
+   quieter keeps it from competing with the species for attention. */
+.idbadge {
+  border-radius: 6px; padding: 1px 7px; font-size: 11px; font-weight: 600;
+  border: 1px solid currentColor; color: var(--muted); white-space: nowrap;
+}
+.idbadge-ok { color: var(--accent); }
+.idbadge-low { color: var(--warn); }
+.idbadge-failed { color: var(--danger); }
+.idbadge-pending { color: var(--muted); opacity: .8; }
+
+.id-health {
+  font-size: 13px; color: var(--muted); padding: 8px 10px; border-radius: 8px;
+  background: var(--bg); border: 1px solid var(--line);
+}
+.id-health.good { color: var(--accent); border-color: var(--accent); }
+.id-health.warn { color: var(--warn); border-color: var(--warn); }
+.id-health.bad { color: var(--danger); border-color: var(--danger); }
 
 /* ------------------------------------------------------------------ clip player */
 /* A page-level overlay, appended to <body>: .det-card and .det-media both set

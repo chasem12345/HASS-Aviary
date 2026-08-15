@@ -54,6 +54,21 @@
   {% endif %}
 </section>
 
+{% if identify_configured %}
+<section class="card">
+  <h2>Identification service</h2>
+  <p class="setting-help">
+    Species identification runs on <code>{{ identify_url }}</code>. That host pulls clips
+    from Frigate itself, so Frigate's own bird classification should be turned off — this
+    add-on only needs Frigate's <code>bird</code> object detection.
+  </p>
+  {# Filled in by aviaryInitSettings from /api/identify-health. Rendered server-side as
+     "checking" rather than left blank, so a service that never responds reads as a failed
+     check instead of a page that looks half-loaded. #}
+  <div id="identify-health" class="id-health">Checking…</div>
+</section>
+{% endif %}
+
 <section class="card">
   <h2>Add-on options</h2>
   <p class="setting-help">

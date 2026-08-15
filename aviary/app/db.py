@@ -31,7 +31,14 @@ CREATE TABLE IF NOT EXISTS detections (
     snapshot_ref    TEXT,
     native_id       TEXT,                            -- source-side id (birdnet DB id / frigate event id)
     raw_json        TEXT,
-    created_at      REAL    NOT NULL
+    created_at      REAL    NOT NULL,
+    -- External identification (aviary-id). NULL on every BirdNET row and on Frigate rows
+    -- from before the feature existed; those are "not applicable", not "failed".
+    id_status       TEXT,                            -- pending|ok|low_confidence|failed
+    id_score        REAL,                            -- fused top-1 probability
+    id_margin       REAL,                            -- top-1 minus top-2; the real confidence signal
+    id_model        TEXT,                            -- model@vocabulary digest that produced it
+    id_at           REAL                             -- when the identification completed
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_source_ref
@@ -44,6 +51,11 @@ CREATE INDEX IF NOT EXISTS idx_detections_common_name ON detections (common_name
 -- quadratic in the table size (measured: 18s at 20k rows, ~2min at 50k).
 CREATE INDEX IF NOT EXISTS idx_detections_scientific_nocase
     ON detections (scientific_name COLLATE NOCASE);
+-- NOTE: idx_detections_id_status is deliberately NOT declared here. This script runs
+-- against pre-existing databases before the ALTER TABLEs below add the id_* columns, and
+-- a partial index whose WHERE clause names a missing column does not get skipped — it
+-- raises, aborting init_db and taking the whole add-on down on upgrade. It is created in
+-- init_db() after the columns are guaranteed to exist.
 
 -- Tombstones for user-deleted detections: ingest and backfill skip these refs so a
 -- deleted misclassification can't be re-imported from the source's history.
@@ -118,6 +130,38 @@ CREATE TABLE IF NOT EXISTS species_photos (
     PRIMARY KEY (common_name, position)
 );
 
+-- Image embeddings from the identification service, one per identified detection.
+--
+-- NOTHING READS THIS YET. It exists from day one because the data is free at
+-- identification time and ruinously expensive to backfill: reconstructing it later means
+-- re-downloading and re-running every clip in the history through the GPU. Each confirmed
+-- species in `species_confirmed` is a labelled example from your own cameras, so once
+-- enough have accumulated, a nearest-centroid classifier over these vectors can be built
+-- to beat the zero-shot model on exactly the locally-confusable pairs it struggles with.
+--
+-- Stored as a base64 float16 blob keyed by model, because a vector from one model or
+-- vocabulary is not comparable with one from another.
+CREATE TABLE IF NOT EXISTS identification_embeddings (
+    detection_id INTEGER PRIMARY KEY REFERENCES detections(id) ON DELETE CASCADE,
+    model        TEXT NOT NULL,
+    embedding    TEXT NOT NULL,
+    created_at   REAL NOT NULL
+);
+
+-- Answers the user has rejected for a specific detection ("that is not a Blue Jay").
+-- Excluded from the candidate set on the next re-identify, so each rejection walks the
+-- model down its own ranking instead of handing back the same wrong answer.
+--
+-- Per-detection, not per-species: rejecting a guess for one bird says nothing about
+-- whether the species occurs here. The global, permanent version of that judgement is
+-- species_blacklist.
+CREATE TABLE IF NOT EXISTS identification_rejections (
+    detection_id INTEGER NOT NULL REFERENCES detections(id) ON DELETE CASCADE,
+    species      TEXT NOT NULL COLLATE NOCASE,
+    rejected_at  REAL NOT NULL,
+    PRIMARY KEY (detection_id, species)
+);
+
 """
 
 # Split out of _SCHEMA so the kind-column migration below can recreate just this table.
@@ -168,6 +212,32 @@ def init_db(db_path: str) -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(detections)")}
         if "native_id" not in cols:
             conn.execute("ALTER TABLE detections ADD COLUMN native_id TEXT")
+        # External identification columns. Added individually rather than as a group so a
+        # database that was upgraded partway (e.g. an add-on downgrade in between) still
+        # converges. All nullable with no default: existing rows are "not applicable".
+        for name, decl in (
+            ("id_status", "TEXT"), ("id_score", "REAL"), ("id_margin", "REAL"),
+            ("id_model", "TEXT"), ("id_at", "REAL"),
+        ):
+            if name not in cols:
+                conn.execute(f"ALTER TABLE detections ADD COLUMN {name} {decl}")
+        # Created here, not in _SCHEMA, because a partial index on a column that does not
+        # exist yet is a hard error rather than a skip (see the note in _SCHEMA).
+        #
+        # Partial on purpose: identification queries only ever ask for rows in a non-NULL
+        # state, and on a mature database nearly every row is NULL here — every BirdNET
+        # row, plus all history predating the feature. Indexing only the interesting rows
+        # keeps the restart requeue and the review queue cheap regardless of history size.
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_detections_id_status
+                ON detections (id_status, start_time) WHERE id_status IS NOT NULL
+            """
+        )
+        # A detection deleted before this table existed leaves no embedding behind, but a
+        # row deleted *after* must not leave one either. SQLite enforces the ON DELETE
+        # CASCADE only when foreign keys are enabled, which is per-connection and off by
+        # default — so delete_detection() cleans up explicitly instead of relying on it.
         info_cols = {r[1] for r in conn.execute("PRAGMA table_info(species_info)")}
         if "inat_taxon_id" not in info_cols:
             conn.execute("ALTER TABLE species_info ADD COLUMN inat_taxon_id INTEGER")
@@ -642,6 +712,11 @@ def delete_detection(det_id: int) -> Optional[dict]:
         if row is None:
             return None
         conn.execute("DELETE FROM detections WHERE id = ?", (det_id,))
+        # Explicit rather than relying on ON DELETE CASCADE: SQLite enforces foreign keys
+        # only when PRAGMA foreign_keys is on, and it is off by default on every new
+        # connection. Orphaned embeddings would otherwise accumulate silently forever.
+        conn.execute("DELETE FROM identification_embeddings WHERE detection_id = ?", (det_id,))
+        conn.execute("DELETE FROM identification_rejections WHERE detection_id = ?", (det_id,))
         conn.execute(
             "INSERT OR REPLACE INTO deleted_refs (source, source_ref, deleted_at) VALUES (?, ?, ?)",
             (row["source"], row["source_ref"], time.time()),
@@ -672,6 +747,16 @@ def delete_species(common_name: str) -> list[dict]:
                 "INSERT OR REPLACE INTO deleted_refs (source, source_ref, deleted_at) VALUES (?, ?, ?)",
                 [(r["source"], r["source_ref"], now) for r in rows],
             )
+            # See the note in delete_detection: ON DELETE CASCADE is not enforced unless
+            # PRAGMA foreign_keys is on, which it is not.
+            conn.executemany(
+                "DELETE FROM identification_embeddings WHERE detection_id = ?",
+                [(r["id"],) for r in rows],
+            )
+            conn.executemany(
+                "DELETE FROM identification_rejections WHERE detection_id = ?",
+                [(r["id"],) for r in rows],
+            )
         conn.execute("DELETE FROM species_info WHERE common_name = ? COLLATE NOCASE", (common_name,))
         conn.execute("DELETE FROM species_audio WHERE common_name = ? COLLATE NOCASE", (common_name,))
         conn.execute("DELETE FROM species_photos WHERE common_name = ? COLLATE NOCASE", (common_name,))
@@ -679,6 +764,234 @@ def delete_species(common_name: str) -> list[dict]:
         # review again if it genuinely turns up later.
         conn.execute("DELETE FROM species_confirmed WHERE common_name = ? COLLATE NOCASE", (common_name,))
     return rows
+
+
+# -------------------------------------------------------------------- identification
+
+def set_identification(
+    source: str,
+    source_ref: str,
+    status: str,
+    score: Optional[float] = None,
+    margin: Optional[float] = None,
+    model: Optional[str] = None,
+    embedding: Optional[str] = None,
+    set_confidence: bool = False,
+) -> None:
+    """Record the outcome of an external identification attempt.
+
+    Kept separate from ``upsert_detection`` on purpose: that function is on the hot path
+    for every MQTT message, whereas this runs once per event. Threading identification
+    fields through the row dict would mean every caller that builds a row — including the
+    BirdNET path, which has no identification — carrying five columns it does not use.
+
+    ``set_confidence`` forces ``detections.confidence`` to ``score``, deliberately
+    bypassing the "keep the best score" merge in ``upsert_detection``. That merge is
+    correct while both values mean the same thing, but Frigate's score answers "is this a
+    bird" (typically 0.85+) and ours answers "is this a Black-capped Chickadee". Taking
+    the maximum would put Frigate's high object score in the field the UI labels as
+    species confidence, making an uncertain identification look authoritative.
+    """
+    with _connect() as conn:
+        conn.execute(
+            f"""
+            UPDATE detections SET
+                id_status = ?, id_score = ?, id_margin = ?, id_model = ?, id_at = ?
+                {", confidence = ?" if set_confidence else ""}
+            WHERE source = ? AND source_ref = ?
+            """,
+            (status, score, margin, model, time.time())
+            + ((score,) if set_confidence else ())
+            + (source, source_ref),
+        )
+        if embedding and model:
+            row = conn.execute(
+                "SELECT id FROM detections WHERE source = ? AND source_ref = ?",
+                (source, source_ref),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    """
+                    INSERT INTO identification_embeddings
+                        (detection_id, model, embedding, created_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(detection_id) DO UPDATE SET
+                        model = excluded.model,
+                        embedding = excluded.embedding,
+                        created_at = excluded.created_at
+                    """,
+                    (row["id"], model, embedding, time.time()),
+                )
+
+
+def reject_identification(detection_id: int, species: str) -> None:
+    """Record that a species is the wrong answer for this specific detection."""
+    if not (species or "").strip() or species.strip().lower() == "bird":
+        return  # "bird" is the absence of an answer, not an answer to reject
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO identification_rejections
+                (detection_id, species, rejected_at) VALUES (?, ?, ?)
+            """,
+            (detection_id, species.strip(), time.time()),
+        )
+
+
+def reset_species(detection_id: int) -> None:
+    """Strip a detection back to an unnamed 'bird'.
+
+    Needed before re-identifying a rejected answer. ``upsert_detection`` deliberately
+    refuses to downgrade a named species back to 'bird' — that rule protects against a
+    later Frigate message arriving without a sub_label — so if the reroll came back below
+    threshold and never re-stored the row, the name the user just rejected would stay on
+    screen. Clearing it first means a failed reroll correctly leaves the detection
+    unidentified and in the review queue.
+    """
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE detections SET
+                common_name = 'bird', scientific_name = NULL,
+                species_code = NULL, confidence = NULL
+            WHERE id = ?
+            """,
+            (detection_id,),
+        )
+
+
+def rejections_for(detection_id: int) -> list[str]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT species FROM identification_rejections WHERE detection_id = ?",
+            (detection_id,),
+        ).fetchall()
+    return [r["species"] for r in rows]
+
+
+def clear_rejections(detection_id: int) -> None:
+    """Start over on a detection whose rejections have painted it into a corner."""
+    with _connect() as conn:
+        conn.execute(
+            "DELETE FROM identification_rejections WHERE detection_id = ?", (detection_id,)
+        )
+
+
+def drop_detection(source: str, source_ref: str) -> None:
+    """Remove a row without tombstoning it.
+
+    Distinct from ``delete_detection``, which records a tombstone because the user chose
+    to remove something. This is for a row Aviary itself stored provisionally and then
+    decided against (an identification that resolved to a blacklisted species). A
+    tombstone would be wrong: it would permanently block re-import of an event the user
+    might later un-blacklist.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM detections WHERE source = ? AND source_ref = ?",
+            (source, source_ref),
+        ).fetchone()
+        if row is None:
+            return
+        conn.execute("DELETE FROM detections WHERE id = ?", (row["id"],))
+        conn.execute(
+            "DELETE FROM identification_embeddings WHERE detection_id = ?", (row["id"],)
+        )
+        conn.execute(
+            "DELETE FROM identification_rejections WHERE detection_id = ?", (row["id"],)
+        )
+
+
+def species_heard_between(start: float, end: float) -> list[str]:
+    """Distinct species BirdNET-Go heard in a time window.
+
+    Used as a prior for visual identification: a bird whose song was picked up by the
+    microphone two minutes ago is genuinely more likely to be the one in the picture.
+    BirdNET only — a Frigate row in the window is another *visual* guess, and feeding
+    those back in would just reinforce whatever the model already tends to say.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT common_name FROM detections
+            WHERE source = 'birdnet' AND start_time BETWEEN ? AND ?
+              AND common_name != '' AND common_name != 'bird'
+            """,
+            (start, end),
+        ).fetchall()
+    return [r["common_name"] for r in rows]
+
+
+def pending_identifications(limit: int = 500) -> list[dict]:
+    """Detections stuck in 'pending', oldest first — requeued at startup.
+
+    A restart mid-flight (add-on update, host reboot) otherwise strands these forever:
+    the MQTT ``end`` message that would have triggered them is long gone.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM detections
+            WHERE id_status = 'pending'
+            ORDER BY start_time ASC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def unidentified_detections(limit: int = 100, before: Optional[float] = None) -> list[dict]:
+    """The review queue: identification ran and did not produce a usable species."""
+    params: list = []
+    where = "WHERE id_status IN ('failed', 'low_confidence')"
+    if before is not None:
+        where += " AND start_time < ?"
+        params.append(before)
+    params.append(limit)
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM detections {where} ORDER BY start_time DESC LIMIT ?", params
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def unidentified_count() -> int:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM detections WHERE id_status IN ('failed', 'low_confidence')"
+        ).fetchone()
+    return int(row["n"] or 0)
+
+
+def purge_unidentified(older_than: float) -> int:
+    """Drop stale unidentifiable rows. Returns the number removed.
+
+    These are kept deliberately (with Frigate's own classifier off, dropping them would
+    mean no record a bird was ever there) but they must not grow without bound on a busy
+    feeder. No tombstone is written: this is housekeeping, not a user deletion, and
+    tombstoning would stop a future backfill from re-importing a row that a better model
+    could since identify.
+    """
+    with _connect() as conn:
+        ids = [
+            r["id"] for r in conn.execute(
+                """
+                SELECT id FROM detections
+                WHERE id_status IN ('failed', 'low_confidence') AND start_time < ?
+                """,
+                (older_than,),
+            ).fetchall()
+        ]
+        if not ids:
+            return 0
+        conn.executemany("DELETE FROM detections WHERE id = ?", [(i,) for i in ids])
+        conn.executemany(
+            "DELETE FROM identification_embeddings WHERE detection_id = ?", [(i,) for i in ids]
+        )
+        conn.executemany(
+            "DELETE FROM identification_rejections WHERE detection_id = ?", [(i,) for i in ids]
+        )
+    return len(ids)
 
 
 def tombstoned_refs() -> list[tuple[str, str]]:

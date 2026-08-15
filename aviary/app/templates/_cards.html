@@ -46,6 +46,26 @@
         {{ d.confidence | fmt_pct }}
       </span>
       {% endif %}
+      {# Identification state. Absent on BirdNET rows and on anything predating the
+         feature, which is why this keys off id_status rather than the source. #}
+      {% if d.id_status == 'ok' %}
+        {# The margin is the honest signal: a high score separated from the runner-up by
+           almost nothing is two confusable species, not a confident answer. Surfacing it
+           here is what makes a thin call visible without opening anything. #}
+        <span class="idbadge idbadge-ok"
+              title="Identified by aviary-id&#10;score {{ d.id_score | fmt_pct }} · margin {{ d.id_margin | fmt_pct }}{% if d.id_model %}&#10;{{ d.id_model }}{% endif %}">
+          ID {{ d.id_margin | fmt_pct }} margin
+        </span>
+      {% elif d.id_status == 'low_confidence' %}
+        <span class="idbadge idbadge-low"
+              title="Identification was below the confidence threshold (score {{ d.id_score | fmt_pct }}, margin {{ d.id_margin | fmt_pct }}) — needs review">
+          uncertain
+        </span>
+      {% elif d.id_status == 'pending' %}
+        <span class="idbadge idbadge-pending" title="Waiting on the identification service">identifying…</span>
+      {% elif d.id_status == 'failed' %}
+        <span class="idbadge idbadge-failed" title="Identification could not be completed — retry with ↻ below">no ID</span>
+      {% endif %}
     </div>
     <div class="meta sub">
       {% if d.location %}<span>{{ d.location }}</span>{% endif %}
@@ -57,6 +77,18 @@
               data-time="{{ d.start_time }}">⤢ scrub / still</button>
       <a class="dl-link" title="Download video — remuxed so the duration shows correctly when shared"
          href="{{ u('frigate_download', event_id=d.source_ref) }}">⬇ video</a>
+      {% endif %}
+      {% if d.id_status %}
+      <button type="button" class="reidentify"
+              title="Run identification again — after changing thresholds or the species list, or to retry a failure"
+              data-id="{{ d.id }}">↻ re-identify</button>
+      {% if d.common_name != 'bird' %}
+      {# Rules this species out for this detection and returns the next best answer.
+         Press repeatedly to walk down the model's ranking. #}
+      <button type="button" class="reidentify reject"
+              title="Not a {{ d.common_name }} — rule it out and try the next best match"
+              data-id="{{ d.id }}" data-name="{{ d.common_name }}">✗ wrong</button>
+      {% endif %}
       {% endif %}
     </div>
   </div>

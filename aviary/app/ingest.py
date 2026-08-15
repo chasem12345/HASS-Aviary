@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from . import db, notify
 
@@ -45,6 +45,11 @@ _ANNOUNCED_CAP = 4096
 _known_lock = threading.Lock()
 _loop: Optional[asyncio.AbstractEventLoop] = None
 
+# Set by main() to identify.submit when external identification is configured. Injected
+# rather than imported so this module keeps no reference to identify (which imports this
+# one), and so tests can substitute a fake.
+_identify_hook: Optional[Callable[[dict], bool]] = None
+
 
 def configure(ignore_unclassified: bool, ignore_cameras: tuple[str, ...] = ()) -> None:
     global _ignore_unclassified, _ignore_cameras
@@ -52,6 +57,12 @@ def configure(ignore_unclassified: bool, ignore_cameras: tuple[str, ...] = ()) -
     _ignore_cameras = tuple(c.strip().lower() for c in ignore_cameras if c.strip())
     if _ignore_cameras:
         log.info("Ignoring detections from cameras: %s", ", ".join(_ignore_cameras))
+
+
+def set_identify_hook(hook: Optional[Callable[[dict], bool]]) -> None:
+    """Route unclassified Frigate detections to external identification."""
+    global _identify_hook
+    _identify_hook = hook
 
 
 def seed_notify_state() -> None:
@@ -128,7 +139,8 @@ def is_unclassified(row: dict) -> bool:
     return (row.get("common_name") or "").strip().lower() == "bird"
 
 
-def store_row(row: Optional[dict], live: bool = True, announce: bool = True) -> bool:
+def store_row(row: Optional[dict], live: bool = True, announce: bool = True,
+              pending_id: bool = False) -> bool:
     """Upsert a built row unless it's filtered out. Returns True if stored.
 
     ``live=False`` (backfill) still records the species/refs as seen but never fires
@@ -136,10 +148,17 @@ def store_row(row: Optional[dict], live: bool = True, announce: bool = True) -> 
     row without marking it announced (Frigate in-progress messages: the detection is
     announced once, on the event's ``end`` message, so the notification carries the
     final species/score and the clip exists when tapped).
+
+    ``pending_id=True`` marks a row that is on its way to the identification service and
+    skips the unclassified gate ONLY. With Frigate's own classifier turned off every
+    detection arrives as generic 'bird', so that gate — which defaults to on — would
+    otherwise discard every single one before it ever reached a classifier. Every other
+    filter still runs, in the same order: an ignored camera, a deleted ref or a
+    blacklisted name is rejected here whether or not identification is pending.
     """
     if row is None:
         return False
-    if _ignore_unclassified and is_unclassified(row):
+    if _ignore_unclassified and is_unclassified(row) and not pending_id:
         log.debug("Skipping unclassified %s detection (%s)", row["source"], row["source_ref"])
         return False
     # Frigate only: a BirdNET-Go node that happens to share a camera's name must not be
@@ -292,10 +311,38 @@ def handle_frigate(payload: bytes) -> None:
 
     after = msg.get("after") or msg.get("before") or {}
     row = build_frigate_row(after)
+    if row is None:
+        return
+
+    ended = msg.get("type") == "end"
+    # An ended event with no species, and somewhere to send it: hand it to the
+    # identification service instead of announcing or discarding it. Only on `end` —
+    # in-progress messages would mean paying for a GPU pass on a bird that is still
+    # moving through the frame, several times per event.
+    if ended and is_unclassified(row) and _identify_hook is not None:
+        _dispatch_for_identification(row)
+        return
+
     # Announce only when the event ends: the species/score are final and Frigate has
     # (or is about to have) the finished clip for the notification's tap action.
-    if store_row(row, announce=msg.get("type") == "end"):
+    if store_row(row, announce=ended):
         log.debug("Frigate detection upserted: %s (%s)", row["common_name"], row["source_ref"])
+
+
+def _dispatch_for_identification(row: dict) -> None:
+    """Store an unclassified Frigate row as pending and queue it for identification.
+
+    Stored before it is queued, deliberately: if the add-on dies between the two, a row
+    marked ``pending`` in the database is recoverable at the next start
+    (``identify.requeue_pending``), whereas an event that was only ever in memory is
+    gone for good.
+    """
+    if not store_row(row, announce=False, pending_id=True):
+        return  # filtered — ignored camera, deleted ref, or blacklisted
+    db.set_identification(row["source"], row["source_ref"], status="pending")
+    if not _identify_hook(row):
+        log.debug("Identification not queued for %s (already in flight or queue full).",
+                  row["source_ref"])
 
 
 # ------------------------------------------------------------------------- BirdNET-Go

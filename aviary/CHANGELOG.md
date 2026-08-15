@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.14.0
+
+- **Bird identification can now run on your own GPU, and it is much better at it.** A new
+  companion container, **aviary-id**, runs BioCLIP 2 — a vision-language model trained on
+  214M biological images — and scores each bird against only the species that occur in your
+  region. Frigate's built-in classifier is a quantized MobileNet on CPU across ~964 world
+  species; narrowing the candidate list to a county's few hundred removes most of its
+  opportunities to be confidently wrong.
+- It runs on a **separate host**. Aviary sends it an event id; it pulls the clip from
+  Frigate itself, so no video passes through Home Assistant. It needs no access to Home
+  Assistant, MQTT or Aviary's database — if the GPU box is down, audio detections keep
+  arriving and the visual ones queue up until it returns.
+- **Turn Frigate's bird classification off when you enable this.** Frigate keeps spotting
+  that something bird-shaped is there and Aviary names it. Detections then arrive with no
+  `sub_label`, so instead of being discarded by `ignore_unclassified` they are held as
+  *pending* and announced once a species comes back. Notifications still fire exactly once
+  per detection — they just fire when the identification lands, carrying a species worth
+  reading rather than "bird".
+- **A result has to clear a margin, not just a score.** 60% confidence in a Downy Woodpecker
+  means very little when Hairy Woodpecker scored 58%. Anything failing `identify_min_score`
+  or `identify_min_margin` keeps the name "bird" and goes to a review queue reachable from
+  the Recent page. Those detections are kept rather than dropped — with Frigate's classifier
+  off, discarding them would leave no record a bird was ever there — and purged after
+  `identify_retain_days`.
+- **↻ re-identify** on every Frigate detection. Change a threshold or the species list,
+  re-run a bird you can name yourself, compare. The shipped thresholds are starting points,
+  not recommendations, and this is how you tune them.
+- **✗ wrong tells it when it got it wrong**, and it listens. The species is ruled out for
+  that detection and the next best answer comes back; press it repeatedly to walk down the
+  model's ranking. Because the model is zero-shot, the rejected species is removed before
+  the scores are computed rather than suppressed afterwards, so its probability goes to the
+  remaining birds and the runner-up gets to be genuinely confident. Rejections are
+  remembered per detection, so pressing ✗ twice can't bounce back to the first guess.
+- Blacklisted species are ruled out of the candidate list for every identification
+  (`identify_exclude_blacklisted`, on by default). A bird that would have been misread as a
+  blacklisted species now gets its correct name instead of being discarded outright. Turn it
+  off if you blacklisted something that genuinely visits and you just don't want it recorded.
+- A **smoke-test script** (`aviary-id/tools/smoke_test.py`) replays real Frigate bird events
+  through the identifier and prints what each threshold pair would accept. You don't have to
+  wait for a bird to tune this: Aviary discarded the unclassified detections, but Frigate
+  kept every one of them, clips and all.
+- **What Aviary heard now helps with what it saw.** Any species BirdNET-Go picked up within
+  ten minutes of a detection is passed to the identifier as a prior. A cardinal that sang on
+  its way to the feeder is genuinely more likely to be the bird in the picture. No other
+  bird identifier can do this; it only works because Aviary already fuses both sources.
+- Detection cards show the identification margin, and the Settings page reports whether the
+  service is up, whether it actually found the GPU, and how many species are in its
+  vocabulary — the three things that go wrong in practice.
+
 ## 0.13.1
 
 - **Fixed: "Preparing a seekable copy…" never went away**, sitting over the clip even once

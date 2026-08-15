@@ -386,6 +386,95 @@ notification.
 > a species it wrongly added, use **Remove species…** on that species' page (which removes
 > it across all cameras).
 
+## Better bird identification
+
+Frigate's built-in bird classification is a quantized MobileNet running on CPU over ~964
+species. It is fast and free, and it is often wrong. Aviary can hand identification to
+**aviary-id** instead — a companion container that runs BioCLIP 2 (a vision-language model
+trained on 214M biological images) on a GPU, scoring each bird against **only the species
+that occur in your region**.
+
+That regional narrowing is the largest part of the accuracy gain. A zero-shot model given
+the world's ~11,000 birds has far more ways to be confidently wrong than one given your
+county's few hundred.
+
+### How it changes the flow
+
+**Turn Frigate's bird classification off** (`classification: bird: enabled: false`). Frigate
+keeps doing what it is good at — spotting that *something bird-shaped* is there — and Aviary
+takes over naming it.
+
+Every Frigate event then arrives with no `sub_label`. Instead of being discarded by
+`ignore_unclassified`, it is recorded as *pending*, sent to aviary-id, and only announced
+once a species comes back. Notifications still fire exactly once per detection; they just
+fire when the identification lands rather than when the event ends, so they carry a species
+worth reading.
+
+aviary-id pulls the clip and snapshot **from Frigate directly**, samples frames across the
+clip, crops to the bird, and classifies the best three. Aviary only ever sends it an event
+id, so no video passes through Home Assistant.
+
+### Setting it up
+
+1. Run aviary-id on a machine with an NVIDIA GPU — see `aviary-id/README.md` in this
+   repository. That machine needs to reach Frigate; it needs no access to Home Assistant.
+2. Set `identify_url` to its address and `identify_enabled` to `true`. Set `identify_token`
+   to match `AVIARY_ID_TOKEN` on the service.
+3. Turn off bird classification in Frigate.
+4. Check the **Settings** page — it shows whether the service is up, whether it found the
+   GPU, and how many species are in its vocabulary.
+
+### When it isn't sure
+
+A result is accepted only if it clears both `identify_min_score` and `identify_min_margin`.
+The margin is the one that matters: 60% confidence in a Downy Woodpecker means very little
+when Hairy Woodpecker scored 58%.
+
+Anything that fails either test keeps the name "bird" and lands in a review queue, reachable
+from the **N unidentified →** link on the Recent page. Detections are kept rather than
+dropped — with Frigate's classifier off, discarding them would leave no record a bird was
+ever there — and purged after `identify_retain_days`.
+
+Every Frigate detection gains a **↻ re-identify** button. Adjust a threshold or the species
+list, re-run a bird you can name yourself, and compare. That is the intended way to tune the
+thresholds; the defaults are starting points, not recommendations.
+
+### Telling it when it's wrong
+
+Next to it is **✗ wrong**. It rules that species out *for that detection* and returns the
+next best answer — press it repeatedly to walk down the model's ranking until it lands on
+the right bird or runs out of confident candidates.
+
+Because the model is zero-shot, this is not a nudge or a re-weighting: the rejected species
+is removed from the candidate set before the scores are computed, so its probability is
+redistributed across the remaining birds rather than left as a hole. The runner-up gets to
+be genuinely confident instead of looking weak by comparison.
+
+Rejections are remembered per detection, so pressing ✗ twice can't bounce back to the first
+guess. If they narrow things down to nonsense, `POST /api/detections/{id}/identify?reset=1`
+clears them.
+
+This is also the fastest way to get a feel for the model. Pick a bird you can name, press ✗,
+and watch what it reaches for next — a sensible second guess (the other chickadee) tells you
+something very different from a wild one.
+
+Rejecting is per-detection and says nothing about whether the species belongs in your area.
+The permanent, global version of that judgement is the **blacklist** — and with
+`identify_exclude_blacklisted` on (the default), blacklisted species are ruled out of the
+candidate set for every identification. That is a real accuracy gain when you blacklisted a
+species because it does not occur here: a bird that would have been misread as one now gets
+its correct name instead of being discarded. **If you blacklisted a species that genuinely
+visits and you simply don't want it recorded, turn this off** — otherwise every one of its
+visits gets recorded as some other species.
+
+### Sound helping sight
+
+If you also run BirdNET-Go, Aviary passes any species it *heard* within ten minutes of the
+detection to the identifier as a prior, treating them as three times more likely. A Northern
+Cardinal that sang on its way to the feeder is genuinely more likely to be the bird in the
+picture. Turn it off with `identify_use_audio_priors` if you would rather the two sources
+stay independent.
+
 ## Configuration
 
 | Option | Description |
@@ -401,6 +490,16 @@ notification.
 | `notify_new_species` | Fire `aviary_detection` HA events for live detections (default `true`). See *Bird notifications*. |
 | `mqtt_host` / `mqtt_port` / `mqtt_user` / `mqtt_password` | Optional broker overrides. Leave `mqtt_host` empty to use the HA Mosquitto broker automatically. |
 | `xeno_canto_api_key` | Optional free key from [xeno-canto.org/account](https://xeno-canto.org/account). Unlocks curated song/call reference recordings; blank keeps the iNaturalist fallback. See [Reference recordings](#reference-recordings). |
+| `identify_url` | Base URL of the [aviary-id](#better-bird-identification) companion service, e.g. `http://10.0.0.50:8100`. Blank disables identification. |
+| `identify_token` | Shared secret sent as a bearer token; must match `AVIARY_ID_TOKEN` on the service. Blank means no auth. |
+| `identify_enabled` | Send unidentified Frigate detections to that service (default `false`). **Turn Frigate's own bird classification off when you enable this.** |
+| `identify_min_score` | Minimum species probability to accept a result (default `0.35`). Below it, the detection goes to the review queue. |
+| `identify_min_margin` | Minimum gap between the top two species (default `0.08`). A high score with a tiny margin means two confusable birds, not a confident answer. |
+| `identify_workers` | Concurrent identification requests (default `2`). The service serializes GPU work anyway. |
+| `identify_timeout` | Seconds to wait for an identification (default `60`). |
+| `identify_retain_days` | Days to keep unidentified detections before purging them (default `14`; `0` keeps forever). |
+| `identify_use_audio_priors` | Bias identification toward species BirdNET-Go heard around the same time (default `true`). |
+| `identify_exclude_blacklisted` | Rule blacklisted species out of the identifier's candidate list (default `true`). Turn off if you blacklisted a species that genuinely visits. |
 | `log_level` | Logging verbosity. |
 
 Changing any of these needs an add-on restart. The **Settings** page inside Aviary holds

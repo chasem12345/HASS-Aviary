@@ -16,6 +16,17 @@ export NOTIFY_NEW_SPECIES="$(bashio::config 'notify_new_species')"
 export REQUIRE_SPECIES_CONFIRMATION="$(bashio::config 'require_species_confirmation')"
 export XENO_CANTO_API_KEY="$(bashio::config 'xeno_canto_api_key')"
 export LOG_LEVEL="$(bashio::config 'log_level')"
+# --- External identification (aviary-id on the GPU host) ----------------------
+export IDENTIFY_URL="$(bashio::config 'identify_url')"
+export IDENTIFY_TOKEN="$(bashio::config 'identify_token')"
+export IDENTIFY_ENABLED="$(bashio::config 'identify_enabled')"
+export IDENTIFY_MIN_SCORE="$(bashio::config 'identify_min_score')"
+export IDENTIFY_MIN_MARGIN="$(bashio::config 'identify_min_margin')"
+export IDENTIFY_WORKERS="$(bashio::config 'identify_workers')"
+export IDENTIFY_TIMEOUT="$(bashio::config 'identify_timeout')"
+export IDENTIFY_RETAIN_DAYS="$(bashio::config 'identify_retain_days')"
+export IDENTIFY_USE_AUDIO_PRIORS="$(bashio::config 'identify_use_audio_priors')"
+export IDENTIFY_EXCLUDE_BLACKLISTED="$(bashio::config 'identify_exclude_blacklisted')"
 # List option: bashio emits one item per line, and the app parses this comma-separated.
 # An unset list yields "null", which must not become a camera name.
 ignore_cameras="$(bashio::config 'ignore_cameras' | tr '\n' ',')"

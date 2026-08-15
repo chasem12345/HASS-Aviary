@@ -1,0 +1,11 @@
+# torch / torchvision are NOT listed here — they must come from the cu126 wheel index
+# and are installed separately in the Dockerfile. See the note there: the cu128/cu129
+# builds have no sm_61 kernels, so a plain `pip install torch` produces a container that
+# silently falls back to CPU on Pascal cards (Quadro P1000, GTX 10xx).
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+open_clip_torch==3.3.0
+pillow==11.1.0
+numpy==2.2.1
+python-multipart==0.0.20

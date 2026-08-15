@@ -38,6 +38,20 @@ def _pick(env_key: str, opts: dict, opt_key: str, default: str = "") -> str:
     return default
 
 
+def _pick_float(env_key: str, opts: dict, opt_key: str, default: float) -> float:
+    try:
+        return float(_pick(env_key, opts, opt_key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _pick_int(env_key: str, opts: dict, opt_key: str, default: int) -> int:
+    try:
+        return int(_pick(env_key, opts, opt_key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def _pick_list(env_key: str, opts: dict, opt_key: str) -> tuple[str, ...]:
     """List option, lowercased. Env override is comma-separated; options.json is a list.
 
@@ -81,6 +95,22 @@ class Settings:
     # A credential — never log it or return it from a route.
     xeno_canto_api_key: str
 
+    # --- External identification (aviary-id) --------------------------------------
+    # Base URL of the companion GPU service. Blank disables identification entirely
+    # regardless of identify_enabled.
+    identify_url: str
+    # Shared secret sent as a bearer token. A credential — never log it or return it
+    # from a route.
+    identify_token: str
+    identify_enabled: bool
+    identify_min_score: float
+    identify_min_margin: float
+    identify_workers: int
+    identify_timeout: int
+    identify_retain_days: int
+    identify_use_audio_priors: bool
+    identify_exclude_blacklisted: bool
+
     # HA config folder mount (map: homeassistant_config). Missing on bare metal —
     # the blueprint install and notification images degrade gracefully then.
     ha_config_dir: str
@@ -90,6 +120,16 @@ class Settings:
     @property
     def mqtt_enabled(self) -> bool:
         return bool(self.mqtt_host)
+
+    @property
+    def identify_active(self) -> bool:
+        """Whether to route Frigate detections through the identification service.
+
+        Both the toggle and a URL are required: enabling the feature without pointing it
+        anywhere would park every Frigate detection in 'pending' forever, since the
+        unclassified gate is bypassed for rows awaiting identification.
+        """
+        return self.identify_enabled and bool(self.identify_url)
 
 
 def load_settings() -> Settings:
@@ -120,6 +160,18 @@ def load_settings() -> Settings:
             _pick("REQUIRE_SPECIES_CONFIRMATION", opts, "require_species_confirmation", "true")),
         notify_new_species=_as_bool(_pick("NOTIFY_NEW_SPECIES", opts, "notify_new_species", "true")),
         xeno_canto_api_key=_pick("XENO_CANTO_API_KEY", opts, "xeno_canto_api_key", "").strip(),
+        identify_url=_pick("IDENTIFY_URL", opts, "identify_url", "").rstrip("/"),
+        identify_token=_pick("IDENTIFY_TOKEN", opts, "identify_token", "").strip(),
+        identify_enabled=_as_bool(_pick("IDENTIFY_ENABLED", opts, "identify_enabled", "false")),
+        identify_min_score=_pick_float("IDENTIFY_MIN_SCORE", opts, "identify_min_score", 0.35),
+        identify_min_margin=_pick_float("IDENTIFY_MIN_MARGIN", opts, "identify_min_margin", 0.08),
+        identify_workers=_pick_int("IDENTIFY_WORKERS", opts, "identify_workers", 2),
+        identify_timeout=_pick_int("IDENTIFY_TIMEOUT", opts, "identify_timeout", 60),
+        identify_retain_days=_pick_int("IDENTIFY_RETAIN_DAYS", opts, "identify_retain_days", 14),
+        identify_use_audio_priors=_as_bool(
+            _pick("IDENTIFY_USE_AUDIO_PRIORS", opts, "identify_use_audio_priors", "true")),
+        identify_exclude_blacklisted=_as_bool(
+            _pick("IDENTIFY_EXCLUDE_BLACKLISTED", opts, "identify_exclude_blacklisted", "true")),
         # Matches the explicit `path:` on the homeassistant_config map entry.
         ha_config_dir=os.environ.get("HA_CONFIG_DIR", "/homeassistant"),
         log_level=_pick("LOG_LEVEL", opts, "log_level", "info").lower(),
