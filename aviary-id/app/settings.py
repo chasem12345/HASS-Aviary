@@ -60,6 +60,12 @@ class Settings:
     # trained on. The remainder is BioCLIP zero-shot, which alone covers species the
     # trained model has never seen.
     trained_weight: float = 0.75
+    # If the supervised model is at least this sure on its BEST frame, its verdict wins
+    # outright instead of being averaged away by frames where it saw nothing. A bird
+    # confidently recognized once WAS recognized — a feeder event's other frames are
+    # routinely occlusion and motion blur, and their zero-shot noise must not outvote
+    # the one clean look. (WhosAtMyFeeder gates this same model at 0.7, single frame.)
+    trained_accept: float = 0.65
     model_name: str = "hf-hub:imageomics/bioclip-2"
     # Where model weights, the species list, and the text-embedding cache live. Mount
     # this as a volume so a container rebuild doesn't re-download ~2 GB.
@@ -152,6 +158,7 @@ def load_settings() -> Settings:
         auth_token=os.environ.get("AVIARY_ID_TOKEN", "").strip(),
         trained_classifier=os.environ.get("TRAINED_CLASSIFIER", "aiy").strip().lower(),
         trained_weight=min(1.0, max(0.0, _as_float("TRAINED_WEIGHT", 0.75))),
+        trained_accept=min(1.0, max(0.0, _as_float("TRAINED_ACCEPT", 0.65))),
         model_name=os.environ.get("MODEL_NAME", "hf-hub:imageomics/bioclip-2"),
         cache_dir=os.environ.get("CACHE_DIR", "/models"),
         cpu_only=_as_bool(os.environ.get("CPU_ONLY", "")),

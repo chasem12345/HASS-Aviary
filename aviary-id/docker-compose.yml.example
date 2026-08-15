@@ -32,6 +32,8 @@ services:
       # TRAINED_CLASSIFIER: "aiy"     # supervised primary (Frigate's bird model, CPU);
       #                               # "none" = zero-shot only, for A/B measurement
       # TRAINED_WEIGHT: "0.75"        # its share of the mix for species it knows
+      # TRAINED_ACCEPT: "0.65"        # best-frame confidence at which its verdict
+      #                               # wins outright (not averaged away)
       # SAMPLE_FRAMES: "8"            # frames decoded from the clip before filtering
       # CLASSIFY_FRAMES: "3"          # best frames actually classified
       # DETECTOR_BACKEND: "yolo"      # yolo (YOLO11n, better on small/shaded birds,

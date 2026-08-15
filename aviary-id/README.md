@@ -136,6 +136,7 @@ All configuration is environment variables.
 |---|---|---|
 | `TRAINED_CLASSIFIER` | `aiy` | Supervised primary classifier: `aiy` (Google's iNaturalist bird MobileNet — the model behind Frigate's native classification; CPU, ~5 ms/frame, no VRAM) or `none` (zero-shot only, for A/B measurement). |
 | `TRAINED_WEIGHT` | `0.75` | The supervised model's share of the probability mix for species it was trained on. The rest is BioCLIP zero-shot, which alone covers species outside the trained set. |
+| `TRAINED_ACCEPT` | `0.65` | If the supervised model is at least this sure on its best frame, its verdict wins outright instead of being averaged across frames where it saw nothing (occlusion/blur reads as background). |
 | `FRIGATE_URL` | — | Frigate base URL. Requests may override it per-call. |
 | `FRIGATE_HEADERS` | — | Extra headers for Frigate calls, `"Name: value, Name2: value2"`. Values may not contain a comma. |
 | `AVIARY_ID_TOKEN` | — | Shared secret, checked as `Authorization: Bearer …`. Blank disables auth. |

@@ -125,6 +125,7 @@ class TrainedClassifier:
         """
         model_idx: list[int] = []
         vocab_idx: list[int] = []
+        uncovered: list[str] = []
         for v, sp in enumerate(species):
             index = self._sci_to_index.get(sp.sci_name.strip().lower())
             if index is None:
@@ -132,11 +133,19 @@ class TrainedClassifier:
             if index is not None:
                 model_idx.append(index)
                 vocab_idx.append(v)
+            else:
+                uncovered.append(sp.com_name)
         self._model_indices = np.asarray(model_idx, dtype=np.int64)
         self._vocab_indices = np.asarray(vocab_idx, dtype=np.int64)
         self._n_vocab = len(species)
         log.info("AIY classifier covers %d of %d regional species.",
                  len(vocab_idx), len(species))
+        if uncovered:
+            # Named, not just counted: these are the species that will always ride the
+            # zero-shot + reference-photo path, so a wrong answer on one of them is
+            # expected behavior to tune around, not a mystery.
+            log.info("Zero-shot-only species (not in the trained model): %s",
+                     ", ".join(sorted(uncovered)))
 
     @property
     def coverage(self) -> int:

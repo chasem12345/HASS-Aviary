@@ -58,6 +58,11 @@ _VOTE_SCORE_FLOOR = 0.10
 # Agreement needs at least this many supporting moments AND this share of all votes.
 _CONSENSUS_MIN_VOTES = 2
 _CONSENSUS_FRACTION = 0.6
+# When the trained model's verdict wins outright (see trained_accept), consensus is
+# counted among the frames where it actually SAW a bird — a frame it read as background
+# is a missing observation, not a dissenting vote. This is the mass a frame needs for
+# its trained verdict to count as a sighting.
+_TRAINED_VOTE_FLOOR = 0.3
 
 
 @dataclass
@@ -337,6 +342,7 @@ class Classifier:
         # noise inflated. Renormalizing the mixture restores a proper distribution.
         trained_used = False
         trained_frames: Optional[list[tuple[str, float]]] = None
+        supervised: Optional[torch.Tensor] = None
         if self.trained is not None:
             mix = self.trained.frame_probs(crops)
             if mix is not None:
@@ -367,6 +373,27 @@ class Classifier:
         )
         fused = (probs * weights.unsqueeze(1)).sum(dim=0)
 
+        # The trained-recognition short-circuit. Averaging across frames is right for
+        # the zero-shot signal, but it silently destroys the strongest evidence this
+        # service ever gets: the trained model confidently recognizing the bird in one
+        # clean frame. A feeder event's other frames are routinely occlusion, shade and
+        # motion blur — on those the trained model reads background (contributing ~0)
+        # while zero-shot still votes at full strength, so seven noisy wrong votes
+        # could bury one confident right one. If the trained model's best frame clears
+        # trained_accept, its per-species max-over-frames verdict leads outright and
+        # the averaged view only distributes the leftover mass. Consensus is then
+        # counted among the frames where it actually saw a bird: a frame it read as
+        # background is a missing observation, not a dissenting vote.
+        # (Bypasses audio priors deliberately — those exist to nudge uncertain calls.)
+        consensus_src, consensus_floor = probs, _VOTE_SCORE_FLOOR
+        if supervised is not None:
+            pooled = supervised.max(dim=0).values
+            if float(pooled.max()) >= self.settings.trained_accept:
+                leftover = (1.0 - pooled.sum()).clamp(min=0.0)
+                fused = pooled + leftover * fused
+                fused = fused / fused.sum().clamp_min(1e-9)
+                consensus_src, consensus_floor = supervised, _TRAINED_VOTE_FLOOR
+
         # Keep a short list, not just the winner. When the answer lands below the caller's
         # thresholds, "here is what it considered" is far more useful than "it failed" —
         # it shows the model tried, and the right bird is often sitting at number two.
@@ -388,7 +415,8 @@ class Classifier:
             per_frame=self._per_frame(probs, det_scores, origins, trained_frames),
             embedding=self._encode_embedding(image_features, probs, best_idx),
             excluded=len(excluded),
-            consensus=self._consensus(probs, det_scores, origins, best_idx),
+            consensus=self._consensus(consensus_src, det_scores, origins, best_idx,
+                                      consensus_floor),
             trained=trained_used,
         )
 
@@ -415,7 +443,8 @@ class Classifier:
         return adjusted / adjusted.sum(dim=-1, keepdim=True)
 
     def _consensus(self, probs: torch.Tensor, det_scores: list[float],
-                   origins: list[str], best_idx: int) -> Optional[dict]:
+                   origins: list[str], best_idx: int,
+                   score_floor: float = _VOTE_SCORE_FLOOR) -> Optional[dict]:
         """How many independent moments voted for the fused winner.
 
         Each usable frame casts one vote for its own top-1 species. Clip frames closer
@@ -423,6 +452,10 @@ class Classifier:
         speaks for the group), because two decodes of the same pose are one observation.
         The thumbnail and the snapshot are inherently distinct views and always count
         singly. Returns None with fewer than two votes — no data, not disagreement.
+
+        ``score_floor`` is the minimum top-1 a frame needs to vote at all. Callers pass
+        a higher floor when voting over the trained model's raw (unnormalized) rows,
+        where a low top-1 means "saw nothing", not "weak opinion".
         """
         top_scores, top_idx = probs.max(dim=-1)
         top_scores, top_idx = top_scores.tolist(), top_idx.tolist()
@@ -430,7 +463,7 @@ class Classifier:
         moments: list[tuple[int, float]] = []  # (species index, top-1 score)
         clip_votes: list[tuple[float, int, float]] = []  # (time, species index, score)
         for i, origin in enumerate(origins):
-            if det_scores[i] < _VOTE_DET_FLOOR or top_scores[i] < _VOTE_SCORE_FLOOR:
+            if det_scores[i] < _VOTE_DET_FLOOR or top_scores[i] < score_floor:
                 continue
             if origin.startswith("clip@") and origin.endswith("s"):
                 try:
