@@ -68,6 +68,13 @@ class FrameResult:
     top1_score: float
     top2: str
     top2_score: float
+    # What the supervised classifier alone said for this frame, BEFORE mixing.
+    # Empty/0.0 when it is disabled or saw essentially nothing (background-heavy
+    # output) — which is precisely the diagnostic worth surfacing: "the trained
+    # model didn't recognize a bird in this crop" reads very differently from
+    # "the trained model voted for something else".
+    trained_top1: str = ""
+    trained_score: float = 0.0
 
 
 @dataclass
@@ -329,9 +336,18 @@ class Classifier:
         # unsure about naturally defers to the zero-shot side rather than having its
         # noise inflated. Renormalizing the mixture restores a proper distribution.
         trained_used = False
+        trained_frames: Optional[list[tuple[str, float]]] = None
         if self.trained is not None:
             mix = self.trained.frame_probs(crops)
             if mix is not None:
+                # Per-frame record of the supervised model's own opinion, kept for
+                # per_frame diagnostics before the mixing dilutes it.
+                trained_frames = []
+                for row in mix:
+                    idx = int(row.argmax())
+                    top = float(row[idx])
+                    trained_frames.append(
+                        (self.species[idx].com_name if top > 0 else "", top))
                 supervised = torch.from_numpy(mix).to(probs.device, probs.dtype)
                 if excluded and len(excluded) < len(self.species):
                     supervised[:, excluded] = 0.0
@@ -369,7 +385,7 @@ class Classifier:
                 (self.species[int(i)], float(v))
                 for i, v in zip(top.indices.tolist(), top.values.tolist())
             ],
-            per_frame=self._per_frame(probs, det_scores, origins),
+            per_frame=self._per_frame(probs, det_scores, origins, trained_frames),
             embedding=self._encode_embedding(image_features, probs, best_idx),
             excluded=len(excluded),
             consensus=self._consensus(probs, det_scores, origins, best_idx),
@@ -454,12 +470,16 @@ class Classifier:
         }
 
     def _per_frame(self, probs: torch.Tensor, det_scores: list[float],
-                   origins: list[str]) -> list[FrameResult]:
+                   origins: list[str],
+                   trained_frames: Optional[list[tuple[str, float]]] = None,
+                   ) -> list[FrameResult]:
         """Top-2 per frame — the output that makes threshold tuning tractable.
 
         A run where every frame agrees is a different kind of confident from one where
         three frames each pick a different species and the winner emerged from averaging.
-        The aggregate score alone can't distinguish those.
+        The aggregate score alone can't distinguish those. ``trained_frames`` carries the
+        supervised model's own per-frame verdict so "it disagreed" and "it saw nothing"
+        stay distinguishable.
         """
         results = []
         k = min(2, probs.shape[1])
@@ -467,6 +487,8 @@ class Classifier:
         for row in range(probs.shape[0]):
             idx = top.indices[row].tolist()
             vals = top.values[row].tolist()
+            trained_top1, trained_score = (
+                trained_frames[row] if trained_frames else ("", 0.0))
             results.append(FrameResult(
                 origin=origins[row],
                 det_score=det_scores[row],
@@ -474,6 +496,8 @@ class Classifier:
                 top1_score=float(vals[0]),
                 top2=self.species[idx[1]].com_name if k > 1 else "",
                 top2_score=float(vals[1]) if k > 1 else 0.0,
+                trained_top1=trained_top1,
+                trained_score=round(trained_score, 4),
             ))
         return results
 

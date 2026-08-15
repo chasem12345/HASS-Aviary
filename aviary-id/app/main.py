@@ -88,6 +88,10 @@ class FrameOut(BaseModel):
     top1_score: float
     top2: str
     top2_score: float
+    # The supervised classifier's own verdict for this frame, before mixing. Empty/0.0
+    # means it saw essentially nothing it recognized (background-heavy output).
+    trained_top1: str = ""
+    trained_score: float = 0.0
 
 
 class IdentifyResponse(BaseModel):
@@ -271,12 +275,20 @@ async def identify(req: IdentifyRequest) -> IdentifyResponse:
         # image is already in memory by now.
         await media.close()
 
+    trained_note = "off"
+    if response.trained:
+        # Summarize what the supervised model saw across frames: its strongest
+        # per-frame verdict, or "saw nothing" when every frame was background-heavy.
+        best = max(response.per_frame, key=lambda f: f.trained_score, default=None)
+        trained_note = (f"{best.trained_top1} {best.trained_score:.2f}"
+                        if best and best.trained_score >= 0.05 else "saw nothing")
     log.info(
         "identify %s -> %s %s (score=%s margin=%s, %d/%d frames, %d round(s), "
-        "localized=%s, %dms) [%s]",
+        "localized=%s, trained[%s], %dms) [%s]",
         req.event_id, response.status, response.common_name or "-",
         response.score, response.margin, response.frames_used, response.images,
-        response.rounds, response.localized, response.elapsed_ms, timings.summary(),
+        response.rounds, response.localized, trained_note, response.elapsed_ms,
+        timings.summary(),
     )
     return response
 

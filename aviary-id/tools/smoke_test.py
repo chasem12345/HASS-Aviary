@@ -192,9 +192,15 @@ def main() -> int:
 
         if args.verbose:
             for frame in res.get("per_frame", []):
+                trained = ""
+                if frame.get("trained_top1"):
+                    trained = (f"  |  trained: {frame['trained_top1']} "
+                               f"{frame.get('trained_score', 0) * 100:.0f}%")
+                elif res.get("trained"):
+                    trained = "  |  trained: saw nothing"
                 print(f"    {frame['origin']:<18} det={frame['det_score']:.2f}  "
                       f"{frame['top1']} {frame['top1_score'] * 100:.0f}%  /  "
-                      f"{frame['top2']} {frame['top2_score'] * 100:.0f}%")
+                      f"{frame['top2']} {frame['top2_score'] * 100:.0f}%{trained}")
 
     ok = [r for r in results if r.get("status") == "ok"]
     if not ok:
