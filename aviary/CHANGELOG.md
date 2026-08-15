@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.16.2
+
+**Stale rejections are no longer invisible.** A rejected answer permanently vetoes that
+species for its detection — correct, but silent: re-identify would keep refusing the
+right bird with nothing anywhere saying why. Now the log names any rejections in force
+each time a detection is identified, and when a plain re-identify stays uncertain while
+answers are banned, the UI shows what is ruled out and offers to clear the rejections and
+retry in one step.
+
+Also fixes an exclusion asymmetry: the blacklist contributes both common and scientific
+names and the identification service matches either, but the probe honored only common
+names — so it could re-promote a species the service had just banned, producing an
+answer neither layer would defend.
+
 ## 0.16.1
 
 Pairs with aviary-id 0.5.0, which adds a **supervised classifier as the primary

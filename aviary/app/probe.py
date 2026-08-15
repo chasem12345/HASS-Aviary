@@ -266,10 +266,25 @@ def blend(embedding: str, zero_shot: list[dict], model: str,
     if vec is None:
         return None
 
+    zero = {c["name"]: float(c.get("score") or 0.0) for c in zero_shot if c.get("name")}
+    meta = {c["name"]: c for c in zero_shot if c.get("name")}
+
     sims = _similarities(vec)
     if exclude:
+        # Exclusions arrive as common OR scientific names (the blacklist contributes
+        # both, and the service matches either). The probe must honor both forms too:
+        # matching common names only once let it re-promote a species the service had
+        # just banned, and the two layers disagreeing about who is excluded produced a
+        # genuinely baffling identification.
         drop = {e.strip().lower() for e in exclude}
-        sims = {k: v for k, v in sims.items() if k.lower() not in drop}
+
+        def _banned(name: str) -> bool:
+            if name.lower() in drop:
+                return True
+            sci = (meta.get(name) or {}).get("sci") or ""
+            return bool(sci) and sci.lower() in drop
+
+        sims = {k: v for k, v in sims.items() if not _banned(k)}
     if not sims:
         return None
 
@@ -291,9 +306,6 @@ def blend(embedding: str, zero_shot: list[dict], model: str,
     probs = np.exp(scaled)
     probs /= probs.sum()
     probe = dict(zip(names, probs.tolist()))
-
-    zero = {c["name"]: float(c.get("score") or 0.0) for c in zero_shot if c.get("name")}
-    meta = {c["name"]: c for c in zero_shot if c.get("name")}
 
     # The blend weight comes from the evidence behind the probe's OWN best guess. Using the
     # zero-shot winner's count instead would mean a species with no examples could never be

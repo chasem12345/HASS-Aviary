@@ -968,6 +968,24 @@
               ". Nothing else cleared the confidence threshold — this detection is now in " +
               "the review queue.\n\nRuled out so far: " + (data.rejected || []).join(", "));
       }
+      // A plain re-identify that stays uncertain while answers are banned is almost
+      // always a stale rejection vetoing the right species — invisible otherwise, and
+      // pressing re-identify harder can never fix it. Offer the way out.
+      const uncertain = !data.common_name || data.common_name === "bird" ||
+        data.id_status === "low_confidence";
+      if (!rejecting && uncertain && (data.rejected || []).length) {
+        const clear = confirm(
+          "Still uncertain — but earlier rejections have ruled these out for this " +
+          "detection:\n\n  " + data.rejected.join(", ") + "\n\n" +
+          "Clear the rejections and identify again from scratch?");
+        if (clear) {
+          btn.textContent = "↻ identifying…";
+          await fetch(
+            API + "/detections/" + encodeURIComponent(btn.dataset.id) +
+              "/identify?reset=1",
+            { method: "POST" });
+        }
+      }
       // Reload rather than patching the card: the species name, confidence bar, badge and
       // the review-queue count all move together, and the row may have left the queue.
       window.location.reload();

@@ -222,7 +222,18 @@ async def _exclusions(row: dict[str, Any]) -> list[str]:
     """
     names: list[str] = []
     if row.get("id"):
-        names.extend(await asyncio.to_thread(db.rejections_for, row["id"]))
+        rejected = await asyncio.to_thread(db.rejections_for, row["id"])
+        if rejected:
+            # Loud on purpose. A rejection silently vetoes that species on every future
+            # run of this detection — the single most confusing failure mode this
+            # pipeline has ("why does re-identify keep refusing the obvious answer?").
+            # It must be visible in the log next to the result it shaped.
+            log.info(
+                "%s carries %d rejected answer(s): %s — these cannot win again for "
+                "this detection until its rejections are reset.",
+                row.get("source_ref"), len(rejected), ", ".join(rejected),
+            )
+        names.extend(rejected)
     if _settings.identify_exclude_blacklisted:
         for common, sci in await asyncio.to_thread(db.blacklist_names):
             names.extend(n for n in (common, sci) if n)
