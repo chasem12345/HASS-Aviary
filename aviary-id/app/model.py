@@ -113,8 +113,13 @@ class Classifier:
         """
         digest = hashlib.sha256()
         digest.update(self.settings.model_name.encode())
+        # The label format and the prompt ensemble both change the embeddings, so both are
+        # part of the fingerprint — otherwise switching LABEL_FORMAT would silently reuse
+        # a cache built for the previous one.
+        digest.update(self.settings.label_format.encode())
+        digest.update(str(self.settings.prompt_ensemble).encode())
         for s in species:
-            digest.update(s.label.encode())
+            digest.update(s.label(self.settings.label_format).encode())
             digest.update(b"\n")
         return digest.hexdigest()[:16]
 
