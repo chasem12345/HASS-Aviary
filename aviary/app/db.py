@@ -133,15 +133,15 @@ CREATE TABLE IF NOT EXISTS species_photos (
 
 -- Image embeddings from the identification service, one per identified detection.
 --
--- NOTHING READS THIS YET. It exists from day one because the data is free at
--- identification time and ruinously expensive to backfill: reconstructing it later means
--- re-downloading and re-running every clip in the history through the GPU. Each confirmed
--- species in `species_confirmed` is a labelled example from your own cameras, so once
--- enough have accumulated, a nearest-centroid classifier over these vectors can be built
--- to beat the zero-shot model on exactly the locally-confusable pairs it struggles with.
+-- These are the probe's training data (see probe.py): each confirmed species in
+-- `species_confirmed` turns its detections' embeddings into labelled examples from your
+-- own cameras, and the probe blends nearest-example similarity against them into the
+-- zero-shot answer. Captured at identification time because reconstructing them later
+-- means re-downloading and re-running every clip in the history through the GPU.
 --
--- Stored as a base64 float16 blob keyed by model, because a vector from one model or
--- vocabulary is not comparable with one from another.
+-- Stored as a base64 float16 blob keyed by the service's embedding_key (the model name
+-- alone — NOT the full model_version, whose vocabulary digest would orphan every row on
+-- a routine species-list refresh). Vectors from different models are not comparable.
 CREATE TABLE IF NOT EXISTS identification_embeddings (
     detection_id INTEGER PRIMARY KEY REFERENCES detections(id) ON DELETE CASCADE,
     model        TEXT NOT NULL,
@@ -155,9 +155,9 @@ CREATE TABLE IF NOT EXISTS identification_embeddings (
 -- those are labelled images of exactly the right birds.
 --
 -- Kept apart from identification_embeddings because these are NOT detections — they have
--- no event, no clip, and no detection_id to hang off. They are also weighted lower when
--- building centroids: a posed photo in good light is the right species but the wrong
--- domain, and one real frame from your own feeder is worth several of them.
+-- no event, no clip, and no detection_id to hang off. They also count for less when
+-- matching: a posed photo in good light is the right species but the wrong domain, and
+-- one real frame from your own feeder is worth several of them.
 CREATE TABLE IF NOT EXISTS species_reference_embeddings (
     common_name TEXT NOT NULL COLLATE NOCASE,
     position    INTEGER NOT NULL,      -- matches species_photos.position
@@ -237,6 +237,10 @@ def init_db(db_path: str) -> None:
         for name, decl in (
             ("id_status", "TEXT"), ("id_score", "REAL"), ("id_margin", "REAL"),
             ("id_model", "TEXT"), ("id_at", "REAL"), ("id_candidates", "TEXT"),
+            # Probe provenance: how much the few-shot blend influenced this answer and
+            # how many of the user's confirmed examples backed it. NULL means the probe
+            # abstained (or predates these columns).
+            ("id_probe_weight", "REAL"), ("id_probe_examples", "INTEGER"),
         ):
             if name not in cols:
                 conn.execute(f"ALTER TABLE detections ADD COLUMN {name} {decl}")
@@ -336,6 +340,52 @@ def init_db(db_path: str) -> None:
                 )
                 """
             )
+        # Embeddings used to be keyed by the service's full model_version
+        # ("model/label_format@vocab_digest"), whose digest hashes the entire species
+        # list. That was wrong for IMAGE embeddings: they come from the frozen image
+        # tower and are untouched by vocabulary or label-format changes — yet a routine
+        # eBird regional-list refresh changed the digest and silently orphaned every
+        # learned example. Rewrite old keys down to the bare model name, once. Keys are
+        # rewritten, never deleted: these rows are the user's accumulated training data.
+        migrated = conn.execute(
+            "SELECT value FROM app_prefs WHERE key = 'embedding_key_migrated'"
+        ).fetchone()
+        if not migrated:
+            for table in ("identification_embeddings", "species_reference_embeddings"):
+                olds = [
+                    r[0] for r in conn.execute(f"SELECT DISTINCT model FROM {table}")
+                ]
+                for old in olds:
+                    new = embedding_key_from(old)
+                    if new == old:
+                        continue
+                    # OR IGNORE: species_reference_embeddings' primary key includes the
+                    # model, so rows may already exist under BOTH an old digest and the
+                    # new key (two historical digests, or a re-bootstrap after this
+                    # change). Colliding old rows are dropped in favour of the newer key.
+                    conn.execute(
+                        f"UPDATE OR IGNORE {table} SET model = ? WHERE model = ?",
+                        (new, old),
+                    )
+                    conn.execute(f"DELETE FROM {table} WHERE model = ?", (old,))
+            conn.execute(
+                "INSERT OR REPLACE INTO app_prefs (key, value) "
+                "VALUES ('embedding_key_migrated', '1')"
+            )
+
+
+def embedding_key_from(model_version: str) -> str:
+    """Reduce a service model_version to the key embeddings are stored under.
+
+    The full form is ``{model_name}/{label_format}@{vocab_digest}`` — the model name
+    itself may contain slashes ("hf-hub:imageomics/bioclip-2"), so strip from the right:
+    the digest after the last ``@``, then the label format after the last remaining
+    ``/``. A string with no ``@`` is already a bare key and passes through unchanged,
+    which is what makes this safe to apply to values from either an old or a new service.
+    """
+    if "@" not in model_version:
+        return model_version
+    return model_version.rsplit("@", 1)[0].rsplit("/", 1)[0]
 
 
 @contextmanager
@@ -830,6 +880,9 @@ def set_identification(
     embedding: Optional[str] = None,
     set_confidence: bool = False,
     candidates: Optional[str] = None,
+    embedding_model: Optional[str] = None,
+    probe_weight: Optional[float] = None,
+    probe_examples: Optional[int] = None,
 ) -> None:
     """Record the outcome of an external identification attempt.
 
@@ -844,7 +897,15 @@ def set_identification(
     bird" (typically 0.85+) and ours answers "is this a Black-capped Chickadee". Taking
     the maximum would put Frigate's high object score in the field the UI labels as
     species confidence, making an uncertain identification look authoritative.
+
+    ``model`` (the full model_version) is provenance for the RESULT — after a model or
+    vocabulary change it tells you which rows are stale. ``embedding_model`` keys the
+    stored EMBEDDING and must be the service's embedding_key, which survives vocabulary
+    changes. Defaults to ``model`` reduced via ``embedding_key_from`` for callers that
+    only have the old-style combined string.
     """
+    if embedding_model is None and model:
+        embedding_model = embedding_key_from(model)
     with _connect() as conn:
         conn.execute(
             f"""
@@ -852,32 +913,80 @@ def set_identification(
                 id_status = ?, id_score = ?, id_margin = ?, id_model = ?, id_at = ?,
                 -- COALESCE so a later status-only update (a retry that failed, say) does
                 -- not wipe a shortlist we already have to show the user.
-                id_candidates = COALESCE(?, id_candidates)
+                id_candidates = COALESCE(?, id_candidates),
+                -- NOT coalesced: NULL means "the probe abstained on this attempt", and a
+                -- reroll where it abstained must not inherit the previous run's numbers.
+                id_probe_weight = ?, id_probe_examples = ?
                 {", confidence = ?" if set_confidence else ""}
             WHERE source = ? AND source_ref = ?
             """,
-            (status, score, margin, model, time.time(), candidates)
+            (status, score, margin, model, time.time(), candidates,
+             probe_weight, probe_examples)
             + ((score,) if set_confidence else ())
             + (source, source_ref),
         )
-        if embedding and model:
+        if embedding and embedding_model:
             row = conn.execute(
                 "SELECT id FROM detections WHERE source = ? AND source_ref = ?",
                 (source, source_ref),
             ).fetchone()
             if row:
-                conn.execute(
-                    """
-                    INSERT INTO identification_embeddings
-                        (detection_id, model, embedding, created_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(detection_id) DO UPDATE SET
-                        model = excluded.model,
-                        embedding = excluded.embedding,
-                        created_at = excluded.created_at
-                    """,
-                    (row["id"], model, embedding, time.time()),
-                )
+                _upsert_detection_embedding(conn, row["id"], embedding_model, embedding)
+
+
+def _upsert_detection_embedding(conn, detection_id: int, model: str, embedding: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO identification_embeddings
+            (detection_id, model, embedding, created_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(detection_id) DO UPDATE SET
+            model = excluded.model,
+            embedding = excluded.embedding,
+            created_at = excluded.created_at
+        """,
+        (detection_id, model, embedding, time.time()),
+    )
+
+
+def put_detection_embedding(detection_id: int, model: str, embedding: str) -> None:
+    """Store an embedding for a detection outside the identification flow.
+
+    Backs the manual-label backfill: a detection whose identification failed has no
+    embedding row, so a manual label on it would teach the probe nothing without this.
+    """
+    with _connect() as conn:
+        _upsert_detection_embedding(conn, detection_id, model, embedding)
+
+
+def has_embedding(detection_id: int) -> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM identification_embeddings WHERE detection_id = ?",
+            (detection_id,),
+        ).fetchone()
+    return row is not None
+
+
+def manual_rows_missing_embeddings(limit: int = 50) -> list[dict]:
+    """Manually-labelled Frigate detections that never got an embedding stored.
+
+    These are labels that currently teach the probe nothing: the identification failed
+    (or predates embeddings), so there is no vector for the confirmed name to train.
+    Newest first — recent events are the ones whose media Frigate still has.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT d.* FROM detections d
+            LEFT JOIN identification_embeddings e ON e.detection_id = d.id
+            WHERE d.id_status = 'manual' AND d.source = 'frigate'
+              AND e.detection_id IS NULL
+            ORDER BY d.start_time DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def set_species_manually(detection_id: int, common_name: str,

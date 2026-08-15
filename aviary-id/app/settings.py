@@ -89,8 +89,15 @@ class Settings:
     # (pybioclip's CustomLabelsClassifier does this); wrong for full taxonomic strings,
     # which produce text like "a tattoo of a Animalia Chordata Aves ...".
     prompt_ensemble: bool = True
-    # Minimum detector score for a box to count as a usable bird.
-    detector_threshold: float = 0.5
+    # Which bird localizer to run over clip frames: "yolo" (YOLO11n, default — better on
+    # the small, shaded, partly-hidden birds clip frames contain, but AGPL-3.0) or
+    # "frcnn" (torchvision Faster R-CNN, BSD-3, no extra dependency).
+    detector_backend: str = "yolo"
+    # Minimum detector score for a box to count as a usable bird. Deliberately permissive:
+    # downstream ranking (score * sqrt(area)), detector-score-weighted fusion and the
+    # per-frame consensus vote all suppress junk boxes, whereas a box never proposed is a
+    # bird never classified.
+    detector_threshold: float = 0.3
     # Fraction of the box's size added as padding on each side before cropping. Birds
     # get cropped tight by the detector; a little context helps the classifier.
     crop_padding: float = 0.15
@@ -146,7 +153,8 @@ def load_settings() -> Settings:
         use_event_box=not _as_bool(os.environ.get("NO_EVENT_BOX", "")),
         label_format=os.environ.get("LABEL_FORMAT", "common").strip().lower(),
         prompt_ensemble=not _as_bool(os.environ.get("NO_PROMPT_ENSEMBLE", "")),
-        detector_threshold=_as_float("DETECTOR_THRESHOLD", 0.5),
+        detector_backend=os.environ.get("DETECTOR_BACKEND", "yolo").strip().lower(),
+        detector_threshold=_as_float("DETECTOR_THRESHOLD", 0.3),
         crop_padding=_as_float("CROP_PADDING", 0.15),
         fetch_timeout=_as_float("FETCH_TIMEOUT", 30.0),
         ffmpeg_timeout=_as_float("FFMPEG_TIMEOUT", 60.0),

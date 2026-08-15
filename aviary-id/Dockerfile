@@ -10,13 +10,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TORCH_HOME=/models/torch \
     HF_HOME=/models/huggingface \
     CACHE_DIR=/models \
+    # Ultralytics writes its settings file here instead of $HOME, keeping the container
+    # filesystem read-only-friendly and the config on the persistent volume.
+    YOLO_CONFIG_DIR=/models/ultralytics \
     # Let the allocator grow and release segments rather than holding a fixed pool. On a
     # small card shared with other processes, fragmentation alone can turn a fit into an
     # out-of-memory error.
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+# libgl1/libglib2.0-0 are OpenCV's runtime libraries, pulled in by ultralytics for the
+# YOLO detector backend.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip ffmpeg \
+        python3 python3-pip ffmpeg libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # torch/torchvision MUST come from the cu126 index. PyTorch removed Maxwell/Pascal

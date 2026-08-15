@@ -44,6 +44,12 @@ _PRIOR_MULTIPLIER = 3.0
 # Overflow is logged and marked failed rather than silently dropped.
 _QUEUE_MAX = 200
 
+# How far below the configured thresholds frame consensus can rescue an answer, as a
+# fraction of each threshold. A modest fused score backed by independent frames agreeing
+# is stronger evidence than the score alone suggests — a 0.40 softmax over hundreds of
+# species with every frame voting the same way is a confident answer, not a doubtful one.
+_CONSENSUS_RESCUE = 0.5
+
 _settings: Optional[Settings] = None
 _client: Optional[httpx.AsyncClient] = None
 _queue: Optional[asyncio.Queue] = None
@@ -232,7 +238,13 @@ async def _process(row: dict[str, Any]) -> None:
 
     score = float(result.get("score") or 0.0)
     margin = float(result.get("margin") or 0.0)
+    # Two identities, on purpose. model_version (stored as id_model) is result
+    # provenance — it changes with the vocabulary, marking rows worth re-identifying
+    # after a region change. embedding_key names what the EMBEDDING is comparable
+    # under (the model alone) and survives vocabulary changes; older services don't
+    # send it, so it is recovered from the combined string.
     model = result.get("model_version")
+    embed_key = result.get("embedding_key") or db.embedding_key_from(model or "")
     embedding = result.get("embedding")
     name = result.get("common_name")
     # The shortlist the model considered. Kept whatever the outcome: it is most useful
@@ -240,11 +252,25 @@ async def _process(row: dict[str, Any]) -> None:
     # lets the right bird be picked by hand from what it was weighing up.
     shortlist = _encode_candidates(result.get("candidates"))
 
+    # Normalize the service's candidate shape (common_name/scientific_name) to the slim
+    # one probe.blend expects (name/sci). Passing the raw list looked like it worked but
+    # silently left the blend's zero-shot side EMPTY — the probe's distribution replaced
+    # the zero-shot answer outright instead of mixing with it, at any blend weight.
+    slim_candidates = [
+        {"name": c.get("common_name") or c.get("name"),
+         "sci": c.get("scientific_name") or c.get("sci"),
+         "code": c.get("species_code") or c.get("code"),
+         "score": float(c.get("score") or 0.0)}
+        for c in (result.get("candidates") or [])
+        if isinstance(c, dict) and (c.get("common_name") or c.get("name"))
+    ]
+
     # Fold in what we have learned from confirmed birds of our own. Applied before the
     # thresholds, not after: the probe exists to rescue exactly the results that would
     # otherwise be rejected, so gating first would throw away the cases it is for.
-    probe_examples = 0
-    blended = probe.blend(embedding or "", result.get("candidates") or [], model or "",
+    probe_examples: Optional[int] = None
+    probe_weight: Optional[float] = None
+    blended = probe.blend(embedding or "", slim_candidates, embed_key,
                           exclude=set(exclude or []))
     if blended:
         if blended["name"] != name:
@@ -257,13 +283,46 @@ async def _process(row: dict[str, Any]) -> None:
         name = blended["name"]
         score, margin = blended["score"], blended["margin"]
         probe_examples = blended["probe_examples"]
+        probe_weight = blended.get("probe_weight")
         result["scientific_name"] = blended.get("sci") or result.get("scientific_name")
         result["species_code"] = blended.get("code") or result.get("species_code")
         shortlist = _encode_candidates(blended["candidates"]) or shortlist
 
-    if (not name
-            or score < _settings.identify_min_score
-            or margin < _settings.identify_min_margin):
+    # Frame agreement, computed by the service. Only meaningful while the final answer
+    # is still the service's own winner: if the probe reranked to a different species,
+    # votes about the old winner say nothing about the new one — and the probe's example
+    # evidence is playing the corroboration role instead. None means "no data" (too few
+    # frames could vote), which is deliberately treated as neither support nor dissent.
+    agreed: Optional[bool] = None
+    consensus = result.get("consensus")
+    if isinstance(consensus, dict) and name == result.get("common_name"):
+        agreed = bool(consensus.get("agreed"))
+
+    passes = (bool(name)
+              and score >= _settings.identify_min_score
+              and margin >= _settings.identify_min_margin)
+    if passes and agreed is False:
+        # The fused score cleared the bar but the frames actively voted for different
+        # species — a good-looking average emerging from conflicting votes is exactly
+        # the failure mode consensus exists to catch. A human gets the final say.
+        log.info(
+            "Identification for %s scored %.3f but frames disagreed (%d/%d for %s) "
+            "— queued for review.",
+            ref, score, consensus.get("supporting", 0), consensus.get("votes", 0), name,
+        )
+        passes = False
+    rescued = (not passes and bool(name) and agreed is True
+               and score >= _CONSENSUS_RESCUE * _settings.identify_min_score
+               and margin >= _CONSENSUS_RESCUE * _settings.identify_min_margin)
+    if rescued:
+        log.info(
+            "Identification for %s below threshold (score=%.3f margin=%.3f) but %d/%d "
+            "frames agree on %s — accepting on consensus.",
+            ref, score, margin, consensus.get("supporting", 0),
+            consensus.get("votes", 0), name,
+        )
+
+    if not passes and not rescued:
         log.info(
             "Identification for %s below threshold: %s score=%.3f margin=%.3f "
             "(runner-up %s) — queued for review.",
@@ -272,6 +331,8 @@ async def _process(row: dict[str, Any]) -> None:
         await asyncio.to_thread(
             db.set_identification, row["source"], ref, "low_confidence",
             score, margin, model, embedding, False, shortlist,
+            embedding_model=embed_key, probe_weight=probe_weight,
+            probe_examples=probe_examples,
         )
         return
 
@@ -300,6 +361,8 @@ async def _process(row: dict[str, Any]) -> None:
         db.set_identification, row["source"], ref, "ok", score, margin, model, embedding,
         True,  # set_confidence — see the note above
         shortlist,
+        embedding_model=embed_key, probe_weight=probe_weight,
+        probe_examples=probe_examples,
     )
     log.info(
         "Identified %s as %s (score=%.3f margin=%.3f, %d frames%s%s, %sms).",
@@ -311,9 +374,15 @@ async def _process(row: dict[str, Any]) -> None:
 
 
 def _encode_candidates(candidates: Any) -> Optional[str]:
-    """Compact the service's shortlist for storage. None when there is nothing useful."""
+    """Compact the service's shortlist for storage. None when there is nothing useful.
+
+    Only the top few are kept: the service now returns a much longer list so the probe
+    can blend over real softmax mass, but for storage and display anything past fifth
+    place is noise.
+    """
     if not isinstance(candidates, list) or not candidates:
         return None
+    candidates = candidates[:5]
     slim = [
         {
             # Accepts both the service's shape (common_name/scientific_name) and the
@@ -446,6 +515,61 @@ async def identify_one(row: dict[str, Any]) -> dict:
         _discard(ref)
     updated = await asyncio.to_thread(db.detection_by_ref, row["source"], ref)
     return {"status": "ok", "detection": updated}
+
+
+async def probe_model() -> Optional[str]:
+    """The key stored embeddings are compared under, from the service's health.
+
+    Prefers the service's ``embedding_key`` (the model name alone, stable across
+    vocabulary changes); falls back to reducing an older service's ``model_version``
+    so the probe keeps working against a container that predates the field.
+    """
+    data = await health()
+    if not data.get("ok"):
+        return None
+    key = data.get("embedding_key")
+    if key:
+        return key
+    version = data.get("model_version")
+    return db.embedding_key_from(version) if version else None
+
+
+async def backfill_embedding(row: dict[str, Any]) -> bool:
+    """Store an embedding for a detection that never got one. True if one was stored.
+
+    A manual label on a detection whose identification failed (or predates embeddings)
+    teaches the probe nothing — there is no vector for the confirmed name to train. This
+    re-runs the event through the service purely to harvest the embedding of its best
+    frame; the label, status and confidence are deliberately left alone, because the
+    human's answer outranks anything the service would say.
+    """
+    if not enabled():
+        return False
+    ref = row.get("source_ref")
+    if not ref or row.get("source") != "frigate" or not row.get("id"):
+        return False
+    if await asyncio.to_thread(db.has_embedding, row["id"]):
+        return False
+    with _inflight_lock:
+        if ref in _inflight:
+            return False
+        _inflight.add(ref)
+    try:
+        result = await _call_service(ref, {}, [])
+    finally:
+        _discard(ref)
+    if not result or result.get("status") != "ok":
+        log.debug("Embedding backfill for %s returned %s.",
+                  ref, (result or {}).get("status", "no answer"))
+        return False
+    embedding = result.get("embedding")
+    key = (result.get("embedding_key")
+           or db.embedding_key_from(result.get("model_version") or ""))
+    if not embedding or not key:
+        return False
+    await asyncio.to_thread(db.put_detection_embedding, row["id"], key, embedding)
+    log.info("Backfilled an embedding for %s so its manual label can teach the probe.", ref)
+    return True
 
 
 async def purge_old() -> int:

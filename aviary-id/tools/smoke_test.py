@@ -16,6 +16,14 @@ Stdlib only, so it runs anywhere python3 does — no venv, no pip.
     python3 smoke_test.py --frigate http://frigate.lan:5000 --service http://localhost:8100
     python3 smoke_test.py --limit 50 --camera feeder_cam --token "$AVIARY_ID_TOKEN"
     python3 smoke_test.py --image ~/photos/known-chickadee.jpg
+
+With --labels the sweep becomes an actual accuracy measurement. Hand-label 30-50 events
+you can identify by eye into a JSON file of {"event id": "Common Name", ...}; the run
+then reports top-1/top-5 accuracy and, per threshold pair, how much of what would be
+auto-accepted is actually right. That is the file to re-run after changing LABEL_FORMAT,
+the detector backend, or any threshold — it turns "feels better" into a number.
+
+    python3 smoke_test.py --limit 50 --labels my-birds.json
 """
 
 from __future__ import annotations
@@ -92,8 +100,16 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=20, help="events to test (default 20)")
     ap.add_argument("--camera", default=None, help="restrict to one Frigate camera")
     ap.add_argument("--image", default=None, help="identify a single local image instead")
+    ap.add_argument("--labels", default=None,
+                    help='JSON file of {"event id": "Common Name"} ground truth; '
+                         "adds top-1/top-5 accuracy and a correctness column to the sweep")
     ap.add_argument("--verbose", action="store_true", help="show the per-frame breakdown")
     args = ap.parse_args()
+
+    labels: dict[str, str] = {}
+    if args.labels:
+        with open(args.labels, encoding="utf-8") as f:
+            labels = {str(k): str(v).strip().lower() for k, v in json.load(f).items()}
 
     service = args.service.rstrip("/")
     headers = {"Authorization": f"Bearer {args.token}"} if args.token else {}
@@ -160,6 +176,7 @@ def main() -> int:
             print(f"{eid:<26} {'':<14} {'':<22} ERROR: {exc}")
             continue
         elapsed = res.get("elapsed_ms") or int((time.monotonic() - started) * 1000)
+        res["_event_id"] = eid
         results.append(res)
 
         theirs = event.get("sub_label") or "—"
@@ -189,21 +206,61 @@ def main() -> int:
           f"{sum(1 for r in ok if not r.get('localized', True))} were classified uncropped "
           f"(detector found no bird).")
 
+    # --- accuracy against hand labels ---------------------------------------------------
+    def top1_correct(r) -> bool:
+        return (r.get("common_name") or "").strip().lower() == labels.get(r["_event_id"])
+
+    def top5_correct(r) -> bool:
+        truth = labels.get(r["_event_id"])
+        return any((c.get("common_name") or "").strip().lower() == truth
+                   for c in (r.get("candidates") or [])[:5])
+
+    labelled = [r for r in ok if r.get("_event_id") in labels] if labels else []
+    if labels:
+        skipped = len(labels) - len(labelled)
+        if labelled:
+            t1 = sum(map(top1_correct, labelled))
+            t5 = sum(map(top5_correct, labelled))
+            print(f"\nAccuracy on {len(labelled)} labelled event(s): "
+                  f"top-1 {t1}/{len(labelled)} ({t1 / len(labelled) * 100:.0f}%), "
+                  f"top-5 {t5}/{len(labelled)} ({t5 / len(labelled) * 100:.0f}%)."
+                  + (f" {skipped} label(s) matched no tested event." if skipped else ""))
+            wrong = [r for r in labelled if not top1_correct(r)]
+            for r in wrong[:10]:
+                print(f"  wrong: {r['_event_id'][:24]:<26} said "
+                      f"{r.get('common_name')!r}, truth {labels[r['_event_id']]!r} "
+                      f"(score {pct(r.get('score'))}, margin {pct(r.get('margin'))})")
+        else:
+            print("\nNo tested event matched an entry in the labels file — "
+                  "check the event ids.")
+
     # --- threshold table --------------------------------------------------------------
-    # The reason this script exists. Accuracy is yours to judge from the table above; what
-    # this shows is the cost of each threshold pair — how much you would accept, and how
-    # much you would push into the review queue.
+    # The reason this script exists. What this shows is the cost of each threshold pair —
+    # how much you would accept, and how much you would push into the review queue. With
+    # --labels it also shows how much of the accepted set is actually right, which is the
+    # number to tune on.
     print("\nWhat each threshold pair would accept, on this sample:\n")
-    print(f"  {'min_score':>10} {'min_margin':>11} {'accepted':>10} {'to review':>11}")
+    correct_col = f" {'correct':>10}" if labelled else ""
+    print(f"  {'min_score':>10} {'min_margin':>11} {'accepted':>10} {'to review':>11}"
+          f"{correct_col}")
     for min_score, min_margin in ((0.20, 0.05), (0.35, 0.08), (0.50, 0.15),
                                   (0.60, 0.25), (0.75, 0.40)):
-        passed = sum(1 for r in ok
-                     if (r.get("score") or 0) >= min_score
-                     and (r.get("margin") or 0) >= min_margin)
+        accepted = [r for r in ok
+                    if (r.get("score") or 0) >= min_score
+                    and (r.get("margin") or 0) >= min_margin]
+        passed = len(accepted)
+        extra = ""
+        if labelled:
+            acc_labelled = [r for r in accepted if r.get("_event_id") in labels]
+            if acc_labelled:
+                good = sum(map(top1_correct, acc_labelled))
+                extra = f" {good:>4}/{len(acc_labelled):<3} ({good / len(acc_labelled) * 100:3.0f}%)"
+            else:
+                extra = f" {'—':>10}"
         marker = "   <- shipped default" if (min_score, min_margin) == (0.35, 0.08) else ""
         print(f"  {min_score:>10.2f} {min_margin:>11.2f} "
               f"{passed:>7} ({passed / len(ok) * 100:3.0f}%) {len(ok) - passed:>8}"
-              f"{marker}")
+              f"{extra}{marker}")
 
     scores = sorted(r.get("score") or 0 for r in ok)
     margins = sorted(r.get("margin") or 0 for r in ok)

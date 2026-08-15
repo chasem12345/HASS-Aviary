@@ -53,8 +53,8 @@
            almost nothing is two confusable species, not a confident answer. Surfacing it
            here is what makes a thin call visible without opening anything. #}
         <span class="idbadge idbadge-ok"
-              title="Identified by aviary-id&#10;score {{ d.id_score | fmt_pct }} · margin {{ d.id_margin | fmt_pct }}{% if d.id_model %}&#10;{{ d.id_model }}{% endif %}">
-          ID {{ d.id_margin | fmt_pct }} margin
+              title="Identified by aviary-id&#10;score {{ d.id_score | fmt_pct }} · margin {{ d.id_margin | fmt_pct }}{% if d.id_probe_examples %}&#10;matched against {{ d.id_probe_examples }} confirmed example(s) of your own{% endif %}{% if d.id_model %}&#10;{{ d.id_model }}{% endif %}">
+          ID {{ d.id_margin | fmt_pct }} margin{% if d.id_probe_examples %} ·&nbsp;learned{% endif %}
         </span>
       {% elif d.id_status == 'low_confidence' %}
         <span class="idbadge idbadge-low"

@@ -5,24 +5,30 @@ occupying 3% of a 1080p frame becomes about forty usable pixels, and the classif
 then guessing from the background. Cropping to the bird is most of the difference between
 "works" and "doesn't".
 
-torchvision's COCO-pretrained Faster R-CNN is used rather than a YOLO model purely for
-licensing: torchvision is BSD-3 and already a hard dependency, whereas Ultralytics is
-AGPL-3.0, which is a real consideration for code published in a public repo. YOLO11n is
-somewhat better at small objects — if AGPL is acceptable for your use, this is the one
-class to replace, and nothing outside this module needs to change.
+Two backends, selected by DETECTOR_BACKEND:
+
+* ``yolo`` (default) — Ultralytics YOLO11n. Measurably better at small, shaded and
+  partially-occluded birds, which is exactly what clip frames contain; it runs at 640px
+  where the Faster R-CNN alternative runs at 320. Ultralytics is AGPL-3.0 — acceptable
+  here and called out in the README; if that license doesn't work for your deployment,
+  set DETECTOR_BACKEND=frcnn and nothing else changes.
+* ``frcnn`` — torchvision's COCO Faster R-CNN (BSD-3, zero extra dependencies). The
+  original backend, kept as the permissively-licensed fallback.
+
+Both expose the same ``detect()`` contract; nothing outside this module knows which one
+is running.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 
 import torch
 from PIL import Image
-from torchvision.models.detection import (
-    FasterRCNN_MobileNet_V3_Large_320_FPN_Weights,
-    fasterrcnn_mobilenet_v3_large_320_fpn,
-)
+
+from .settings import Settings
 
 log = logging.getLogger("aviary_id.detector")
 
@@ -38,8 +44,83 @@ class Detection:
         return max(0.0, x2 - x1) * max(0.0, y2 - y1)
 
 
-class BirdDetector:
+class YoloBirdDetector:
+    """YOLO11n, filtered to the COCO bird class."""
+
+    def __init__(self, device: torch.device, threshold: float, cache_dir: str):
+        # Imported here rather than at module top so the frcnn backend works even if the
+        # (AGPL) ultralytics package were removed from the image.
+        from ultralytics import YOLO
+
+        self.threshold = threshold
+        # Ultralytics takes a device string per predict() call rather than moving a
+        # module; str() of a torch.device ("cpu", "cuda") is a form it accepts.
+        self.device = device
+        self._device_str = str(device)
+
+        # Keep the weights on the model volume so a container rebuild doesn't
+        # re-download them, same as the CLIP weights and the text-embedding cache.
+        path = os.path.join(cache_dir, "yolo11n.pt")
+        if not os.path.exists(path):
+            from ultralytics.utils.downloads import attempt_download_asset
+            log.info("Downloading YOLO11n weights to %s ...", path)
+            attempt_download_asset(path)
+        self.model = YOLO(path)
+
+        # Read the class index off the model rather than hard-coding COCO's "bird is 14":
+        # a silently wrong constant would mean detecting the wrong class forever.
+        names = self.model.names
+        try:
+            self.bird_index = next(i for i, n in names.items() if n == "bird")
+        except StopIteration as exc:
+            raise RuntimeError(
+                "The YOLO weights have no 'bird' class; cannot localize birds."
+            ) from exc
+        log.info("YOLO11n detector ready on %s (bird class index %d).",
+                 self._device_str, self.bird_index)
+
+    @torch.inference_mode()
+    def detect(self, images: list[Image.Image], batch_size: int = 2) -> list[list[Detection]]:
+        """Bird boxes per input image, in ORIGINAL image coordinates, best-scoring first.
+
+        Chunked for the same reason as the frcnn backend: the peak, not the total, is what
+        OOMs a shared 4 GB card.
+        """
+        if not images:
+            return []
+
+        results: list[list[Detection]] = []
+        for start in range(0, len(images), max(1, batch_size)):
+            chunk = images[start:start + max(1, batch_size)]
+            outputs = self.model.predict(
+                chunk,
+                conf=self.threshold,
+                classes=[self.bird_index],
+                device=self._device_str,
+                verbose=False,
+            )
+            for out in outputs:
+                found = [
+                    Detection(box=(b[0], b[1], b[2], b[3]), score=float(s))
+                    for b, s in zip(out.boxes.xyxy.tolist(), out.boxes.conf.tolist())
+                ]
+                found.sort(key=lambda d: d.score, reverse=True)
+                results.append(found)
+            if self.device.type == "cuda":
+                # Hand cached blocks back between chunks; the card is likely shared.
+                torch.cuda.empty_cache()
+        return results
+
+
+class FrcnnBirdDetector:
+    """torchvision COCO Faster R-CNN — the permissively-licensed (BSD-3) fallback."""
+
     def __init__(self, device: torch.device, threshold: float):
+        from torchvision.models.detection import (
+            FasterRCNN_MobileNet_V3_Large_320_FPN_Weights,
+            fasterrcnn_mobilenet_v3_large_320_fpn,
+        )
+
         self.device = device
         self.threshold = threshold
         weights = FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT
@@ -57,7 +138,8 @@ class BirdDetector:
             raise RuntimeError(
                 "The detection weights have no 'bird' category; cannot localize birds."
             ) from exc
-        log.info("Detector ready on %s (bird class index %d).", device, self.bird_index)
+        log.info("Faster R-CNN detector ready on %s (bird class index %d).",
+                 device, self.bird_index)
 
     def _resized(self, image: Image.Image) -> tuple[Image.Image, float]:
         """Shrink to the size the model would resize to anyway. Returns (image, scale).
@@ -124,3 +206,10 @@ class BirdDetector:
         ]
         found.sort(key=lambda d: d.score, reverse=True)
         return found
+
+
+def make_detector(device: torch.device, settings: Settings):
+    """Build the configured backend. Both share the detect() contract."""
+    if settings.detector_backend == "frcnn":
+        return FrcnnBirdDetector(device, settings.detector_threshold)
+    return YoloBirdDetector(device, settings.detector_threshold, settings.cache_dir)

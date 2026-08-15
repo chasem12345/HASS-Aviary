@@ -25,7 +25,7 @@ from typing import Optional
 from PIL import Image
 
 from . import frames
-from .detector import BirdDetector, Detection
+from .detector import Detection
 from .model import Classifier
 from .settings import Settings
 
@@ -98,7 +98,7 @@ def confident(result, min_score: float, min_margin: float) -> bool:
 class Pipeline:
     """Holds the models; one instance for the life of the service."""
 
-    def __init__(self, classifier: Classifier, detector: BirdDetector, settings: Settings):
+    def __init__(self, classifier: Classifier, detector, settings: Settings):
         self.classifier = classifier
         self.detector = detector
         self.settings = settings

@@ -29,7 +29,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from . import frames
-from .detector import BirdDetector
+from .detector import make_detector
 from .model import Classifier
 from .pipeline import Pipeline
 from .settings import Settings, load_settings
@@ -45,7 +45,7 @@ settings: Settings = load_settings()
 _gpu_lock = asyncio.Lock()
 
 _classifier: Optional[Classifier] = None
-_detector: Optional[BirdDetector] = None
+_detector = None
 _pipeline: Optional[Pipeline] = None
 _client: Optional[httpx.AsyncClient] = None
 _species_source = "not loaded"
@@ -115,8 +115,15 @@ class IdentifyResponse(BaseModel):
     # user never wants suggested). Lets the caller tell a fresh answer from a reroll.
     excluded: int = 0
     per_frame: list[FrameOut] = Field(default_factory=list)
+    # Frame agreement about the winner: {votes, supporting, fraction, agreed, score}.
+    # None when fewer than two frames could vote — the caller must treat "no data" and
+    # "frames disagreed" differently.
+    consensus: Optional[dict] = None
     embedding: Optional[str] = None
     model_version: Optional[str] = None
+    # What the embedding is keyed by: the model name alone. Image embeddings survive
+    # vocabulary and label-format changes; model_version deliberately does not.
+    embedding_key: Optional[str] = None
     elapsed_ms: int = 0
 
 
@@ -166,7 +173,7 @@ async def lifespan(_: FastAPI):
         classifier.set_species(species)
         import torch as _t
         det_device = _t.device("cpu") if settings.detector_cpu else classifier.device
-        detector = BirdDetector(det_device, settings.detector_threshold)
+        detector = make_detector(det_device, settings)
         log.info("Startup complete. %s", classifier.memory_summary())
         return classifier, detector
 
@@ -190,7 +197,7 @@ async def lifespan(_: FastAPI):
             await _client.aclose()
 
 
-app = FastAPI(title="aviary-id", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="aviary-id", version="0.4.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -207,6 +214,7 @@ async def healthz() -> dict:
         "cpu_only": settings.cpu_only,
         "model": settings.model_name,
         "model_version": _classifier.model_version if _classifier else None,
+        "embedding_key": _classifier.embedding_key if _classifier else None,
         "species_count": len(_classifier.species) if _classifier else 0,
         "species_source": _species_source,
         "frigate_url": settings.frigate_url or None,
@@ -318,8 +326,10 @@ async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
         ],
         excluded=result.excluded,
         per_frame=[FrameOut(**vars(f)) for f in result.per_frame],
+        consensus=result.consensus,
         embedding=result.embedding,
         model_version=_classifier.model_version,
+        embedding_key=_classifier.embedding_key,
         elapsed_ms=_ms(started),
         timings=timings.stages,
     )

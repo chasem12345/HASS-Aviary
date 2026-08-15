@@ -102,7 +102,8 @@ curl -s localhost:8100/healthz | python3 -m json.tool
   "ok": true,
   "cuda": true,
   "device": "Quadro P1000",
-  "model_version": "hf-hub:imageomics/bioclip-2@a1b2c3d4e5f60718",
+  "model_version": "hf-hub:imageomics/bioclip-2/common@a1b2c3d4e5f60718",
+  "embedding_key": "hf-hub:imageomics/bioclip-2",
   "species_count": 312,
   "species_source": "eBird US-CO-013"
 }
@@ -129,7 +130,8 @@ All configuration is environment variables.
 | `DETECTOR_CPU` | — | Detector on CPU, classifier on the GPU. |
 | `NO_THUMBNAIL` | — | Don't use Frigate's cropped thumbnail. |
 | `NO_EVENT_BOX` | — | Don't crop the snapshot to Frigate's box. |
-| `DETECTOR_THRESHOLD` | `0.5` | Minimum detector score for a usable bird box. |
+| `DETECTOR_BACKEND` | `yolo` | Bird localizer for clip frames: `yolo` (YOLO11n — better on small/shaded birds, AGPL-3.0) or `frcnn` (torchvision Faster R-CNN, BSD-3). See the licensing note below. |
+| `DETECTOR_THRESHOLD` | `0.3` | Minimum detector score for a usable bird box. Permissive on purpose: ranking, score-weighted fusion and the consensus vote suppress junk boxes downstream. |
 | `CROP_PADDING` | `0.15` | Context added around the bird before cropping. |
 | `CPU_ONLY` | — | Force CPU. ~5 s/event instead of ~0.3 s; useful for testing without a GPU. |
 | `LABEL_FORMAT` | `common` | How species are described to the model: `common`, `binomial`, `binomial_common`, `taxonomy`. See below. |
@@ -180,6 +182,7 @@ curl -s -X POST localhost:8100/identify \
     {"origin": "snapshot", "det_score": 0.94, "top1": "Black-capped Chickadee",
      "top1_score": 0.78, "top2": "Mountain Chickadee", "top2_score": 0.11}
   ],
+  "consensus": {"votes": 3, "supporting": 3, "fraction": 1.0, "agreed": true, "score": 0.74},
   "elapsed_ms": 1840
 }
 ```
@@ -190,6 +193,13 @@ the event could be localized, even after escalating), `out_of_memory`, `error`, 
 
 `rounds` is how many classification passes it took: `1` means it was confident immediately,
 more means it escalated. `timings` breaks the elapsed time down by stage.
+
+`consensus` is the per-frame vote about the winner: each usable frame votes for its own
+top-1, clip frames closer than 250 ms collapse into one vote, and `agreed` requires at
+least 2 supporting votes covering ≥60% of all votes. `null` when fewer than two frames
+could vote — "no data" is deliberately distinct from "frames disagreed". Aviary uses this
+to accept a modest-but-unanimous answer and to hold back a high-scoring one the frames
+actively disagreed about.
 
 ## Tuning
 
@@ -273,9 +283,19 @@ The classifier already drops its **text encoder** once the species embeddings ar
 resized them to anyway — a 1080p frame costs 2 MB of input tensor instead of 24 MB. Both are
 automatic; the settings above are for when that is still not enough.
 
-## Swapping the detector
+## Detector backends and licensing
 
-`app/detector.py` uses torchvision's Faster R-CNN purely for licensing: torchvision is
-BSD-3 and already a dependency, whereas Ultralytics YOLO is AGPL-3.0. YOLO11n is somewhat
-better on small distant birds. If AGPL is acceptable for your use, `BirdDetector` is the
-only class to replace and nothing outside that module changes.
+`app/detector.py` ships two backends behind one interface, selected by
+`DETECTOR_BACKEND`:
+
+* **`yolo` (default)** — Ultralytics YOLO11n, running at 640px. Measurably better at the
+  small, shaded, partly-occluded birds that clip frames actually contain. **Ultralytics
+  is AGPL-3.0**: with this backend enabled, the combined aviary-id container includes
+  AGPL software, which matters if you redistribute it or offer it as a network service.
+  For purely personal use it changes nothing in practice.
+* **`frcnn`** — torchvision's COCO Faster R-CNN (BSD-3, no extra dependency), running at
+  320px. The original backend; set `DETECTOR_BACKEND: "frcnn"` if AGPL doesn't work for
+  your deployment. Everything else behaves identically.
+
+The backend only affects clip frames and boxless snapshots — Frigate's own thumbnail and
+event-box crops bypass the detector entirely.

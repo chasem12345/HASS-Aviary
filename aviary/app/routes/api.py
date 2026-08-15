@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from typing import Optional
 
@@ -15,7 +17,12 @@ from .. import (
 )
 from . import ingress_url, set_theme
 
+log = logging.getLogger("aviary.api")
+
 router = APIRouter()
+
+# Strong references to fire-and-forget tasks (the event loop keeps only weak ones).
+_background_tasks: set = set()
 
 
 def _norm_source(source: Optional[str]) -> Optional[str]:
@@ -153,6 +160,9 @@ async def delete_detection(det_id: int, request: Request, source_action: Optiona
     await run_in_threadpool(db.delete_detection, det_id)
     ingest.add_tombstone(det["source"], det["source_ref"])
     await run_in_threadpool(_forget_if_gone, det["common_name"])
+    # A deleted detection is usually a misclassification — the probe must stop learning
+    # from its embedding immediately, not at the next restart.
+    await _refresh_probe()
     return {"ok": True, "common_name": det["common_name"], "source_result": source_result}
 
 
@@ -171,6 +181,8 @@ async def delete_species(name: str, request: Request, source_action: Optional[st
         if result and not result["ok"]:
             source_errors.append(f"{det['source']} {det['source_ref']}: {result['error']}")
     ingest.forget_species(name)
+    # Its embeddings and its confirmation are gone; the probe must unlearn them now.
+    await _refresh_probe()
     return {
         "ok": True,
         "deleted": len(rows),
@@ -270,10 +282,25 @@ async def set_species(det_id: int, species: str = Query(..., min_length=1),
     # inflating the registry, which is not what this is.
     await run_in_threadpool(db.confirm_species, name)
     await _refresh_probe()
+    # If this detection has no stored embedding (its identification failed, or predates
+    # embeddings), the label just given teaches the probe nothing. Harvest one in the
+    # background — it costs a GPU round-trip, and the user shouldn't wait on it.
+    task = asyncio.create_task(_backfill_then_refresh(dict(det)))
+    # The loop only holds weak references to tasks; keep one or it can be GC'd mid-run.
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     previous = det.get("common_name")
     if previous and previous != name:
         await run_in_threadpool(_forget_if_gone, previous)
     return {"ok": True, "common_name": name, "scientific_name": sci}
+
+
+async def _backfill_then_refresh(det: dict) -> None:
+    try:
+        if await identify.backfill_embedding(det):
+            await _refresh_probe()
+    except Exception:  # a background task's exception would otherwise vanish silently
+        log.exception("Embedding backfill failed for detection %s", det.get("id"))
 
 
 @router.get("/identify-species")
@@ -294,9 +321,8 @@ async def probe_stats():
 
 @router.post("/probe/rebuild")
 async def probe_rebuild(request: Request):
-    """Recompute centroids from confirmed detections. Cheap; safe to call any time."""
-    health = await identify.health()
-    model = health.get("model_version") if health.get("ok") else None
+    """Reload the probe's examples from confirmed detections. Cheap; safe to call any time."""
+    model = await identify.probe_model()
     if not model:
         return {"ok": False, "error": "identification service unreachable"}
     return {"ok": True, **await run_in_threadpool(probe.rebuild, model)}
@@ -304,9 +330,8 @@ async def probe_rebuild(request: Request):
 
 @router.post("/probe/bootstrap")
 async def probe_bootstrap(request: Request):
-    """Embed cached reference photos so brand-new species start with a centroid."""
-    health = await identify.health()
-    model = health.get("model_version") if health.get("ok") else None
+    """Embed cached reference photos so brand-new species start with examples."""
+    model = await identify.probe_model()
     if not model:
         return {"ok": False, "error": "identification service unreachable"}
     bootstrap.start(request.app.state.settings, model)
@@ -318,11 +343,10 @@ async def probe_evaluate():
     """Leave-one-out accuracy over your own confirmed birds.
 
     The honest measure of whether the probe helps *here*, rather than on a benchmark. It
-    scores stored embeddings against centroids rebuilt without them, so it touches no
+    scores stored embeddings against example pools rebuilt without them, so it touches no
     clips and is unaffected by changes to the crop pipeline.
     """
-    health = await identify.health()
-    model = health.get("model_version") if health.get("ok") else None
+    model = await identify.probe_model()
     if not model:
         return {"ok": False, "error": "identification service unreachable"}
     return {"ok": True, **await run_in_threadpool(probe.evaluate, model)}
@@ -343,17 +367,22 @@ async def identify_health():
 # species. Confirming is the only genuinely new verb.
 
 async def _refresh_probe() -> None:
-    """Rebuild centroids after the set of confirmed labels changes.
+    """Rebuild the probe's examples after the set of confirmed labels changes.
 
-    Confirming a species is what turns its detections into training examples, so the probe
-    should reflect it at once rather than at the next restart. A full rebuild is cheap
+    Confirming a species is what turns its detections into training examples — and
+    unconfirming or deleting one is what should make the probe forget them — so the probe
+    should reflect either at once rather than at the next restart. A full rebuild is cheap
     enough (a few hundred species of 768 floats) that incremental updating would be more
     code and more ways to go stale.
+
+    Deliberately NOT gated on probe.ready(): an empty probe (fresh install, or a service
+    that was unreachable at startup) is exactly the one that must be buildable by the
+    first confirmation, and the old early-return silently discarded every label's rebuild
+    until a restart.
     """
-    if not identify.enabled() or not probe.ready():
+    if not identify.enabled():
         return
-    health = await identify.health()
-    model = health.get("model_version") if health.get("ok") else None
+    model = await identify.probe_model()
     if model:
         await run_in_threadpool(probe.rebuild, model)
 
@@ -372,6 +401,8 @@ async def unconfirm_species(name: str):
     removed = await run_in_threadpool(db.unconfirm_species, name)
     if not removed:
         return {"ok": False, "error": "species was not confirmed"}
+    # Unconfirmed means its detections are no longer trusted labels; unlearn them now.
+    await _refresh_probe()
     return {"ok": True, "species": name, "confirmed": False}
 
 
@@ -413,6 +444,8 @@ async def add_blacklist(
 
     await run_in_threadpool(db.blacklist_add, species, scientific, 1 if rows else 0)
     ingest.add_blacklist(species, scientific)
+    # The purge above deleted the species' detections and confirmation; unlearn them.
+    await _refresh_probe()
     return {
         "ok": True,
         "species": species,

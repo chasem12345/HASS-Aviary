@@ -36,9 +36,28 @@ log = logging.getLogger("aviary_id.model")
 # tower, large enough that 32k prompts don't take all day.
 _TEXT_BATCH = 256
 
-# How many species to report back. Enough to be useful when the top answer is wrong,
-# short enough to be a glance rather than a list to read.
-_TOP_N = 5
+# How many species to report back. The caller's few-shot probe blends this list with its
+# own distribution over every learned species, so it has to cover enough of the softmax
+# mass to make that blend honest — a 5-entry slice summed to well under 1.0 and made the
+# renormalization lopsided. The UI still only shows the first few.
+_TOP_N = 50
+
+# --- per-frame consensus -----------------------------------------------------------
+# A fused score alone cannot distinguish "every frame agrees" from "three frames voted
+# three ways and the winner emerged from averaging". Each usable frame casts one vote for
+# its own top-1; the caller can then demand agreement before trusting a modest score.
+#
+# Clip frames closer together than this are one moment, not two opinions — adjacent
+# decodes of the same pose must not manufacture support.
+_MOMENT_SECONDS = 0.25
+# A frame votes only if its detection and its top-1 probability are worth listening to.
+# The probability floor is low on purpose: over a several-hundred-species vocabulary a
+# softmax of 0.10 is already a strong opinion.
+_VOTE_DET_FLOOR = 0.5
+_VOTE_SCORE_FLOOR = 0.10
+# Agreement needs at least this many supporting moments AND this share of all votes.
+_CONSENSUS_MIN_VOTES = 2
+_CONSENSUS_FRACTION = 0.6
 
 
 @dataclass
@@ -63,6 +82,10 @@ class ClassifyResult:
     per_frame: list[FrameResult]
     embedding: str  # base64 float16 of the best crop's image embedding
     excluded: int = 0  # how many species were ruled out for this call
+    # Frame agreement about the winner: {votes, supporting, fraction, agreed, score}.
+    # None when fewer than two frames were eligible to vote — one frame has no one to
+    # agree with, and "no consensus data" must stay distinct from "frames disagreed".
+    consensus: Optional[dict] = None
 
 
 class Classifier:
@@ -129,6 +152,19 @@ class Classifier:
         # different format is a different classifier, and results are not comparable.
         return (f"{self.settings.model_name}"
                 f"/{self.settings.label_format}@{self.vocab_digest}")
+
+    @property
+    def embedding_key(self) -> str:
+        """The identity an IMAGE embedding is comparable under: the model name alone.
+
+        Deliberately narrower than ``model_version``. Image embeddings come from the
+        frozen image tower and do not depend on the vocabulary, the label format or the
+        prompt ensemble — those only shape the text side. Keying stored embeddings by the
+        full ``model_version`` meant a routine eBird list refresh silently orphaned every
+        embedding the caller had learned from; keying by the model name means they survive
+        any vocabulary change and are invalidated only by an actual model swap.
+        """
+        return self.settings.model_name
 
     def _free_text_tower(self) -> None:
         """Drop the text encoder once the species embeddings exist.
@@ -312,6 +348,7 @@ class Classifier:
             per_frame=self._per_frame(probs, det_scores, origins),
             embedding=self._encode_embedding(image_features, probs, best_idx),
             excluded=len(excluded),
+            consensus=self._consensus(probs, det_scores, origins, best_idx),
         )
 
     def _apply_priors(self, probs: torch.Tensor, priors: dict[str, float]) -> torch.Tensor:
@@ -335,6 +372,61 @@ class Classifier:
         log.debug("Applied %d audio priors.", applied)
         adjusted = probs * multipliers.unsqueeze(0)
         return adjusted / adjusted.sum(dim=-1, keepdim=True)
+
+    def _consensus(self, probs: torch.Tensor, det_scores: list[float],
+                   origins: list[str], best_idx: int) -> Optional[dict]:
+        """How many independent moments voted for the fused winner.
+
+        Each usable frame casts one vote for its own top-1 species. Clip frames closer
+        together than _MOMENT_SECONDS collapse into a single moment (best-scoring frame
+        speaks for the group), because two decodes of the same pose are one observation.
+        The thumbnail and the snapshot are inherently distinct views and always count
+        singly. Returns None with fewer than two votes — no data, not disagreement.
+        """
+        top_scores, top_idx = probs.max(dim=-1)
+        top_scores, top_idx = top_scores.tolist(), top_idx.tolist()
+
+        moments: list[tuple[int, float]] = []  # (species index, top-1 score)
+        clip_votes: list[tuple[float, int, float]] = []  # (time, species index, score)
+        for i, origin in enumerate(origins):
+            if det_scores[i] < _VOTE_DET_FLOOR or top_scores[i] < _VOTE_SCORE_FLOOR:
+                continue
+            if origin.startswith("clip@") and origin.endswith("s"):
+                try:
+                    clip_votes.append((float(origin[5:-1]), top_idx[i], top_scores[i]))
+                    continue
+                except ValueError:
+                    pass  # unparseable timestamp; treat as a standalone view below
+            moments.append((top_idx[i], top_scores[i]))
+
+        clip_votes.sort()
+        cluster: list[tuple[float, int, float]] = []
+        for vote in clip_votes:
+            if cluster and vote[0] - cluster[-1][0] < _MOMENT_SECONDS:
+                cluster.append(vote)
+            else:
+                if cluster:
+                    _, idx, score = max(cluster, key=lambda v: v[2])
+                    moments.append((idx, score))
+                cluster = [vote]
+        if cluster:
+            _, idx, score = max(cluster, key=lambda v: v[2])
+            moments.append((idx, score))
+
+        if len(moments) < _CONSENSUS_MIN_VOTES:
+            return None
+        supporting = sorted((s for idx, s in moments if idx == best_idx), reverse=True)
+        fraction = len(supporting) / len(moments)
+        return {
+            "votes": len(moments),
+            "supporting": len(supporting),
+            "fraction": round(fraction, 3),
+            "agreed": (len(supporting) >= _CONSENSUS_MIN_VOTES
+                       and fraction >= _CONSENSUS_FRACTION),
+            # Median of the supporting moments, so one lucky frame cannot carry the vote
+            # and a long tail of weak frames cannot dilute a genuine visit.
+            "score": round(float(np.median(supporting)), 4) if supporting else 0.0,
+        }
 
     def _per_frame(self, probs: torch.Tensor, det_scores: list[float],
                    origins: list[str]) -> list[FrameResult]:
@@ -364,9 +456,9 @@ class Classifier:
                           best_idx: int) -> str:
         """Base64 float16 of the embedding from whichever frame backed the winner best.
 
-        Stored by Aviary against the detection. Nothing reads it yet — it exists so that
-        once enough species are human-confirmed, a nearest-centroid classifier over your
-        own birds can be built without re-running the GPU over the entire history.
+        Stored by Aviary against the detection, keyed by ``embedding_key``. Aviary's
+        few-shot probe compares it against embeddings of human-confirmed detections and
+        blends the result with the zero-shot answer — see aviary/app/probe.py.
         """
         frame = int(torch.argmax(probs[:, best_idx]))
         vector = image_features[frame].to(torch.float16).cpu().numpy()

@@ -91,11 +91,10 @@ async def _identify_maintenance(settings) -> None:
     await identify.requeue_pending()
     await identify.purge_old()
 
-    # Build the few-shot probe from whatever labels already exist. The model version has
+    # Build the few-shot probe from whatever labels already exist. The embedding key has
     # to come from the service, because an embedding is only comparable with others from
-    # the same model AND label format — and only the service knows what it is running.
-    health = await identify.health()
-    model = health.get("model_version") if health.get("ok") else None
+    # the same model — and only the service knows what it is running.
+    model = await identify.probe_model()
     if not model:
         log.info("Identification service not reachable yet; probe will build on first use.")
         return
@@ -103,6 +102,23 @@ async def _identify_maintenance(settings) -> None:
     # Fill in any missing reference embeddings in the background. Idempotent, so this is a
     # no-op once the registry has been covered.
     bootstrap.start(settings, model)
+
+    # Manually-labelled detections whose identification failed have no embedding, so
+    # their labels have been teaching the probe nothing. Harvest embeddings for the
+    # recent ones (older events' media is usually past Frigate's retention; those fail
+    # fast as no_media and are retried — cheaply — next start). Sequential on purpose:
+    # this shares one GPU with live identifications and has no deadline.
+    rows = await asyncio.to_thread(db.manual_rows_missing_embeddings, 50)
+    recovered = 0
+    for row in rows:
+        try:
+            recovered += bool(await identify.backfill_embedding(row))
+        except Exception:
+            log.exception("Embedding backfill failed for %s", row.get("source_ref"))
+    if recovered:
+        log.info("Recovered embeddings for %d manually-labelled detection(s); "
+                 "their labels now teach the probe.", recovered)
+        await asyncio.to_thread(probe.rebuild, model)
 
 
 def create_app() -> FastAPI:

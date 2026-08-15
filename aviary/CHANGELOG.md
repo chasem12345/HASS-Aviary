@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.16.0
+
+Learning-pipeline overhaul: this release fixes three ways your labels were silently
+teaching nothing, and makes the learner handle species whose males, females and juveniles
+look nothing alike. Pair it with aviary-id 0.4.0.
+
+- **Your stored training examples no longer vanish on a vocabulary change.** Embeddings
+  were keyed by the service's full model+vocabulary fingerprint, so a routine eBird
+  regional-list refresh (every 30 days by default) invisibly orphaned every example the
+  probe had learned from. They are now keyed by the model alone, and a one-time migration
+  rewrites existing rows — labels you gave weeks ago come back to life on first start.
+- **Labelling now always teaches, immediately.** The probe rebuild used to silently skip
+  when the probe had never been built (fresh install, service down at startup) — every
+  label until the next restart taught nothing. Rebuilds also now fire on un-confirming,
+  deleting a detection or species, and blacklisting, so unlearning is as immediate as
+  learning.
+- **Labels on failed identifications teach too.** Naming a detection whose identification
+  failed stored no embedding, so the label trained nothing. Aviary now harvests an
+  embedding for it in the background, and on startup backfills recent manually-labelled
+  detections that never got one.
+- **Dimorphic species actually work now.** The learner previously averaged every example
+  into one prototype per species — a male-plus-female-plus-fledgling Northern Cardinal
+  average resembles none of them, which is why 30 confirmed cardinals could still leave a
+  shaded fledgling at 40%. It now matches against your actual stored examples
+  (top-k nearest-neighbour), so a shaded female matches the stored female frames directly.
+- **Frame consensus gates the answer.** The service now reports how many independent
+  frames voted for the winner. A modest score with unanimous frames is accepted; a
+  high score the frames actively disagreed about goes to the review queue instead of the
+  dashboard.
+- **The blend now actually blends.** A shape mismatch (the service says `common_name`,
+  the blender expected `name`) left the zero-shot side of the mix silently empty: when
+  the probe spoke at all, its raw distribution *replaced* the zero-shot answer at any
+  blend weight — the main source of flat ~40% scores on well-learned species. The
+  zero-shot side also now covers the top 50 candidates rather than 5, so a species the
+  probe promotes competes against honest probabilities.
+- Cards show when an answer was matched against your own confirmed examples
+  (**· learned** on the ID badge, details in the tooltip), and Settings gains an
+  **Evaluate accuracy** button — leave-one-out accuracy over your own birds, the "is my
+  labelling working?" number.
+
 ## 0.15.0
 
 - **Aviary now learns what your birds look like.** Until now identification was purely

@@ -494,15 +494,19 @@ name by hand — becomes an example it matches against directly. Nothing to conf
 switches itself on species by species as examples accumulate, and the Settings page shows
 what it has learned.
 
-Three properties are deliberate:
+Four properties are deliberate:
 
 - **A species with no examples is unaffected.** New birds are still found exactly as before.
   A classifier that quietly stopped discovering species would be worse than none.
-- **It abstains when the match is not close.** Being the *nearest* centroid is not the same
+- **It abstains when the match is not close.** Being the *nearest* example is not the same
   as being a good match, so a bird it has never seen does not get assigned to whichever
   species it happens to sit closest to.
 - **It only learns from confirmed labels.** Learning from its own unreviewed guesses is how
   a classifier reinforces its own mistakes.
+- **It matches your actual examples, not an average of them.** Many feeder species look
+  wildly different by sex and age — a male Northern Cardinal is crimson, the female warm
+  brown. A shaded female matches your stored female frames directly instead of being
+  compared to a male/female blur that resembles neither.
 
 New installs are not left cold: the iNaturalist reference photos already cached for each
 species are embedded in the background, so every species in your registry starts with a

@@ -31,7 +31,9 @@ services:
       # --- tuning (defaults shown) ------------------------------------------------
       # SAMPLE_FRAMES: "8"            # frames decoded from the clip before filtering
       # CLASSIFY_FRAMES: "3"          # best frames actually classified
-      # DETECTOR_THRESHOLD: "0.5"     # min score for a box to count as a bird
+      # DETECTOR_BACKEND: "yolo"      # yolo (YOLO11n, better on small/shaded birds,
+      #                               # AGPL-3.0) or frcnn (torchvision, BSD-3)
+      # DETECTOR_THRESHOLD: "0.3"     # min score for a box to count as a bird
       # CROP_PADDING: "0.15"          # context added around the bird before cropping
       # EXTRA_SPECIES: "Painted Bunting,Bobolink"
       # EXCLUDE_SPECIES: "Rock Pigeon"

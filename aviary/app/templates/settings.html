@@ -74,6 +74,14 @@
     found normally.
   </p>
   <div id="probe-stats" class="id-health">Checking…</div>
+  <p class="setting-help">
+    <strong>Is my labelling working?</strong> Evaluation holds each confirmed example out
+    and checks whether the rest still identify it (leave-one-out). Run it after a batch of
+    confirmations — rising accuracy means the labels are teaching; a species stuck low
+    usually means its examples are mislabelled or it genuinely needs more of them.
+  </p>
+  <button type="button" id="probe-evaluate" class="btn btn-sm">Evaluate accuracy</button>
+  <div id="probe-evaluate-result" class="id-health" hidden></div>
 </section>
 {% endif %}
 

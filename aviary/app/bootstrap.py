@@ -1,14 +1,14 @@
 """Give the probe something to learn from before any bird has been confirmed.
 
 The awkward part of a few-shot classifier is the first shot. A fresh install has no
-confirmed detections, so every centroid is empty and the probe contributes nothing until
-the user has patiently confirmed a dozen birds.
+confirmed detections, so no species has any examples and the probe contributes nothing
+until the user has patiently confirmed a dozen birds.
 
 Aviary already has a way out: it caches **iNaturalist reference photos** for every species
 in the registry, so a human can compare a questionable detection against known pictures of
 the bird. Those are labelled images of exactly the right species. Running them through the
 identification service's ``/identify/image`` endpoint yields an embedding apiece, and every
-species starts with a usable centroid on day one.
+species starts with usable examples on day one.
 
 They are a starting point, not the destination. A posed photo in good light is the right
 species in the wrong domain, which is why ``probe._REFERENCE_WEIGHT`` discounts them and

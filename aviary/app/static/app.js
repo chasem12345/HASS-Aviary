@@ -474,9 +474,45 @@
     }
   }
 
+  // Leave-one-out accuracy over the user's own confirmed birds — the "is my labelling
+  // working?" button. On demand rather than on load: it re-scores every stored example.
+  async function evaluateProbe() {
+    const btn = document.getElementById("probe-evaluate");
+    const out = document.getElementById("probe-evaluate-result");
+    if (!btn || !out) return;
+    btn.disabled = true;
+    out.hidden = false;
+    out.className = "id-health";
+    out.textContent = "Evaluating…";
+    try {
+      const d = await getJson("/probe/evaluate");
+      if (!d.ok) {
+        out.textContent = "Could not evaluate — " + (d.error || "unknown error");
+        return;
+      }
+      if (!d.evaluated) {
+        out.textContent = "Nothing to evaluate yet — species need at least two " +
+          "confirmed examples (or one plus reference photos).";
+        return;
+      }
+      const overall = Math.round((d.accuracy || 0) * 100);
+      const per = (d.species || []).slice(0, 8)
+        .map((s) => s.species + " " + s.correct + "/" + s.n).join(", ");
+      out.className = "id-health" + (overall >= 80 ? " good" : overall >= 60 ? "" : " warn");
+      out.textContent = overall + "% of " + d.evaluated +
+        " held-out example(s) identified correctly" + (per ? " · " + per : "");
+    } catch (err) {
+      out.textContent = "Could not evaluate — " + err;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   window.aviaryInitSettings = function () {
     loadIdentifyHealth();
     loadProbeStats();
+    const evalBtn = document.getElementById("probe-evaluate");
+    if (evalBtn) evalBtn.addEventListener("click", evaluateProbe);
     document.querySelectorAll(".blacklist-remove").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const species = btn.dataset.species;
