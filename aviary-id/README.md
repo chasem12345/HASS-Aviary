@@ -181,6 +181,41 @@ averaged into a winner, and the aggregate score alone cannot tell those apart. A
 the chickadees, the empidonax flycatchers) — that is a review-queue case, not a
 notification.
 
+## Out of memory on a shared GPU
+
+The service needs roughly **1.3 GB of free VRAM** in steady state. That is not the same as
+having a 4 GB card: if anything else on the box touches the GPU — a transcoder, another
+detector, a desktop session — you are sharing.
+
+`GET /healthz` reports the split, and `vram_other_mb` is the number to look at:
+
+```json
+{ "vram_total_mb": 4034, "vram_free_mb": 1890, "vram_ours_mb": 1290, "vram_other_mb": 854 }
+```
+
+`vram_other_mb` is memory held by processes that are not this container. `nvidia-smi` names
+them. A CUDA out-of-memory error also lists every process on the card, which is usually
+enough to identify the culprit on its own.
+
+When it does run out, `/identify` answers `{"status": "out_of_memory"}` rather than failing
+with a 500, and Aviary records the detection as unidentified and leaves it in the review
+queue — so nothing is lost, and a **↻ re-identify** picks it up once there is room.
+
+To fit in less, in escalating order of what you give up:
+
+| Setting | Effect |
+|---|---|
+| `DETECTOR_BATCH: "1"` | Halves the detector's peak. Costs a few ms. |
+| `DETECTOR_CPU: "1"` | Detector on CPU, classifier stays on the GPU. Costs a few hundred ms and frees its weights and activations entirely. |
+| `CLASSIFY_FRAMES: "2"` | One fewer crop per event. Slightly less robust to a bad frame. |
+| `SAMPLE_FRAMES: "5"` | Fewer frames decoded, so fewer chances of catching a good pose. |
+| `MODEL_NAME: "hf-hub:imageomics/bioclip"` | BioCLIP v1, ViT-B/16 — about a quarter the size. Noticeably less accurate than BioCLIP 2, still well ahead of Frigate's built-in classifier. Delete the `text_*.npy` cache after switching. |
+
+The classifier already drops its **text encoder** once the species embeddings are built
+(~495 MB on ViT-L/14), and the detector pre-resizes frames to the size the model would have
+resized them to anyway — a 1080p frame costs 2 MB of input tensor instead of 24 MB. Both are
+automatic; the settings above are for when that is still not enough.
+
 ## Swapping the detector
 
 `app/detector.py` uses torchvision's Faster R-CNN purely for licensing: torchvision is

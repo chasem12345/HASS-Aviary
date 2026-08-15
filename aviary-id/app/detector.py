@@ -59,23 +59,68 @@ class BirdDetector:
             ) from exc
         log.info("Detector ready on %s (bird class index %d).", device, self.bird_index)
 
+    def _resized(self, image: Image.Image) -> tuple[Image.Image, float]:
+        """Shrink to the size the model would resize to anyway. Returns (image, scale).
+
+        This matters far more than it looks. torchvision's detection transform normalizes
+        the image tensor at its ORIGINAL resolution and only then resizes — so handing it a
+        1920x1080 frame allocates ~24 MB per frame for the input, doubles it in normalize,
+        and does it for every frame in the batch, all to produce a 569x320 tensor. On a 4 GB
+        card shared with other workloads that is the difference between working and OOM.
+
+        Doing the resize first costs nothing in accuracy: the model was going to perform
+        exactly this scaling internally. Boxes come back in resized coordinates and are
+        scaled up by the caller.
+        """
+        min_size = self.model.transform.min_size[0]
+        max_size = self.model.transform.max_size
+        w, h = image.size
+        scale = min(min_size / min(w, h), max_size / max(w, h))
+        if scale >= 1.0:
+            return image, 1.0
+        return image.resize((max(1, round(w * scale)), max(1, round(h * scale))),
+                            Image.BILINEAR), scale
+
     @torch.inference_mode()
-    def detect(self, images: list[Image.Image]) -> list[list[Detection]]:
-        """Bird boxes per input image, ordered best-scoring first."""
+    def detect(self, images: list[Image.Image], batch_size: int = 2) -> list[list[Detection]]:
+        """Bird boxes per input image, in ORIGINAL image coordinates, best-scoring first.
+
+        Chunked rather than one big batch: the whole candidate set at once was the other
+        half of the memory problem, and the detector is fast enough that sequential costs
+        milliseconds.
+        """
         if not images:
             return []
-        batch = [self._preprocess(img).to(self.device) for img in images]
-        outputs = self.model(batch)
 
         results: list[list[Detection]] = []
-        for output in outputs:
-            keep = (output["labels"] == self.bird_index) & (output["scores"] >= self.threshold)
-            boxes = output["boxes"][keep].tolist()
-            scores = output["scores"][keep].tolist()
-            found = [
-                Detection(box=(b[0], b[1], b[2], b[3]), score=float(s))
-                for b, s in zip(boxes, scores)
-            ]
-            found.sort(key=lambda d: d.score, reverse=True)
-            results.append(found)
+        for start in range(0, len(images), max(1, batch_size)):
+            chunk = images[start:start + max(1, batch_size)]
+            prepared = [self._resized(img) for img in chunk]
+            batch = [self._preprocess(img).to(self.device) for img, _ in prepared]
+            try:
+                outputs = self.model(batch)
+            finally:
+                del batch
+            results.extend(
+                self._extract(output, scale) for output, (_, scale) in zip(outputs, prepared)
+            )
+            del outputs
+            if self.device.type == "cuda":
+                # Hand the block back between chunks. The card is likely shared, and
+                # holding a chunk's activations while decoding the next one is exactly the
+                # peak we are trying to avoid.
+                torch.cuda.empty_cache()
         return results
+
+    def _extract(self, output: dict, scale: float) -> list[Detection]:
+        keep = (output["labels"] == self.bird_index) & (output["scores"] >= self.threshold)
+        # Undo the pre-resize so boxes address the full-resolution frame the caller crops.
+        inv = 1.0 / scale if scale else 1.0
+        boxes = (output["boxes"][keep] * inv).tolist()
+        scores = output["scores"][keep].tolist()
+        found = [
+            Detection(box=(b[0], b[1], b[2], b[3]), score=float(s))
+            for b, s in zip(boxes, scores)
+        ]
+        found.sort(key=lambda d: d.score, reverse=True)
+        return found

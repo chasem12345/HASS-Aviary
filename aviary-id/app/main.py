@@ -75,7 +75,7 @@ class FrameOut(BaseModel):
 
 
 class IdentifyResponse(BaseModel):
-    status: str  # ok | no_media | no_bird | not_ready
+    status: str  # ok | no_media | no_bird | not_ready | out_of_memory | error
     common_name: Optional[str] = None
     scientific_name: Optional[str] = None
     species_code: Optional[str] = None
@@ -160,13 +160,37 @@ async def _identify_images(
     async with _gpu_lock:
         # to_thread because torch inference is blocking C code — without it a long
         # classification would stall /healthz and every other request on the loop.
-        detections = await asyncio.to_thread(
-            _detector.detect, [c.image for c in candidates]
-        )
-        crops, det_scores, origins, localized = _select_crops(candidates, detections)
-        result = await asyncio.to_thread(
-            _run_inference, crops, det_scores, origins, priors, exclude
-        )
+        try:
+            detections = await asyncio.to_thread(
+                _detector.detect, [c.image for c in candidates], settings.detector_batch
+            )
+            crops, det_scores, origins, localized = _select_crops(candidates, detections)
+            del detections
+            # Hand the detector's activations back before loading the classifier's. Both
+            # peaks landing at once is what exhausts a small, shared card.
+            _release_vram()
+            result = await asyncio.to_thread(
+                _run_inference, crops, det_scores, origins, priors, exclude
+            )
+        except torch.cuda.OutOfMemoryError:
+            # Never let this surface as a 500. Aviary can only record that as a generic
+            # failure, and the actual cause — a full GPU — is the one thing worth saying
+            # out loud, because it is usually another process on the same card.
+            _release_vram()
+            log.error(
+                "Out of GPU memory. %s. Another process on this GPU is the usual cause; "
+                "otherwise lower DETECTOR_BATCH/CLASSIFY_FRAMES, set DETECTOR_CPU=1, or "
+                "use a smaller MODEL_NAME.",
+                _classifier.memory_summary(),
+            )
+            return IdentifyResponse(status="out_of_memory", elapsed_ms=_ms(started))
+        except RuntimeError as exc:
+            # cuDNN failures on a full card arrive as a plain RuntimeError rather than
+            # OutOfMemoryError (CUDNN_STATUS_INTERNAL_ERROR is the usual one), so they
+            # need the same treatment or they become a 500 too.
+            _release_vram()
+            log.error("Inference failed: %s. %s", exc, _classifier.memory_summary())
+            return IdentifyResponse(status="error", elapsed_ms=_ms(started))
 
     if result is None:
         return IdentifyResponse(status="no_bird", elapsed_ms=_ms(started))
@@ -187,6 +211,12 @@ async def _identify_images(
         model_version=_classifier.model_version,
         elapsed_ms=_ms(started),
     )
+
+
+def _release_vram() -> None:
+    """Return cached blocks to the driver so other processes on this GPU can use them."""
+    if _classifier is not None and _classifier.device.type == "cuda":
+        torch.cuda.empty_cache()
 
 
 def _ms(started: float) -> int:
@@ -212,7 +242,11 @@ async def lifespan(_: FastAPI):
     def build():
         classifier = Classifier(settings)
         classifier.set_species(species)
-        return classifier, BirdDetector(classifier.device, settings.detector_threshold)
+        import torch as _t
+        det_device = _t.device("cpu") if settings.detector_cpu else classifier.device
+        detector = BirdDetector(det_device, settings.detector_threshold)
+        log.info("Startup complete. %s", classifier.memory_summary())
+        return classifier, detector
 
     # Blocking: weights load plus (on a cold cache) tens of thousands of text encodes.
     # Off the loop so /healthz answers "ok: false" during startup instead of hanging,
@@ -233,7 +267,7 @@ async def lifespan(_: FastAPI):
             await _client.aclose()
 
 
-app = FastAPI(title="aviary-id", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="aviary-id", version="0.2.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -253,6 +287,7 @@ async def healthz() -> dict:
         "species_count": len(_classifier.species) if _classifier else 0,
         "species_source": _species_source,
         "frigate_url": settings.frigate_url or None,
+        **(_classifier.memory() if _classifier else {}),
     }
 
 

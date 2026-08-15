@@ -36,6 +36,18 @@ services:
       # EXTRA_SPECIES: "Painted Bunting,Bobolink"
       # EXCLUDE_SPECIES: "Rock Pigeon"
       # CPU_ONLY: "1"                 # skip the GPU entirely (~5s/event, useful for tests)
+
+      # --- if the GPU is shared and you hit out-of-memory ------------------------
+      # Check `nvidia-smi` first — this container needs roughly 1.3 GB free, and the
+      # error message names every process holding memory on the card. Then, in
+      # escalating order of what you give up:
+      # DETECTOR_BATCH: "1"           # fewer frames through the detector at once
+      # DETECTOR_CPU: "1"             # detector on CPU, classifier stays on the GPU
+      # CLASSIFY_FRAMES: "2"          # fewer crops per event
+      # SAMPLE_FRAMES: "5"            # fewer frames decoded from the clip
+      # MODEL_NAME: "hf-hub:imageomics/bioclip"   # ViT-B/16: ~4x smaller than bioclip-2,
+      #                                           # less accurate, still far better than
+      #                                           # Frigate's built-in classifier
       LOG_LEVEL: "info"
       TZ: "America/Denver"
 

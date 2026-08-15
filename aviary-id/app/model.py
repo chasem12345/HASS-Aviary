@@ -115,6 +115,38 @@ class Classifier:
     def model_version(self) -> str:
         return f"{self.settings.model_name}@{self.vocab_digest}"
 
+    def _free_text_tower(self) -> None:
+        """Drop the text encoder once the species embeddings exist.
+
+        Worth roughly 495 MB on ViT-L/14 in FP32 (~124M of the model's ~428M parameters),
+        and it is pure dead weight: the vocabulary is fixed at startup, so after
+        ``set_species`` nothing ever calls ``encode_text`` again. Changing the species list
+        requires a restart regardless, which rebuilds the model.
+
+        On a 4 GB card that is shared with other workloads this is the difference between
+        fitting and not. Defensive throughout — open_clip exposes the text tower
+        differently across model classes (CLIP vs CustomTextCLIP), and failing to free it
+        costs memory but must never cost correctness.
+        """
+        freed = False
+        try:
+            # CustomTextCLIP keeps the whole tower in one submodule.
+            if hasattr(self.model, "text"):
+                del self.model.text
+                freed = True
+            else:
+                for attr in ("transformer", "token_embedding", "ln_final",
+                             "positional_embedding", "text_projection", "attn_mask"):
+                    if hasattr(self.model, attr):
+                        delattr(self.model, attr)
+                        freed = True
+        except (AttributeError, TypeError) as exc:
+            log.debug("Could not free the text tower (harmless, just uses more VRAM): %s", exc)
+            return
+        if freed and self.device.type == "cuda":
+            torch.cuda.empty_cache()
+            log.info("Released the text encoder; %s", self.memory_summary())
+
     def set_species(self, species: list[Species]) -> None:
         self.species = species
         self.vocab_digest = self._digest(species)
@@ -125,6 +157,7 @@ class Classifier:
                 if features.shape[0] == len(species):
                     self._text_features = torch.from_numpy(features).to(self.device)
                     log.info("Loaded cached text embeddings for %d species.", len(species))
+                    self._free_text_tower()
                     return
                 log.warning("Cached text embeddings had %d rows, expected %d; recomputing.",
                             features.shape[0], len(species))
@@ -146,6 +179,8 @@ class Classifier:
             np.save(path, features.cpu().numpy())
         except OSError as exc:
             log.warning("Could not cache text embeddings: %s", exc)
+
+        self._free_text_tower()
 
     @torch.inference_mode()
     def _encode_species(self, species: list[Species]) -> torch.Tensor:
@@ -316,3 +351,34 @@ class Classifier:
         if self.device.type == "cuda":
             return torch.cuda.get_device_name(self.device)
         return "cpu"
+
+    def memory(self) -> dict:
+        """VRAM facts, including what OTHER processes are holding.
+
+        ``mem_get_info`` reports the driver's view of the whole device, not just this
+        process — which is the number that actually matters on a card shared with
+        transcoders or another detector. torch's own counters can look perfectly healthy
+        while the device is full.
+        """
+        if self.device.type != "cuda":
+            return {}
+        try:
+            free, total = torch.cuda.mem_get_info(self.device)
+        except (RuntimeError, AssertionError):
+            return {}
+        ours = torch.cuda.memory_reserved(self.device)
+        return {
+            "vram_total_mb": round(total / 1048576),
+            "vram_free_mb": round(free / 1048576),
+            "vram_ours_mb": round(ours / 1048576),
+            # total - free - ours. Anything here is another process on the same GPU, and
+            # it is the first thing to check when identification starts failing.
+            "vram_other_mb": max(0, round((total - free - ours) / 1048576)),
+        }
+
+    def memory_summary(self) -> str:
+        m = self.memory()
+        if not m:
+            return "VRAM: n/a"
+        return (f"VRAM {m['vram_free_mb']} MB free of {m['vram_total_mb']} MB "
+                f"(ours {m['vram_ours_mb']} MB, other processes {m['vram_other_mb']} MB)")

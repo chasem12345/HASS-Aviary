@@ -15,6 +15,12 @@
 - The identification actions moved to their own row on the card. They had been sharing the
   line with the camera name, timestamp, **⤢ scrub / still** and **⬇ video** — six items in a
   no-wrap flex row on cards that narrow to 260px, which squashed the video controls.
+- **Fixed: the startup backfill walked Frigate's entire history for nothing.** It paged
+  on event count rather than on whether anything was imported, so with Frigate's own
+  classifier off — where every historical event is unclassified and therefore dropped — it
+  would request up to 500 pages of events on every single start and store none of them. It
+  now stops after three consecutive pages that import nothing, while still walking a
+  genuinely importable history to the end.
 - Added `identify_exclude_blacklisted` (default on): blacklisted species are ruled out of
   the identifier's candidate list, so a bird that would have been misread as one gets its
   correct name instead of being discarded. Turn it off if you blacklisted a species that

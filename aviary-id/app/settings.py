@@ -59,6 +59,12 @@ class Settings:
     # machine without the GPU — ~5s/event instead of ~0.3s, which is fine for this
     # workload.
     cpu_only: bool = False
+    # Run the bird detector on the CPU while the classifier stays on the GPU. The detector
+    # is small and its activations are the spikiest part of the pipeline, so on a card
+    # shared with other workloads this buys headroom for a few hundred ms per event.
+    detector_cpu: bool = False
+    # Frames handed to the detector at once. Lower means a lower peak.
+    detector_batch: int = 2
 
     # --- frame extraction ---------------------------------------------------------
     # Frames pulled from the clip before filtering. Oversample: Frigate clips include
@@ -114,6 +120,8 @@ def load_settings() -> Settings:
         model_name=os.environ.get("MODEL_NAME", "hf-hub:imageomics/bioclip-2"),
         cache_dir=os.environ.get("CACHE_DIR", "/models"),
         cpu_only=_as_bool(os.environ.get("CPU_ONLY", "")),
+        detector_cpu=_as_bool(os.environ.get("DETECTOR_CPU", "")),
+        detector_batch=_as_int("DETECTOR_BATCH", 2),
         sample_frames=_as_int("SAMPLE_FRAMES", 8),
         classify_frames=_as_int("CLASSIFY_FRAMES", 3),
         detector_threshold=_as_float("DETECTOR_THRESHOLD", 0.5),
