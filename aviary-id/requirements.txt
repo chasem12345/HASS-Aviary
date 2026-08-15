@@ -9,6 +9,10 @@ open_clip_torch==3.3.0
 pillow==11.1.0
 numpy==2.2.1
 python-multipart==0.0.20
+# Supervised bird classifier runtime (TRAINED_CLASSIFIER=aiy, the default). CPU-only.
+# ai-edge-litert is Google's maintained TFLite runtime; the older tflite-runtime
+# package (last built 2023, against numpy 1.x) crashes on import next to numpy 2.
+ai-edge-litert==2.2.0
 # YOLO11n bird localizer (DETECTOR_BACKEND=yolo, the default). AGPL-3.0 — see the README
 # licensing note. Its torch/torchvision requirements are already satisfied by the cu126
 # wheels installed in the Dockerfile, so pip will not touch them. Must be 8.4+: the 8.3

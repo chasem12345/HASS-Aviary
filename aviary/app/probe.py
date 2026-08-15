@@ -180,6 +180,12 @@ def ready() -> bool:
         return bool(_examples or _refs)
 
 
+def model() -> str:
+    """The embedding key the loaded examples belong to. Empty until first rebuild."""
+    with _lock:
+        return _model
+
+
 def stats() -> dict:
     with _lock:
         return {

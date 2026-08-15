@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.16.1
+
+Pairs with aviary-id 0.5.0, which adds a **supervised classifier as the primary
+identifier** — the same trained iNaturalist bird model behind Frigate's native
+classification — so common species are right on day one with zero confirmations.
+Zero-shot BioCLIP stays as coverage for species outside its training set and as the
+engine behind the correction/learning layer. Update the GPU container together with
+this add-on.
+
+Add-on-side fix: **the probe now survives startup ordering.** Previously the add-on
+checked for the GPU service exactly once, 15 seconds after start; if the container was
+still coming up (rebuilds and cold caches take minutes), the entire learning layer
+silently stayed off until the next add-on restart. The startup task now waits for the
+service, and each identification self-heals an empty or stale probe inline — "builds on
+first use" is finally literal.
+
 ## 0.16.0
 
 Learning-pipeline overhaul: this release fixes three ways your labels were silently

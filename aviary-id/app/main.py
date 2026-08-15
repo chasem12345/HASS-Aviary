@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from . import frames
 from .detector import make_detector
 from .model import Classifier
+from .trained import make_trained
 from .pipeline import Pipeline
 from .settings import Settings, load_settings
 from .species import load_species
@@ -119,6 +120,9 @@ class IdentifyResponse(BaseModel):
     # None when fewer than two frames could vote — the caller must treat "no data" and
     # "frames disagreed" differently.
     consensus: Optional[dict] = None
+    # Whether the supervised (trained) classifier contributed to this answer. False
+    # means zero-shot only: TRAINED_CLASSIFIER=none, or no regional species mapped.
+    trained: bool = False
     embedding: Optional[str] = None
     model_version: Optional[str] = None
     # What the embedding is keyed by: the model name alone. Image embeddings survive
@@ -171,6 +175,12 @@ async def lifespan(_: FastAPI):
     def build():
         classifier = Classifier(settings)
         classifier.set_species(species)
+        # The supervised primary (CPU, no VRAM). Built after the vocabulary exists so
+        # its label mapping is over the same regional species list.
+        trained = make_trained(settings)
+        if trained is not None:
+            trained.set_species(species)
+            classifier.trained = trained
         import torch as _t
         det_device = _t.device("cpu") if settings.detector_cpu else classifier.device
         detector = make_detector(det_device, settings)
@@ -197,7 +207,7 @@ async def lifespan(_: FastAPI):
             await _client.aclose()
 
 
-app = FastAPI(title="aviary-id", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="aviary-id", version="0.5.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -215,6 +225,11 @@ async def healthz() -> dict:
         "model": settings.model_name,
         "model_version": _classifier.model_version if _classifier else None,
         "embedding_key": _classifier.embedding_key if _classifier else None,
+        "trained_classifier": settings.trained_classifier,
+        # How many regional species the supervised model actually covers; the rest are
+        # zero-shot only. 0 with TRAINED_CLASSIFIER=aiy means the label mapping failed.
+        "trained_coverage": (_classifier.trained.coverage
+                             if _classifier and _classifier.trained else 0),
         "species_count": len(_classifier.species) if _classifier else 0,
         "species_source": _species_source,
         "frigate_url": settings.frigate_url or None,
@@ -327,6 +342,7 @@ async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
         excluded=result.excluded,
         per_frame=[FrameOut(**vars(f)) for f in result.per_frame],
         consensus=result.consensus,
+        trained=result.trained,
         embedding=result.embedding,
         model_version=_classifier.model_version,
         embedding_key=_classifier.embedding_key,

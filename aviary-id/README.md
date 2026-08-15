@@ -104,10 +104,29 @@ curl -s localhost:8100/healthz | python3 -m json.tool
   "device": "Quadro P1000",
   "model_version": "hf-hub:imageomics/bioclip-2/common@a1b2c3d4e5f60718",
   "embedding_key": "hf-hub:imageomics/bioclip-2",
+  "trained_classifier": "aiy",
+  "trained_coverage": 297,
   "species_count": 312,
   "species_source": "eBird US-CO-013"
 }
 ```
+
+`trained_coverage` is how many of the regional species the supervised model was trained
+on; the rest are identified zero-shot only. `0` with `trained_classifier: "aiy"` means
+the label mapping failed and is worth investigating.
+
+## How identification is layered
+
+1. **Supervised primary** — the AIY iNaturalist bird classifier (965 species, the same
+   network behind Frigate's native bird classification). Trained on labelled photos, so
+   it knows what a female cardinal looks like on day one. Masked to the regional list;
+   carries `TRAINED_WEIGHT` of each frame's probability mix.
+2. **Zero-shot coverage** — BioCLIP scores every regional species from its name, which
+   is what identifies species the trained model has never seen, and contributes the
+   remaining share everywhere else.
+3. **Your corrections** (in the Aviary add-on) — BioCLIP's image embedding is matched
+   against detections you have confirmed, refining answers toward *your* birds. This
+   layer is optional polish; it is never required for common species.
 
 ## Configuration
 
@@ -115,6 +134,8 @@ All configuration is environment variables.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `TRAINED_CLASSIFIER` | `aiy` | Supervised primary classifier: `aiy` (Google's iNaturalist bird MobileNet — the model behind Frigate's native classification; CPU, ~5 ms/frame, no VRAM) or `none` (zero-shot only, for A/B measurement). |
+| `TRAINED_WEIGHT` | `0.75` | The supervised model's share of the probability mix for species it was trained on. The rest is BioCLIP zero-shot, which alone covers species outside the trained set. |
 | `FRIGATE_URL` | — | Frigate base URL. Requests may override it per-call. |
 | `FRIGATE_HEADERS` | — | Extra headers for Frigate calls, `"Name: value, Name2: value2"`. Values may not contain a comma. |
 | `AVIARY_ID_TOKEN` | — | Shared secret, checked as `Authorization: Bearer …`. Blank disables auth. |
@@ -183,6 +204,7 @@ curl -s -X POST localhost:8100/identify \
      "top1_score": 0.78, "top2": "Mountain Chickadee", "top2_score": 0.11}
   ],
   "consensus": {"votes": 3, "supporting": 3, "fraction": 1.0, "agreed": true, "score": 0.74},
+  "trained": true,
   "elapsed_ms": 1840
 }
 ```

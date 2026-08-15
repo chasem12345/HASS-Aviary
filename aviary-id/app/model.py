@@ -86,6 +86,8 @@ class ClassifyResult:
     # None when fewer than two frames were eligible to vote — one frame has no one to
     # agree with, and "no consensus data" must stay distinct from "frames disagreed".
     consensus: Optional[dict] = None
+    # Whether the supervised (trained) classifier contributed to this answer.
+    trained: bool = False
 
 
 class Classifier:
@@ -118,6 +120,11 @@ class Classifier:
         )
 
         self.species: list[Species] = []
+        # Optional supervised collaborator (trained.TrainedClassifier), attached at
+        # startup. When present, its per-frame distribution carries TRAINED_WEIGHT of
+        # the probability mix for every species it was trained on; this zero-shot model
+        # alone speaks for the rest, and always supplies the embedding.
+        self.trained = None
         self._text_features: Optional[torch.Tensor] = None
         # Identifies the (model, vocabulary) pair that produced a result. Stored by
         # Aviary alongside each detection so that after a model or region change you can
@@ -316,6 +323,23 @@ class Classifier:
 
         probs = logits.softmax(dim=-1)  # [frames, species]
 
+        # Mix in the supervised classifier — the model that was actually TRAINED on
+        # these species — as the primary vote. Its rows are not renormalized (mass on
+        # background or non-regional species is simply missing), so a frame it is
+        # unsure about naturally defers to the zero-shot side rather than having its
+        # noise inflated. Renormalizing the mixture restores a proper distribution.
+        trained_used = False
+        if self.trained is not None:
+            mix = self.trained.frame_probs(crops)
+            if mix is not None:
+                supervised = torch.from_numpy(mix).to(probs.device, probs.dtype)
+                if excluded and len(excluded) < len(self.species):
+                    supervised[:, excluded] = 0.0
+                w = self.settings.trained_weight
+                probs = w * supervised + (1.0 - w) * probs
+                probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-9)
+                trained_used = True
+
         if priors:
             probs = self._apply_priors(probs, priors)
 
@@ -349,6 +373,7 @@ class Classifier:
             embedding=self._encode_embedding(image_features, probs, best_idx),
             excluded=len(excluded),
             consensus=self._consensus(probs, det_scores, origins, best_idx),
+            trained=trained_used,
         )
 
     def _apply_priors(self, probs: torch.Tensor, priors: dict[str, float]) -> torch.Tensor:

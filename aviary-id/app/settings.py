@@ -51,6 +51,15 @@ class Settings:
     auth_token: str = ""
 
     # --- model --------------------------------------------------------------------
+    # Supervised classifier that carries the primary vote: "aiy" (Google's iNaturalist
+    # bird MobileNet — the model behind Frigate's native classification; CPU, ~5ms) or
+    # "none" for zero-shot only. Zero-shot alone is measurably worse on common regional
+    # birds; "none" exists for A/B measurement, not as a recommendation.
+    trained_classifier: str = "aiy"
+    # The supervised model's share of the per-frame probability mix, for species it was
+    # trained on. The remainder is BioCLIP zero-shot, which alone covers species the
+    # trained model has never seen.
+    trained_weight: float = 0.75
     model_name: str = "hf-hub:imageomics/bioclip-2"
     # Where model weights, the species list, and the text-embedding cache live. Mount
     # this as a volume so a container rebuild doesn't re-download ~2 GB.
@@ -141,6 +150,8 @@ def load_settings() -> Settings:
         frigate_url=os.environ.get("FRIGATE_URL", "").rstrip("/"),
         frigate_headers=_frigate_headers(),
         auth_token=os.environ.get("AVIARY_ID_TOKEN", "").strip(),
+        trained_classifier=os.environ.get("TRAINED_CLASSIFIER", "aiy").strip().lower(),
+        trained_weight=min(1.0, max(0.0, _as_float("TRAINED_WEIGHT", 0.75))),
         model_name=os.environ.get("MODEL_NAME", "hf-hub:imageomics/bioclip-2"),
         cache_dir=os.environ.get("CACHE_DIR", "/models"),
         cpu_only=_as_bool(os.environ.get("CPU_ONLY", "")),

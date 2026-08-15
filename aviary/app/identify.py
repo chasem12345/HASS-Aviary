@@ -50,6 +50,11 @@ _QUEUE_MAX = 200
 # species with every frame voting the same way is a confident answer, not a doubtful one.
 _CONSENSUS_RESCUE = 0.5
 
+# Minimum seconds between self-heal probe rebuilds, so a database with nothing to load
+# (fresh install) costs two SELECTs a minute, not two per event.
+_PROBE_HEAL_INTERVAL = 60.0
+_probe_heal_at = 0.0
+
 _settings: Optional[Settings] = None
 _client: Optional[httpx.AsyncClient] = None
 _queue: Optional[asyncio.Queue] = None
@@ -224,6 +229,27 @@ async def _exclusions(row: dict[str, Any]) -> list[str]:
     return names
 
 
+async def _ensure_probe(embed_key: str) -> None:
+    """Rebuild the probe inline when it is empty or loaded for a different model.
+
+    This is what makes "the probe builds on first use" actually true. The startup
+    maintenance task can miss the service (it may take minutes to come up), and the
+    service can be redeployed with a different model while the add-on keeps running —
+    in both cases the probe would otherwise silently abstain on every event until the
+    next add-on restart. A rebuild is a DB read plus numpy stacking (sub-second at this
+    scale), so doing it inline means the CURRENT event already benefits. Throttled so a
+    fresh install with nothing to load doesn't rebuild on every single event.
+    """
+    global _probe_heal_at
+    if not embed_key or (probe.ready() and probe.model() == embed_key):
+        return
+    now = time.monotonic()
+    if now - _probe_heal_at < _PROBE_HEAL_INTERVAL:
+        return
+    _probe_heal_at = now
+    await asyncio.to_thread(probe.rebuild, embed_key)
+
+
 async def _process(row: dict[str, Any]) -> None:
     ref = row["source_ref"]
     priors = await _audio_priors(row)
@@ -268,6 +294,7 @@ async def _process(row: dict[str, Any]) -> None:
     # Fold in what we have learned from confirmed birds of our own. Applied before the
     # thresholds, not after: the probe exists to rescue exactly the results that would
     # otherwise be rejected, so gating first would throw away the cases it is for.
+    await _ensure_probe(embed_key)
     probe_examples: Optional[int] = None
     probe_weight: Optional[float] = None
     blended = probe.blend(embedding or "", slim_candidates, embed_key,

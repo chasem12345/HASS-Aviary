@@ -94,10 +94,24 @@ async def _identify_maintenance(settings) -> None:
     # Build the few-shot probe from whatever labels already exist. The embedding key has
     # to come from the service, because an embedding is only comparable with others from
     # the same model — and only the service knows what it is running.
+    #
+    # Poll rather than probe once: the GPU service legitimately takes minutes to come up
+    # (container rebuild, cold model cache, boot ordering across two machines), and a
+    # one-shot check here used to silently cost the whole learning layer until the next
+    # add-on restart. Frequent at first — the common case is a service seconds away —
+    # then relaxed; indefinite, because this task dies with the app anyway and a probe
+    # that eventually loads is strictly better than one that never does.
     model = await identify.probe_model()
+    waited = 0
     if not model:
-        log.info("Identification service not reachable yet; probe will build on first use.")
-        return
+        log.info("Identification service not reachable yet; waiting for it to come up.")
+    while not model:
+        delay = 30 if waited < 600 else 300
+        await asyncio.sleep(delay)
+        waited += delay
+        model = await identify.probe_model()
+    if waited:
+        log.info("Identification service is up (waited %ds); building the probe.", waited)
     await asyncio.to_thread(probe.rebuild, model)
     # Fill in any missing reference embeddings in the background. Idempotent, so this is a
     # no-op once the registry has been covered.
