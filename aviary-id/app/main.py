@@ -73,6 +73,13 @@ class IdentifyRequest(BaseModel):
     min_margin: float = 0.08
 
 
+class SpeciesGuess(BaseModel):
+    common_name: str
+    scientific_name: Optional[str] = None
+    species_code: Optional[str] = None
+    score: float
+
+
 class FrameOut(BaseModel):
     origin: str
     det_score: float
@@ -94,10 +101,14 @@ class IdentifyResponse(BaseModel):
     # the result is usable but materially less trustworthy, and the caller should know.
     localized: bool = True
     frames_used: int = 0
-    # Candidates gathered before localization, and how many classification rounds it
-    # took. rounds > 1 means the answer was uncertain and the service looked harder.
-    candidates: int = 0
+    # Images gathered before localization, and how many classification rounds it took.
+    # rounds > 1 means the answer was uncertain and the service looked harder.
+    images: int = 0
     rounds: int = 0
+    # The best few species considered, best first. Populated even when the top answer is
+    # below the caller's thresholds — that is exactly when it is worth showing, because it
+    # tells the user the model tried and often has the right bird at number two.
+    candidates: list[SpeciesGuess] = Field(default_factory=list)
     # Per-stage wall-clock in ms, so a slow event says WHICH stage was slow.
     timings: dict = Field(default_factory=dict)
     # How many species were ruled out for this call (rejected answers, or species the
@@ -241,7 +252,7 @@ async def identify(req: IdentifyRequest) -> IdentifyResponse:
         "identify %s -> %s %s (score=%s margin=%s, %d/%d frames, %d round(s), "
         "localized=%s, %dms) [%s]",
         req.event_id, response.status, response.common_name or "-",
-        response.score, response.margin, response.frames_used, response.candidates,
+        response.score, response.margin, response.frames_used, response.images,
         response.rounds, response.localized, response.elapsed_ms, timings.summary(),
     )
     return response
@@ -267,7 +278,7 @@ async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
                 _classifier.memory_summary(),
             )
             return IdentifyResponse(status="out_of_memory", elapsed_ms=_ms(started),
-                                    candidates=len(media.candidates), timings=timings.stages)
+                                    images=len(media.candidates), timings=timings.stages)
         except RuntimeError as exc:
             # cuDNN failures on a full card arrive as a plain RuntimeError rather than
             # OutOfMemoryError (CUDNN_STATUS_INTERNAL_ERROR is the usual one), so they need
@@ -275,7 +286,7 @@ async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
             _release_vram()
             log.error("Inference failed: %s. %s", exc, _classifier.memory_summary())
             return IdentifyResponse(status="error", elapsed_ms=_ms(started),
-                                    candidates=len(media.candidates), timings=timings.stages)
+                                    images=len(media.candidates), timings=timings.stages)
 
     if not media.candidates:
         return IdentifyResponse(status="no_media", elapsed_ms=_ms(started),
@@ -286,7 +297,7 @@ async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
         # 1080p frame that leaves a feeder-distance bird about ten pixels across, and it
         # only ever produced confidently-wrong answers the caller then rejected anyway.
         return IdentifyResponse(status="no_bird", elapsed_ms=_ms(started),
-                                candidates=len(media.candidates), timings=timings.stages)
+                                images=len(media.candidates), timings=timings.stages)
 
     return IdentifyResponse(
         status="ok",
@@ -298,8 +309,13 @@ async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
         runner_up=result.runner_up.com_name if result.runner_up else None,
         localized=True,
         frames_used=len(crops),
-        candidates=len(media.candidates),
+        images=len(media.candidates),
         rounds=rounds,
+        candidates=[
+            SpeciesGuess(common_name=sp.com_name, scientific_name=sp.sci_name,
+                         species_code=sp.species_code, score=round(score, 4))
+            for sp, score in result.candidates
+        ],
         excluded=result.excluded,
         per_frame=[FrameOut(**vars(f)) for f in result.per_frame],
         embedding=result.embedding,

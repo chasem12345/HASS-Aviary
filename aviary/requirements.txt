@@ -3,3 +3,5 @@ uvicorn[standard]==0.34.0
 paho-mqtt==2.1.0
 jinja2==3.1.4
 httpx==0.28.1
+# Centroid maths for the few-shot probe (app/probe.py). Nothing else needs it.
+numpy==2.2.1

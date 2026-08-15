@@ -36,6 +36,10 @@ log = logging.getLogger("aviary_id.model")
 # tower, large enough that 32k prompts don't take all day.
 _TEXT_BATCH = 256
 
+# How many species to report back. Enough to be useful when the top answer is wrong,
+# short enough to be a glance rather than a list to read.
+_TOP_N = 5
+
 
 @dataclass
 class FrameResult:
@@ -53,6 +57,9 @@ class ClassifyResult:
     score: float
     margin: float
     runner_up: Optional[Species]
+    # Best few species with their fused probabilities, best first. Surfaced to the user
+    # when nothing clears the threshold so they can pick the right one by hand.
+    candidates: list
     per_frame: list[FrameResult]
     embedding: str  # base64 float16 of the best crop's image embedding
     excluded: int = 0  # how many species were ruled out for this call
@@ -113,7 +120,10 @@ class Classifier:
 
     @property
     def model_version(self) -> str:
-        return f"{self.settings.model_name}@{self.vocab_digest}"
+        # The label format is part of the identity: the same model and species list under a
+        # different format is a different classifier, and results are not comparable.
+        return (f"{self.settings.model_name}"
+                f"/{self.settings.label_format}@{self.vocab_digest}")
 
     def _free_text_tower(self) -> None:
         """Drop the text encoder once the species embeddings exist.
@@ -165,9 +175,11 @@ class Classifier:
                 log.warning("Could not load text embedding cache: %s", exc)
 
         log.info(
-            "Encoding %d species x %d prompt templates. This takes a minute or two on "
-            "first run and is then cached to %s.",
-            len(species), len(OPENAI_IMAGENET_TEMPLATES), self.settings.cache_dir,
+            "Encoding %d species x %d prompt template(s), label format %r. This takes a "
+            "minute or two on first run and is then cached to %s.",
+            len(species),
+            len(OPENAI_IMAGENET_TEMPLATES) if self.settings.prompt_ensemble else 1,
+            self.settings.label_format, self.settings.cache_dir,
         )
         started = time.monotonic()
         features = self._encode_species(species)
@@ -191,9 +203,12 @@ class Classifier:
         into the model to find it is exactly the sort of thing that breaks on an
         open_clip upgrade.
         """
+        fmt = self.settings.label_format
+        templates = (OPENAI_IMAGENET_TEMPLATES if self.settings.prompt_ensemble
+                     else ("a photo of a {}.",))
         rows: list[torch.Tensor] = []
         for i, sp in enumerate(species):
-            prompts = [t.format(sp.label) for t in OPENAI_IMAGENET_TEMPLATES]
+            prompts = [t.format(sp.label(fmt)) for t in templates]
             chunks = []
             for start in range(0, len(prompts), _TEXT_BATCH):
                 tokens = self.tokenizer(prompts[start:start + _TEXT_BATCH]).to(self.device)
@@ -271,7 +286,10 @@ class Classifier:
         )
         fused = (probs * weights.unsqueeze(1)).sum(dim=0)
 
-        top = torch.topk(fused, k=min(2, len(self.species)))
+        # Keep a short list, not just the winner. When the answer lands below the caller's
+        # thresholds, "here is what it considered" is far more useful than "it failed" —
+        # it shows the model tried, and the right bird is often sitting at number two.
+        top = torch.topk(fused, k=min(_TOP_N, len(self.species)))
         best_idx = int(top.indices[0])
         best_score = float(top.values[0])
         runner_up = self.species[int(top.indices[1])] if len(top.indices) > 1 else None
@@ -282,6 +300,10 @@ class Classifier:
             score=best_score,
             margin=best_score - second_score,
             runner_up=runner_up,
+            candidates=[
+                (self.species[int(i)], float(v))
+                for i, v in zip(top.indices.tolist(), top.values.tolist())
+            ],
             per_frame=self._per_frame(probs, det_scores, origins),
             embedding=self._encode_embedding(image_features, probs, best_idx),
             excluded=len(excluded),

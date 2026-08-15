@@ -10,8 +10,8 @@ from fastapi import APIRouter, Query, Request
 from fastapi.concurrency import run_in_threadpool
 
 from .. import (
-    db, identify, ingest, notify, proxy, species_audio, species_info, species_photos,
-    traits,
+    bootstrap, db, identify, ingest, notify, probe, proxy, species_audio, species_info,
+    species_photos, traits,
 )
 from . import ingress_url, set_theme
 
@@ -238,6 +238,96 @@ async def reidentify(
     }
 
 
+@router.post("/detections/{det_id}/species")
+async def set_species(det_id: int, species: str = Query(..., min_length=1),
+                      scientific: Optional[str] = Query(None)):
+    """Name a detection by hand.
+
+    The last word when identification cannot get there: the user picks one of the model's
+    own candidates, or types the species themselves. Also the answer to "it failed and I
+    can see perfectly well what it is".
+    """
+    det = await run_in_threadpool(db.detection_by_id, det_id)
+    if det is None:
+        return {"ok": False, "error": "detection not found"}
+
+    name = species.strip()
+    if not name or name.lower() == db.UNNAMED:
+        return {"ok": False, "error": "that is not a species name"}
+    if await run_in_threadpool(db.is_blacklisted_name, name):
+        return {"ok": False, "error": f"{name} is blacklisted; remove it from the "
+                                      f"blacklist first"}
+
+    # Fill in the scientific name from anything already known about the species, so a
+    # manually-named detection is as complete as an automatic one.
+    sci = (scientific or "").strip() or await run_in_threadpool(db.scientific_name_for, name)
+    updated = await run_in_threadpool(db.set_species_manually, det_id, name, sci)
+    if updated is None:
+        return {"ok": False, "error": "detection not found"}
+
+    # A person naming a species is a stronger signal than any classifier, so it does not
+    # also need to queue for confirmation — that gate exists to stop misclassifications
+    # inflating the registry, which is not what this is.
+    await run_in_threadpool(db.confirm_species, name)
+    await _refresh_probe()
+    previous = det.get("common_name")
+    if previous and previous != name:
+        await run_in_threadpool(_forget_if_gone, previous)
+    return {"ok": True, "common_name": name, "scientific_name": sci}
+
+
+@router.get("/identify-species")
+async def identify_species():
+    """The identification service's candidate species list, for the manual-entry picker.
+
+    Proxied rather than fetched from the browser: the service may not be reachable from
+    wherever the UI is open, and its bearer token must not reach the page.
+    """
+    return await identify.species_list()
+
+
+@router.get("/probe")
+async def probe_stats():
+    """What the few-shot probe has learned so far."""
+    return probe.stats()
+
+
+@router.post("/probe/rebuild")
+async def probe_rebuild(request: Request):
+    """Recompute centroids from confirmed detections. Cheap; safe to call any time."""
+    health = await identify.health()
+    model = health.get("model_version") if health.get("ok") else None
+    if not model:
+        return {"ok": False, "error": "identification service unreachable"}
+    return {"ok": True, **await run_in_threadpool(probe.rebuild, model)}
+
+
+@router.post("/probe/bootstrap")
+async def probe_bootstrap(request: Request):
+    """Embed cached reference photos so brand-new species start with a centroid."""
+    health = await identify.health()
+    model = health.get("model_version") if health.get("ok") else None
+    if not model:
+        return {"ok": False, "error": "identification service unreachable"}
+    bootstrap.start(request.app.state.settings, model)
+    return {"ok": True, "started": True}
+
+
+@router.get("/probe/evaluate")
+async def probe_evaluate():
+    """Leave-one-out accuracy over your own confirmed birds.
+
+    The honest measure of whether the probe helps *here*, rather than on a benchmark. It
+    scores stored embeddings against centroids rebuilt without them, so it touches no
+    clips and is unaffected by changes to the crop pipeline.
+    """
+    health = await identify.health()
+    model = health.get("model_version") if health.get("ok") else None
+    if not model:
+        return {"ok": False, "error": "identification service unreachable"}
+    return {"ok": True, **await run_in_threadpool(probe.evaluate, model)}
+
+
 @router.get("/identify-health")
 async def identify_health():
     """Status of the companion identification service, for the settings page."""
@@ -252,10 +342,27 @@ async def identify_health():
 # and POST /blacklist, which already purge, tombstone, act at the source and forget the
 # species. Confirming is the only genuinely new verb.
 
+async def _refresh_probe() -> None:
+    """Rebuild centroids after the set of confirmed labels changes.
+
+    Confirming a species is what turns its detections into training examples, so the probe
+    should reflect it at once rather than at the next restart. A full rebuild is cheap
+    enough (a few hundred species of 768 floats) that incremental updating would be more
+    code and more ways to go stale.
+    """
+    if not identify.enabled() or not probe.ready():
+        return
+    health = await identify.health()
+    model = health.get("model_version") if health.get("ok") else None
+    if model:
+        await run_in_threadpool(probe.rebuild, model)
+
+
 @router.post("/species-confirm")
 async def confirm_species(species: str = Query(..., min_length=1)):
     """Approve a species into the registry, giving it a dex number and its place in the stats."""
     await run_in_threadpool(db.confirm_species, species)
+    await _refresh_probe()
     return {"ok": True, "species": species, "confirmed": True}
 
 

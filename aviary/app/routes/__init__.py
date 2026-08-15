@@ -13,6 +13,7 @@ header is absent (direct access, or local dev) the prefix is empty and URLs stil
 from __future__ import annotations
 
 import glob
+import json
 import os
 import time
 from datetime import datetime
@@ -174,7 +175,25 @@ def _fmt_conf_class(value) -> str:
 templates.env.filters["fmt_time"] = _fmt_time
 templates.env.filters["fmt_pct"] = _fmt_pct
 templates.env.filters["fmt_rel"] = _fmt_rel
+
+
+def _from_json(value):
+    """Parse a JSON column for the template. Never raises — a bad value renders as nothing.
+
+    Used for the stored identification shortlist. A malformed value should cost the user a
+    row of chips, not a 500 on the whole page.
+    """
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (ValueError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 templates.env.filters["conf_class"] = _fmt_conf_class
+templates.env.filters["from_json"] = _from_json
 
 
 def register_routes(app: FastAPI) -> None:

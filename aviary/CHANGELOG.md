@@ -1,6 +1,48 @@
 # Changelog
 
+## 0.15.0
+
+- **Aviary now learns what your birds look like.** Until now identification was purely
+  zero-shot: an image was compared against the *name* of each species. That is what makes an
+  arbitrary regional species list possible, and it also leaves most of the model's accuracy
+  unused — on the published NABirds benchmark the same frozen embeddings score 74.9%
+  zero-shot and 92.4% once a classifier is trained on them. Every species you confirm now
+  becomes an example the identifier matches against directly, closing that gap with no new
+  model, no new hardware, and no extra inference cost.
+- **It blends rather than replaces, and abstains when unsure.** A species with no examples
+  scores exactly as it did before, so new birds are still found normally. And the match has
+  to be genuinely close, not merely closest — a bird it has never seen does not get assigned
+  to whichever species it happens to sit nearest.
+- **It only learns from labels you stand behind** — confirmed species and manual
+  identifications. Training on its own unreviewed guesses is how a classifier teaches itself
+  its own mistakes.
+- **New species start with examples on day one.** The iNaturalist reference photos Aviary
+  already caches for each species are embedded in the background, so the feature is useful
+  before you have confirmed anything. They count for less than your own frames and are
+  displaced as real detections accumulate.
+- `GET /api/probe/evaluate` reports leave-one-out accuracy over your own confirmed birds —
+  the honest local measure, rather than a benchmark number. It scores stored embeddings
+  against centroids rebuilt without them, so it touches no clips and is unaffected by
+  changes to the crop pipeline.
+- Manually identified detections are marked **by hand** on the card, and the Settings page
+  shows how many species the identifier has learned and from how many examples.
+- Adds `numpy` to the add-on (centroid maths). No configuration to set: the feature turns
+  itself on species by species as examples accumulate.
+
 ## 0.14.2
+
+- **You can now name a bird yourself, and see what the model was weighing up.** When an
+  identification lands below the thresholds, the detection card shows the shortlist it
+  actually considered — species and score, best first. Click one to accept it, or
+  **✎ something else…** to type your own. That turns "it failed" into "it tried, got this
+  close, and the right bird is second in the list".
+- Manually named detections are marked `manual` and confirmed straight into the registry:
+  a person typing a species is a stronger signal than any classifier, so it does not also
+  need to queue for review. Confidence is left empty rather than set to 100% — that field
+  means "how sure was the classifier", and a human answer does not belong on that scale.
+- Free-typed names are checked against the identifier's regional species list and warn
+  before creating something unrecognised, since a typo would otherwise mint a new species.
+  Blacklisted species are refused outright.
 
 - **Fixed: "bird" was being treated as a species.** An unidentified detection keeps the
   placeholder name `bird`, and every species query in Aviary took that at face value — so it

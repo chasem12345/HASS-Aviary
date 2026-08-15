@@ -132,6 +132,8 @@ All configuration is environment variables.
 | `DETECTOR_THRESHOLD` | `0.5` | Minimum detector score for a usable bird box. |
 | `CROP_PADDING` | `0.15` | Context added around the bird before cropping. |
 | `CPU_ONLY` | — | Force CPU. ~5 s/event instead of ~0.3 s; useful for testing without a GPU. |
+| `LABEL_FORMAT` | `common` | How species are described to the model: `common`, `binomial`, `binomial_common`, `taxonomy`. See below. |
+| `NO_PROMPT_ENSEMBLE` | — | Single prompt instead of averaging 80 templates. |
 | `MODEL_NAME` | `hf-hub:imageomics/bioclip-2` | Any open_clip-loadable model. |
 | `CACHE_DIR` | `/models` | Weights, eBird caches, text-embedding cache. |
 | `LOG_LEVEL` | `info` | |
@@ -202,6 +204,39 @@ averaged into a winner, and the aggregate score alone cannot tell those apart. A
 `margin` almost always means two genuinely confusable species (Downy vs. Hairy Woodpecker,
 the chickadees, the empidonax flycatchers) — that is a review-queue case, not a
 notification.
+
+## If it confuses similar species
+
+Getting the family right but the species wrong — a Northern Cardinal read as a Summer
+Tanager, say — usually means the **label format**, not the model or the crop.
+
+BioCLIP scores an image against text, so how each species is described decides how
+distinguishable they are. Under `taxonomy`, those two species read as:
+
+```
+Animalia Chordata Aves Passeriformes Cardinalidae Cardinalis cardinalis northern cardinal
+Animalia Chordata Aves Passeriformes Cardinalidae Piranga rubra summer tanager
+```
+
+Five of eight words are identical, so the part that actually separates them is a small
+fraction of the prompt. Under `common` ("Northern Cardinal" vs "Summer Tanager") they share
+nothing. That is why `common` is the default — and it matches pybioclip's
+`CustomLabelsClassifier`, the closest analogue to scoring a curated regional list.
+
+`LABEL_FORMAT` accepts `common`, `binomial`, `binomial_common`, `taxonomy`. Worth trying
+against birds you can identify yourself:
+
+```bash
+LABEL_FORMAT=binomial_common docker compose up -d
+python3 tools/smoke_test.py --limit 30
+```
+
+Each format caches its own text embeddings, so switching back and forth costs the encode
+once per format, not every time. `model_version` includes the format, so results recorded
+under different formats are distinguishable in Aviary.
+
+If a *specific* pair keeps getting confused and only one of them occurs where you are, the
+cleanest fix is `EXCLUDE_SPECIES` — a species that cannot be there should not be a candidate.
 
 ## Out of memory on a shared GPU
 

@@ -450,8 +450,33 @@
     }
   }
 
+  // What the few-shot probe has learned. Shown alongside service health because "is it
+  // learning?" is the natural follow-up to "is it running?".
+  async function loadProbeStats() {
+    const el = document.getElementById("probe-stats");
+    if (!el) return;
+    try {
+      const d = await getJson("/probe");
+      if (!d.species) {
+        el.className = "id-health";
+        el.textContent = "No examples yet — confirm a few species, or use ✎ to name one, " +
+          "and it will start matching against your own birds.";
+        return;
+      }
+      const top = (d.top || []).slice(0, 5)
+        .map((s) => s.species + " (" + s.examples + ")").join(", ");
+      el.className = "id-health good";
+      el.textContent = d.species + " species learned from " + d.examples +
+        " confirmed detection(s)" + (top ? " · most examples: " + top : "");
+    } catch (err) {
+      el.className = "id-health";
+      el.textContent = "Probe status unavailable — " + err;
+    }
+  }
+
   window.aviaryInitSettings = function () {
     loadIdentifyHealth();
+    loadProbeStats();
     document.querySelectorAll(".blacklist-remove").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const species = btn.dataset.species;
@@ -813,6 +838,67 @@
       alert("Confirm failed: " + err);
       btn.disabled = false;
     }
+  });
+
+  // Naming a detection by hand — either by picking one of the model's own candidates or
+  // by typing it. The species list is fetched once and cached, so the free-text prompt can
+  // offer autocomplete over the identifier's actual vocabulary rather than accepting any
+  // string that happens to be typed.
+  let speciesListPromise = null;
+
+  function knownSpecies() {
+    if (!speciesListPromise) {
+      speciesListPromise = getJson("/identify-species")
+        .then((d) => d.species || [])
+        .catch(() => []);
+    }
+    return speciesListPromise;
+  }
+
+  async function setSpecies(id, species, sci) {
+    let url = API + "/detections/" + encodeURIComponent(id) + "/species" +
+      "?species=" + encodeURIComponent(species);
+    if (sci) url += "&scientific=" + encodeURIComponent(sci);
+    const res = await fetch(url, { method: "POST" });
+    const data = await res.json();
+    if (!data.ok) {
+      alert("Couldn't set the species: " + (data.error || res.status));
+      return false;
+    }
+    return true;
+  }
+
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".guess");
+    if (!btn) return;
+    e.preventDefault();
+
+    let species = btn.dataset.species;
+    let sci = btn.dataset.sci || "";
+    if (btn.classList.contains("guess-other")) {
+      const list = await knownSpecies();
+      const hint = list.length
+        ? "\n\n(" + list.length + " species in the identifier's regional list)"
+        : "";
+      species = window.prompt("What is this bird?" + hint, "");
+      if (!species) return;
+      species = species.trim();
+      if (!species) return;
+      // A name the identifier doesn't know is allowed — its list is regional and you may
+      // genuinely have a vagrant — but it's worth one confirmation, since a typo here
+      // creates a new species in the registry.
+      if (list.length && !list.some((s) => s.toLowerCase() === species.toLowerCase())) {
+        if (!window.confirm(
+          '"' + species + '" is not in the identifier\'s species list.\n\n' +
+          "Add it anyway? Check the spelling first — this creates a new species.")) {
+          return;
+        }
+      }
+      sci = "";
+    }
+    btn.disabled = true;
+    if (await setSpecies(btn.dataset.id, species, sci)) window.location.reload();
+    else btn.disabled = false;
   });
 
   // Re-run identification for one detection. Synchronous by design: the request holds

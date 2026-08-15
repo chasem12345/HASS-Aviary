@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS detections (
     id_score        REAL,                            -- fused top-1 probability
     id_margin       REAL,                            -- top-1 minus top-2; the real confidence signal
     id_model        TEXT,                            -- model@vocabulary digest that produced it
-    id_at           REAL                             -- when the identification completed
+    id_at           REAL,                            -- when the identification completed
+    id_candidates   TEXT                             -- JSON shortlist the model considered
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_source_ref
@@ -148,6 +149,24 @@ CREATE TABLE IF NOT EXISTS identification_embeddings (
     created_at   REAL NOT NULL
 );
 
+-- Embeddings of reference photos, one row per (species, photo). These bootstrap the
+-- few-shot classifier: a brand-new install has no confirmed detections to learn from, but
+-- it does have cached iNaturalist reference photos for every species in the registry, and
+-- those are labelled images of exactly the right birds.
+--
+-- Kept apart from identification_embeddings because these are NOT detections — they have
+-- no event, no clip, and no detection_id to hang off. They are also weighted lower when
+-- building centroids: a posed photo in good light is the right species but the wrong
+-- domain, and one real frame from your own feeder is worth several of them.
+CREATE TABLE IF NOT EXISTS species_reference_embeddings (
+    common_name TEXT NOT NULL COLLATE NOCASE,
+    position    INTEGER NOT NULL,      -- matches species_photos.position
+    model       TEXT NOT NULL,         -- vectors from different models are incomparable
+    embedding   TEXT NOT NULL,
+    created_at  REAL NOT NULL,
+    PRIMARY KEY (common_name, position, model)
+);
+
 -- Answers the user has rejected for a specific detection ("that is not a Blue Jay").
 -- Excluded from the candidate set on the next re-identify, so each rejection walks the
 -- model down its own ranking instead of handing back the same wrong answer.
@@ -217,7 +236,7 @@ def init_db(db_path: str) -> None:
         # converges. All nullable with no default: existing rows are "not applicable".
         for name, decl in (
             ("id_status", "TEXT"), ("id_score", "REAL"), ("id_margin", "REAL"),
-            ("id_model", "TEXT"), ("id_at", "REAL"),
+            ("id_model", "TEXT"), ("id_at", "REAL"), ("id_candidates", "TEXT"),
         ):
             if name not in cols:
                 conn.execute(f"ALTER TABLE detections ADD COLUMN {name} {decl}")
@@ -810,6 +829,7 @@ def set_identification(
     model: Optional[str] = None,
     embedding: Optional[str] = None,
     set_confidence: bool = False,
+    candidates: Optional[str] = None,
 ) -> None:
     """Record the outcome of an external identification attempt.
 
@@ -829,11 +849,14 @@ def set_identification(
         conn.execute(
             f"""
             UPDATE detections SET
-                id_status = ?, id_score = ?, id_margin = ?, id_model = ?, id_at = ?
+                id_status = ?, id_score = ?, id_margin = ?, id_model = ?, id_at = ?,
+                -- COALESCE so a later status-only update (a retry that failed, say) does
+                -- not wipe a shortlist we already have to show the user.
+                id_candidates = COALESCE(?, id_candidates)
                 {", confidence = ?" if set_confidence else ""}
             WHERE source = ? AND source_ref = ?
             """,
-            (status, score, margin, model, time.time())
+            (status, score, margin, model, time.time(), candidates)
             + ((score,) if set_confidence else ())
             + (source, source_ref),
         )
@@ -855,6 +878,37 @@ def set_identification(
                     """,
                     (row["id"], model, embedding, time.time()),
                 )
+
+
+def set_species_manually(detection_id: int, common_name: str,
+                         scientific_name: Optional[str] = None,
+                         species_code: Optional[str] = None) -> Optional[dict]:
+    """Name a detection by hand. Returns the updated row.
+
+    Written directly rather than through ``upsert_detection`` because that function's merge
+    rules exist to reconcile repeated messages from a source, and none of them apply here:
+    a person typing a species is the most authoritative input there is, and it must be able
+    to overwrite whatever the model decided — including replacing a name with a different
+    one, which the "never downgrade" rule would otherwise fight.
+
+    Confidence is cleared rather than set to 1.0: the field means "how sure was the
+    classifier", and a human answer has no place on that scale. ``id_status = 'manual'``
+    is what records that this was a person.
+    """
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE detections SET
+                common_name = ?, scientific_name = ?, species_code = ?,
+                confidence = NULL, id_status = 'manual', id_at = ?
+            WHERE id = ?
+            """,
+            (common_name, scientific_name, species_code, time.time(), detection_id),
+        )
+        if not cur.rowcount:
+            return None
+        row = conn.execute("SELECT * FROM detections WHERE id = ?", (detection_id,)).fetchone()
+    return dict(row) if row else None
 
 
 def reject_identification(detection_id: int, species: str) -> None:
@@ -933,6 +987,78 @@ def drop_detection(source: str, source_ref: str) -> None:
         conn.execute(
             "DELETE FROM identification_rejections WHERE detection_id = ?", (row["id"],)
         )
+
+
+def confirmed_embeddings(model: str) -> list[tuple[str, str]]:
+    """(species, embedding) for every confirmed detection identified by ``model``.
+
+    Confirmed only: the whole point is to learn from labels a human stands behind. An
+    unreviewed automatic guess would teach the classifier its own mistakes, which is how a
+    feedback loop starts.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT d.common_name AS name, e.embedding AS embedding
+            FROM identification_embeddings e
+            JOIN detections d ON d.id = e.detection_id
+            JOIN species_confirmed sc ON sc.common_name = d.common_name COLLATE NOCASE
+            WHERE e.model = ? AND d.common_name != 'bird' COLLATE NOCASE
+            """,
+            (model,),
+        ).fetchall()
+    return [(r["name"], r["embedding"]) for r in rows]
+
+
+def reference_embeddings(model: str) -> list[tuple[str, str]]:
+    """(species, embedding) for the bootstrap reference photos."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT common_name AS name, embedding FROM species_reference_embeddings WHERE model = ?",
+            (model,),
+        ).fetchall()
+    return [(r["name"], r["embedding"]) for r in rows]
+
+
+def put_reference_embedding(common_name: str, position: int, model: str,
+                            embedding: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO species_reference_embeddings
+                (common_name, position, model, embedding, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(common_name, position, model) DO UPDATE SET
+                embedding = excluded.embedding, created_at = excluded.created_at
+            """,
+            (common_name, position, model, embedding, time.time()),
+        )
+
+
+def species_missing_reference_embeddings(model: str, limit: int = 50) -> list[dict]:
+    """Cached reference photos with no embedding yet, for the given model.
+
+    Drives the bootstrap: photos are already in ``species_photos`` (fetched so a human can
+    compare a detection against known pictures), so this only has to find the gaps.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT p.common_name, p.position, p.file_url, p.thumb_url
+            FROM species_photos p
+            WHERE p.ok = 1 AND p.file_url IS NOT NULL AND p.file_url != ''
+              AND p.common_name != 'bird' COLLATE NOCASE
+              AND NOT EXISTS (
+                  SELECT 1 FROM species_reference_embeddings r
+                  WHERE r.common_name = p.common_name COLLATE NOCASE
+                    AND r.position = p.position AND r.model = ?
+              )
+            ORDER BY p.common_name, p.position
+            LIMIT ?
+            """,
+            (model, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def species_heard_between(start: float, end: float) -> list[str]:
@@ -1097,6 +1223,20 @@ def blacklist_remove(common_name: str) -> bool:
             (common_name,),
         )
     return cur.rowcount > 0
+
+
+def is_blacklisted_name(name: str) -> bool:
+    """Whether a name is blacklisted under either its common or scientific form."""
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM species_blacklist
+            WHERE common_name = ? COLLATE NOCASE OR scientific_name = ? COLLATE NOCASE
+            LIMIT 1
+            """,
+            (name, name),
+        ).fetchone()
+    return row is not None
 
 
 def blacklist_entries() -> list[dict]:

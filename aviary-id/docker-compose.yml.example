@@ -37,6 +37,19 @@ services:
       # EXCLUDE_SPECIES: "Rock Pigeon"
       # CPU_ONLY: "1"                 # skip the GPU entirely (~5s/event, useful for tests)
 
+      # --- accuracy tuning --------------------------------------------------------
+      # How each species is described to the model. This is the biggest lever on telling
+      # apart species WITHIN a family (cardinal vs. tanager), and worth A/B-ing against
+      # birds you can name yourself. Each format caches separately, so switching back and
+      # forth only pays the encode cost once per format.
+      #   common          "Northern Cardinal"                      (default)
+      #   binomial        "Cardinalis cardinalis"
+      #   binomial_common "Cardinalis cardinalis (Northern Cardinal)"
+      #   taxonomy        the full rank chain — NOT recommended: every species in a family
+      #                   shares most of the string, which swamps what distinguishes them
+      # LABEL_FORMAT: "common"
+      # NO_PROMPT_ENSEMBLE: "1"   # single prompt instead of the 80-template average
+
       # --- if the GPU is shared and you hit out-of-memory ------------------------
       # Check `nvidia-smi` first — this container needs roughly 1.3 GB free, and the
       # error message names every process holding memory on the card. Then, in

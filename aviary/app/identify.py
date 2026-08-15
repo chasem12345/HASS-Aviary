@@ -19,6 +19,7 @@ which keeps the import graph acyclic and lets tests substitute a fake service.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -26,7 +27,7 @@ from typing import Any, Optional
 
 import httpx
 
-from . import db, ingest
+from . import db, ingest, probe
 from .settings import Settings
 
 log = logging.getLogger("aviary.identify")
@@ -234,6 +235,31 @@ async def _process(row: dict[str, Any]) -> None:
     model = result.get("model_version")
     embedding = result.get("embedding")
     name = result.get("common_name")
+    # The shortlist the model considered. Kept whatever the outcome: it is most useful
+    # precisely when the top answer was rejected, because it shows the model did try and
+    # lets the right bird be picked by hand from what it was weighing up.
+    shortlist = _encode_candidates(result.get("candidates"))
+
+    # Fold in what we have learned from confirmed birds of our own. Applied before the
+    # thresholds, not after: the probe exists to rescue exactly the results that would
+    # otherwise be rejected, so gating first would throw away the cases it is for.
+    probe_examples = 0
+    blended = probe.blend(embedding or "", result.get("candidates") or [], model or "",
+                          exclude=set(exclude or []))
+    if blended:
+        if blended["name"] != name:
+            log.info(
+                "Probe reranked %s: %s (%.3f) -> %s (%.3f), matched against %d confirmed "
+                "%s of your own.",
+                ref, name, score, blended["name"], blended["score"],
+                blended["probe_examples"], blended["name"],
+            )
+        name = blended["name"]
+        score, margin = blended["score"], blended["margin"]
+        probe_examples = blended["probe_examples"]
+        result["scientific_name"] = blended.get("sci") or result.get("scientific_name")
+        result["species_code"] = blended.get("code") or result.get("species_code")
+        shortlist = _encode_candidates(blended["candidates"]) or shortlist
 
     if (not name
             or score < _settings.identify_min_score
@@ -245,7 +271,7 @@ async def _process(row: dict[str, Any]) -> None:
         )
         await asyncio.to_thread(
             db.set_identification, row["source"], ref, "low_confidence",
-            score, margin, model, embedding,
+            score, margin, model, embedding, False, shortlist,
         )
         return
 
@@ -273,13 +299,35 @@ async def _process(row: dict[str, Any]) -> None:
     await asyncio.to_thread(
         db.set_identification, row["source"], ref, "ok", score, margin, model, embedding,
         True,  # set_confidence — see the note above
+        shortlist,
     )
     log.info(
-        "Identified %s as %s (score=%.3f margin=%.3f, %d frames%s, %sms).",
+        "Identified %s as %s (score=%.3f margin=%.3f, %d frames%s%s, %sms).",
         ref, name, score, margin, result.get("frames_used", 0),
         f", {result['excluded']} excluded" if result.get("excluded") else "",
+        f", probe:{probe_examples}" if probe_examples else "",
         result.get("elapsed_ms", "?"),
     )
+
+
+def _encode_candidates(candidates: Any) -> Optional[str]:
+    """Compact the service's shortlist for storage. None when there is nothing useful."""
+    if not isinstance(candidates, list) or not candidates:
+        return None
+    slim = [
+        {
+            # Accepts both the service's shape (common_name/scientific_name) and the
+            # probe's already-slim shape (name/sci), so a reranked shortlist stores the
+            # same way an untouched one does.
+            "name": c.get("common_name") or c.get("name"),
+            "sci": c.get("scientific_name") or c.get("sci"),
+            "code": c.get("species_code") or c.get("code"),
+            "score": round(float(c.get("score") or 0.0), 4),
+        }
+        for c in candidates
+        if isinstance(c, dict) and (c.get("common_name") or c.get("name"))
+    ]
+    return json.dumps(slim) if slim else None
 
 
 async def _audio_priors(row: dict[str, Any]) -> dict[str, float]:
@@ -356,6 +404,26 @@ async def health() -> dict:
         return data
     except (httpx.HTTPError, ValueError) as exc:
         return {"configured": True, "ok": False, "error": str(exc)[:200]}
+
+
+async def species_list() -> dict:
+    """The service's candidate vocabulary, for the manual-entry picker. Never raises."""
+    if not enabled() or _client is None:
+        return {"ok": False, "species": []}
+    try:
+        resp = await _client.get(f"{_settings.identify_url}/species",
+                                 headers=_auth_headers(), timeout=httpx.Timeout(10.0))
+        if resp.status_code != 200:
+            return {"ok": False, "species": [], "error": f"HTTP {resp.status_code}"}
+        data = resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        return {"ok": False, "species": [], "error": str(exc)[:200]}
+    # Only the names are needed for a datalist; the rest is noise on the wire.
+    return {
+        "ok": True,
+        "species": [s.get("common_name") for s in data.get("species", [])
+                    if s.get("common_name")],
+    }
 
 
 async def identify_one(row: dict[str, Any]) -> dict:

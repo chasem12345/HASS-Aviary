@@ -80,6 +80,15 @@ class Settings:
     # the object is what Frigate was doing in the first place.
     use_thumbnail: bool = True
     use_event_box: bool = True
+    # How each species is described to the text encoder: common | binomial |
+    # binomial_common | taxonomy. See Species.label — this is the single biggest lever on
+    # whether the model can tell apart species within a family, and it is worth A/B-ing
+    # against birds you can name. Changing it re-encodes the vocabulary on next start.
+    label_format: str = "common"
+    # Average each species over the 80 OpenAI prompt templates. Right for short labels
+    # (pybioclip's CustomLabelsClassifier does this); wrong for full taxonomic strings,
+    # which produce text like "a tattoo of a Animalia Chordata Aves ...".
+    prompt_ensemble: bool = True
     # Minimum detector score for a box to count as a usable bird.
     detector_threshold: float = 0.5
     # Fraction of the box's size added as padding on each side before cropping. Birds
@@ -135,6 +144,8 @@ def load_settings() -> Settings:
         max_frames=_as_int("MAX_FRAMES", 8),
         use_thumbnail=not _as_bool(os.environ.get("NO_THUMBNAIL", "")),
         use_event_box=not _as_bool(os.environ.get("NO_EVENT_BOX", "")),
+        label_format=os.environ.get("LABEL_FORMAT", "common").strip().lower(),
+        prompt_ensemble=not _as_bool(os.environ.get("NO_PROMPT_ENSEMBLE", "")),
         detector_threshold=_as_float("DETECTOR_THRESHOLD", 0.5),
         crop_padding=_as_float("CROP_PADDING", 0.15),
         fetch_timeout=_as_float("FETCH_TIMEOUT", 30.0),

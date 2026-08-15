@@ -51,22 +51,39 @@ class Species:
     # Absent for bundled-fallback entries; see the note in na_fallback_species.json.
     species_code: Optional[str] = None
 
-    @property
-    def label(self) -> str:
-        """The taxonomic string fed to the text encoder.
+    def label(self, fmt: str = "common") -> str:
+        """The text fed to the encoder for this species.
 
-        Matches pybioclip's ``join_names``: ranks joined by spaces, ending with the
-        common name. The common name is lowercased because that is how it appears in
-        BioCLIP's training captions.
+        The format matters more than it looks, and getting it wrong shows up as confusion
+        *within* a family rather than as general inaccuracy. With the full taxonomic string,
+        Northern Cardinal, Summer Tanager and Scarlet Tanager share ``Animalia Chordata Aves
+        Passeriformes Cardinalidae`` — about two thirds of the prompt is identical text, so
+        the handful of characters that actually distinguish them is swamped.
+
+        pybioclip uses two distinct approaches and does not mix them: its
+        ``TreeOfLifeClassifier`` uses full taxonomy with no prompt ensemble, while
+        ``CustomLabelsClassifier`` — the closer analogue to a curated regional list — uses
+        the 80-template ensemble over plain label text. ``common`` follows the latter.
+
+        * ``common``          -> "Northern Cardinal"
+        * ``binomial``        -> "Cardinalis cardinalis"
+        * ``binomial_common`` -> "Cardinalis cardinalis (Northern Cardinal)"
+        * ``taxonomy``        -> the full rank chain, pybioclip's ``join_names`` form
         """
-        parts = [*_FIXED_RANKS]
-        if self.order:
-            parts.append(self.order)
-        if self.family:
-            parts.append(self.family)
-        parts.append(self.sci_name)
-        parts.append(self.com_name.lower())
-        return " ".join(parts)
+        if fmt == "binomial":
+            return self.sci_name
+        if fmt == "binomial_common":
+            return f"{self.sci_name} ({self.com_name})"
+        if fmt == "taxonomy":
+            parts = [*_FIXED_RANKS]
+            if self.order:
+                parts.append(self.order)
+            if self.family:
+                parts.append(self.family)
+            parts.append(self.sci_name)
+            parts.append(self.com_name.lower())
+            return " ".join(parts)
+        return self.com_name
 
     def as_dict(self) -> dict:
         return {

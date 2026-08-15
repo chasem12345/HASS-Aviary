@@ -439,6 +439,21 @@ Every Frigate detection gains a **↻ re-identify** button. Adjust a threshold o
 list, re-run a bird you can name yourself, and compare. That is the intended way to tune the
 thresholds; the defaults are starting points, not recommendations.
 
+### When it can't decide
+
+A detection that fails the thresholds shows the shortlist the model actually considered —
+each species with the probability it gave — as clickable chips. Click one to accept it.
+**✎ something else…** lets you type a species instead, checked against the identifier's
+regional list so a typo doesn't quietly create a new species in your registry.
+
+Naming a bird by hand marks it `manual` and puts it straight into the registry without
+waiting for confirmation: you *are* the confirmation. Its confidence is left blank, because
+that column records how sure the classifier was and a human answer has no place on that
+scale.
+
+This is also the honest answer to "did it even try?" — a shortlist of plausible birds at
+11%, 7% and 6% says something very different from an empty one.
+
 ### Telling it when it's wrong
 
 Next to it is **✗ wrong**. It rules that species out *for that detection* and returns the
@@ -466,6 +481,36 @@ species because it does not occur here: a bird that would have been misread as o
 its correct name instead of being discarded. **If you blacklisted a species that genuinely
 visits and you simply don't want it recorded, turn this off** — otherwise every one of its
 visits gets recorded as some other species.
+
+### Learning from your own birds
+
+Identification starts out *zero-shot*: the image is compared against the species **name**.
+That is what lets the candidate list be any set of species you like, and it is also where
+most of the model's accuracy sits unused — on the published benchmark the same embeddings
+score 74.9% that way and 92.4% once a classifier is trained on them.
+
+So Aviary trains one, from your birds. Every species you confirm — and every detection you
+name by hand — becomes an example it matches against directly. Nothing to configure: it
+switches itself on species by species as examples accumulate, and the Settings page shows
+what it has learned.
+
+Three properties are deliberate:
+
+- **A species with no examples is unaffected.** New birds are still found exactly as before.
+  A classifier that quietly stopped discovering species would be worse than none.
+- **It abstains when the match is not close.** Being the *nearest* centroid is not the same
+  as being a good match, so a bird it has never seen does not get assigned to whichever
+  species it happens to sit closest to.
+- **It only learns from confirmed labels.** Learning from its own unreviewed guesses is how
+  a classifier reinforces its own mistakes.
+
+New installs are not left cold: the iNaturalist reference photos already cached for each
+species are embedded in the background, so every species in your registry starts with a
+usable example. Those are posed photos rather than feeder frames, so they count for less
+and are displaced by your own detections over time.
+
+`GET /api/probe/evaluate` gives leave-one-out accuracy on **your** birds, which is the only
+number that really matters — the benchmark figures above are someone else's dataset.
 
 ### Sound helping sight
 

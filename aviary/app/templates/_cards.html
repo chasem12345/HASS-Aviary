@@ -61,6 +61,8 @@
               title="Identification was below the confidence threshold (score {{ d.id_score | fmt_pct }}, margin {{ d.id_margin | fmt_pct }}) — needs review">
           uncertain
         </span>
+      {% elif d.id_status == 'manual' %}
+        <span class="idbadge idbadge-manual" title="You identified this one">by hand</span>
       {% elif d.id_status == 'pending' %}
         <span class="idbadge idbadge-pending" title="Waiting on the identification service">identifying…</span>
       {% elif d.id_status == 'failed' %}
@@ -88,6 +90,29 @@
        no status at all, and gating on it would leave them with no way to be identified
        from the UI — which is also the only way to try this out without waiting for a live
        bird. #}
+    {# What the model considered, when it could not commit to any of it. Showing the
+       shortlist is the difference between "it failed" and "it tried, and here is how close
+       it got" — and the right bird is often sitting at number two. #}
+    {% if d.id_candidates and d.common_name == 'bird' %}
+    <div class="guesses">
+      <span class="guesses-label">It considered:</span>
+      {% for g in d.id_candidates | from_json %}
+      <button type="button" class="guess" data-id="{{ d.id }}"
+              data-species="{{ g.name }}" data-sci="{{ g.sci or '' }}"
+              title="Set this detection to {{ g.name }}{% if g.sci %} ({{ g.sci }}){% endif %}">
+        {{ g.name }} <span class="guess-score">{{ g.score | fmt_pct }}</span>
+      </button>
+      {% endfor %}
+      <button type="button" class="guess guess-other" data-id="{{ d.id }}"
+              title="Name this bird yourself">✎ something else…</button>
+    </div>
+    {% elif identify_active and d.common_name == 'bird' and d.id_status in ('failed', 'low_confidence') %}
+    <div class="guesses">
+      <span class="guesses-label">No candidates recorded.</span>
+      <button type="button" class="guess guess-other" data-id="{{ d.id }}"
+              title="Name this bird yourself">✎ identify manually</button>
+    </div>
+    {% endif %}
     {% if identify_active and d.source == 'frigate' %}
     <div class="meta sub id-actions">
       <button type="button" class="reidentify"

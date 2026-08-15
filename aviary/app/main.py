@@ -14,14 +14,18 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    backfill, db, identify, ingest, notify, proxy, species_audio, species_info,
-    species_photos,
+    backfill, bootstrap, db, identify, ingest, notify, probe, proxy, species_audio,
+    species_info, species_photos,
 )
 from .mqtt_client import MqttIngestor
 from .routes import ASSET_VER, register_routes
 from .settings import load_settings
 
 _APP_DIR = os.path.dirname(__file__)
+
+# Module-level, because the background maintenance task lives outside create_app() and its
+# local logger. Configured by basicConfig in create_app before anything logs through it.
+log = logging.getLogger("aviary")
 
 # Python's mimetypes table has no web-font entries, so StaticFiles would serve the
 # vendored dex font as text/plain.
@@ -76,7 +80,7 @@ class IngressStripMiddleware:
         await self.app(scope, receive, send)
 
 
-async def _identify_maintenance() -> None:
+async def _identify_maintenance(settings) -> None:
     """Post-start identification housekeeping.
 
     Deliberately after a short delay rather than inline in startup: requeueing pending
@@ -87,6 +91,19 @@ async def _identify_maintenance() -> None:
     await identify.requeue_pending()
     await identify.purge_old()
 
+    # Build the few-shot probe from whatever labels already exist. The model version has
+    # to come from the service, because an embedding is only comparable with others from
+    # the same model AND label format — and only the service knows what it is running.
+    health = await identify.health()
+    model = health.get("model_version") if health.get("ok") else None
+    if not model:
+        log.info("Identification service not reachable yet; probe will build on first use.")
+        return
+    await asyncio.to_thread(probe.rebuild, model)
+    # Fill in any missing reference embeddings in the background. Idempotent, so this is a
+    # no-op once the registry has been covered.
+    bootstrap.start(settings, model)
+
 
 def create_app() -> FastAPI:
     settings = load_settings()
@@ -95,7 +112,6 @@ def create_app() -> FastAPI:
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    log = logging.getLogger("aviary")
 
     os.makedirs(settings.data_dir, exist_ok=True)
     db.init_db(settings.db_path)
@@ -144,7 +160,7 @@ def create_app() -> FastAPI:
             backfill_task = asyncio.create_task(backfill.run_backfill(settings))
         # Recover work stranded by a restart, then clear out stale unidentifiable rows.
         # Both are background tasks: neither should delay serving the UI.
-        identify_maint_task = asyncio.create_task(_identify_maintenance())
+        identify_maint_task = asyncio.create_task(_identify_maintenance(settings))
         # Charts and the "today" boundary use OS localtime; make misconfiguration visible.
         log.info("Aviary started (timezone: %s, TZ=%s).", time.strftime("%Z"), os.environ.get("TZ", "unset"))
         try:
@@ -156,6 +172,7 @@ def create_app() -> FastAPI:
                     with contextlib.suppress(asyncio.CancelledError):
                         await task
             ingestor.stop()
+            await bootstrap.stop()
             await identify.stop()
             await identify.close_client()
             await proxy.close_client()
