@@ -11,5 +11,7 @@ numpy==2.2.1
 python-multipart==0.0.20
 # YOLO11n bird localizer (DETECTOR_BACKEND=yolo, the default). AGPL-3.0 — see the README
 # licensing note. Its torch/torchvision requirements are already satisfied by the cu126
-# wheels installed in the Dockerfile, so pip will not touch them.
-ultralytics==8.3.70
+# wheels installed in the Dockerfile, so pip will not touch them. Must be 8.4+: the 8.3
+# line capped numpy at <=2.1.1, which conflicts with the numpy pinned above; 8.4 dropped
+# the upper bound entirely.
+ultralytics==8.4.120

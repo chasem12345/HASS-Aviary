@@ -62,9 +62,19 @@ class YoloBirdDetector:
         # re-download them, same as the CLIP weights and the text-embedding cache.
         path = os.path.join(cache_dir, "yolo11n.pt")
         if not os.path.exists(path):
-            from ultralytics.utils.downloads import attempt_download_asset
             log.info("Downloading YOLO11n weights to %s ...", path)
-            attempt_download_asset(path)
+            try:
+                # Internal ultralytics util — the only way to control WHERE the asset
+                # lands. Guarded because it is not public API and could move.
+                from ultralytics.utils.downloads import attempt_download_asset
+                attempt_download_asset(path)
+            except (ImportError, AttributeError, TypeError) as exc:
+                log.warning(
+                    "Could not download to the cache dir (%s); falling back to "
+                    "ultralytics' default location — the weights will re-download "
+                    "after a container rebuild.", exc,
+                )
+                path = "yolo11n.pt"
         self.model = YOLO(path)
 
         # Read the class index off the model rather than hard-coding COCO's "bird is 14":
