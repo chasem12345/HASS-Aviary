@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.14.1
+
+- **Fixed: the identify and ✗ wrong buttons never appeared.** They were only rendered on
+  detections that already had an identification status, but every detection recorded before
+  0.14.0 has none — so the buttons were invisible on exactly the detections you would want
+  to try them on, and there was no way to identify anything from the UI at all. They now
+  show on any Frigate detection whenever identification is configured. An unidentified
+  detection offers **⌕ identify**; one that has already been through the identifier offers
+  **↻ re-identify**.
+- This also means you can identify your **existing** Frigate history a click at a time, and
+  is the quickest way to try the whole thing without waiting for a live bird — Aviary
+  discarded the unclassified detections, but Frigate kept every one of them, clips and all.
+- The identification actions moved to their own row on the card. They had been sharing the
+  line with the camera name, timestamp, **⤢ scrub / still** and **⬇ video** — six items in a
+  no-wrap flex row on cards that narrow to 260px, which squashed the video controls.
+- Added `identify_exclude_blacklisted` (default on): blacklisted species are ruled out of
+  the identifier's candidate list, so a bird that would have been misread as one gets its
+  correct name instead of being discarded. Turn it off if you blacklisted a species that
+  genuinely visits and you simply don't want it recorded.
+
 ## 0.14.0
 
 - **Bird identification can now run on your own GPU, and it is much better at it.** A new

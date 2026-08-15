@@ -9,3 +9,8 @@ _data/
 *.db
 *.db-wal
 *.db-shm
+
+# aviary-id deployment config — holds the eBird API key and the shared bearer token.
+# docker-compose.yml.example is the committed template.
+aviary-id/docker-compose.yml
+aviary-id/docker-compose.override.yml

@@ -272,6 +272,9 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 .reidentify:hover { color: var(--accent); }
 .reidentify[disabled] { opacity: .5; cursor: default; }
 .reidentify.reject:hover { color: var(--danger); }
+/* Its own row, and allowed to wrap — .meta is a no-wrap flex row and the cards go down to
+   260px, so two more controls on the scrub/download line would squash it. */
+.id-actions { flex-wrap: wrap; gap: 12px; }
 
 /* ------------------------------------------------------------- identification badge */
 /* Deliberately outlined rather than filled like .badge: the source badge names what the

@@ -89,7 +89,17 @@ def _ingress_context(request: Request) -> dict:
     def u(endpoint, /, **params) -> str:
         return ingress_url(request, endpoint, **params)
 
-    return {"ingress_path": prefix, "u": u, "asset_ver": ASSET_VER, "theme": get_theme()}
+    # Every page that renders a detection card needs this, and the card macro is included
+    # from three different templates — putting it here beats threading it through each
+    # view's context dict and forgetting one.
+    settings = getattr(request.app.state, "settings", None)
+    return {
+        "ingress_path": prefix,
+        "u": u,
+        "asset_ver": ASSET_VER,
+        "theme": get_theme(),
+        "identify_active": bool(settings and settings.identify_active),
+    }
 
 
 templates = Jinja2Templates(directory=_TEMPLATE_DIR, context_processors=[_ingress_context])

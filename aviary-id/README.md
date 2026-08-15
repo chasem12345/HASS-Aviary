@@ -66,10 +66,13 @@ If your card is Maxwell, Pascal or Volta (Quadro P-series, GTX 9xx/10xx, Titan V
 ## Quick start
 
 ```bash
-cp docker-compose.yml docker-compose.override.yml   # edit FRIGATE_URL etc.
+cp docker-compose.yml.example docker-compose.yml   # then edit FRIGATE_URL, EBIRD_*, AVIARY_ID_TOKEN
 docker compose up -d --build
 docker compose logs -f
 ```
+
+`docker-compose.yml` is gitignored — it holds your eBird key and shared secret. Keep the
+`.example` as the committed template.
 
 First start downloads ~2 GB of weights and encodes the species vocabulary (a minute or
 two on a P1000). Both are cached on the `/models` volume; later starts take seconds.

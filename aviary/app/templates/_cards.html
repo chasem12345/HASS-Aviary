@@ -78,10 +78,21 @@
       <a class="dl-link" title="Download video — remuxed so the duration shows correctly when shared"
          href="{{ u('frigate_download', event_id=d.source_ref) }}">⬇ video</a>
       {% endif %}
-      {% if d.id_status %}
+    </div>
+    {# Identification actions get their own row. The row above is already at four items on
+       a 260px card, and .meta has no flex-wrap by design — crowding these in would squash
+       the scrub/download controls that were there first.
+
+       Shown for ANY Frigate detection while identification is configured, not only ones
+       that already have an id_status. Detections recorded before the feature existed have
+       no status at all, and gating on it would leave them with no way to be identified
+       from the UI — which is also the only way to try this out without waiting for a live
+       bird. #}
+    {% if identify_active and d.source == 'frigate' %}
+    <div class="meta sub id-actions">
       <button type="button" class="reidentify"
               title="Run identification again — after changing thresholds or the species list, or to retry a failure"
-              data-id="{{ d.id }}">↻ re-identify</button>
+              data-id="{{ d.id }}">{{ '↻ re-identify' if d.id_status else '⌕ identify' }}</button>
       {% if d.common_name != 'bird' %}
       {# Rules this species out for this detection and returns the next best answer.
          Press repeatedly to walk down the model's ranking. #}
@@ -89,8 +100,8 @@
               title="Not a {{ d.common_name }} — rule it out and try the next best match"
               data-id="{{ d.id }}" data-name="{{ d.common_name }}">✗ wrong</button>
       {% endif %}
-      {% endif %}
     </div>
+    {% endif %}
   </div>
 </article>
 {% endmacro %}
