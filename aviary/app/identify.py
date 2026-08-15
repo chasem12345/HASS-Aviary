@@ -299,7 +299,17 @@ async def _call_service(event_id: str, priors: dict[str, float],
     """POST to the service, retrying once. Returns the parsed body or None."""
     if _client is None:
         return None
-    payload = {"event_id": event_id, "priors": priors, "exclude": exclude or []}
+    payload = {
+        "event_id": event_id,
+        "priors": priors,
+        "exclude": exclude or [],
+        # Our thresholds, sent so the service knows when an answer is not good enough yet
+        # and it should sample more frames. It never gates on these — it still returns raw
+        # numbers and the decision below is ours — so there is exactly one source of truth
+        # and retuning here also retunes when the GPU works harder.
+        "min_score": _settings.identify_min_score,
+        "min_margin": _settings.identify_min_margin,
+    }
     url = f"{_settings.identify_url}/identify"
 
     for attempt in (1, 2):

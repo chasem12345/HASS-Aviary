@@ -70,8 +70,16 @@ class Settings:
     # Frames pulled from the clip before filtering. Oversample: Frigate clips include
     # pre_capture/post_capture padding where the bird may not be in frame at all.
     sample_frames: int = 8
-    # Frames actually classified, chosen best-first from the sampled set.
+    # Frames actually classified in the first pass, chosen best-first.
     classify_frames: int = 3
+    # Hard ceiling on frames classified across all escalation rounds.
+    max_frames: int = 8
+    # Use Frigate's own crops instead of re-deriving them. thumbnail.jpg is cropped to the
+    # object on an ended event; the event API reports the snapshot's box in pixels. Both
+    # are more reliable than our COCO detector at finding a small bird, because locating
+    # the object is what Frigate was doing in the first place.
+    use_thumbnail: bool = True
+    use_event_box: bool = True
     # Minimum detector score for a box to count as a usable bird.
     detector_threshold: float = 0.5
     # Fraction of the box's size added as padding on each side before cropping. Birds
@@ -124,6 +132,9 @@ def load_settings() -> Settings:
         detector_batch=_as_int("DETECTOR_BATCH", 2),
         sample_frames=_as_int("SAMPLE_FRAMES", 8),
         classify_frames=_as_int("CLASSIFY_FRAMES", 3),
+        max_frames=_as_int("MAX_FRAMES", 8),
+        use_thumbnail=not _as_bool(os.environ.get("NO_THUMBNAIL", "")),
+        use_event_box=not _as_bool(os.environ.get("NO_EVENT_BOX", "")),
         detector_threshold=_as_float("DETECTOR_THRESHOLD", 0.5),
         crop_padding=_as_float("CROP_PADDING", 0.15),
         fetch_timeout=_as_float("FETCH_TIMEOUT", 30.0),

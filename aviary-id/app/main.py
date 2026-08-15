@@ -29,8 +29,9 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from . import frames
-from .detector import BirdDetector, Detection
+from .detector import BirdDetector
 from .model import Classifier
+from .pipeline import Pipeline
 from .settings import Settings, load_settings
 from .species import load_species
 
@@ -45,6 +46,7 @@ _gpu_lock = asyncio.Lock()
 
 _classifier: Optional[Classifier] = None
 _detector: Optional[BirdDetector] = None
+_pipeline: Optional[Pipeline] = None
 _client: Optional[httpx.AsyncClient] = None
 _species_source = "not loaded"
 _ready = False
@@ -63,6 +65,12 @@ class IdentifyRequest(BaseModel):
     # for this detection, and any species they never want suggested. Common or scientific
     # names, matched case-insensitively.
     exclude: list[str] = Field(default_factory=list)
+    # The caller's confidence thresholds. Used ONLY to decide whether to escalate —
+    # this service never gates on them, it just tries harder below them. Keeping them
+    # on the request means one source of truth: retuning Aviary's thresholds retunes
+    # when the GPU works harder, with no redeploy here.
+    min_score: float = 0.35
+    min_margin: float = 0.08
 
 
 class FrameOut(BaseModel):
@@ -86,6 +94,12 @@ class IdentifyResponse(BaseModel):
     # the result is usable but materially less trustworthy, and the caller should know.
     localized: bool = True
     frames_used: int = 0
+    # Candidates gathered before localization, and how many classification rounds it
+    # took. rounds > 1 means the answer was uncertain and the service looked harder.
+    candidates: int = 0
+    rounds: int = 0
+    # Per-stage wall-clock in ms, so a slow event says WHICH stage was slow.
+    timings: dict = Field(default_factory=dict)
     # How many species were ruled out for this call (rejected answers, or species the
     # user never wants suggested). Lets the caller tell a fresh answer from a reroll.
     excluded: int = 0
@@ -110,109 +124,6 @@ async def require_auth(authorization: Optional[str] = Header(default=None)) -> N
 
 # ---------------------------------------------------------------------------- pipeline
 
-def _select_crops(
-    candidates: list[frames.Candidate],
-    detections: list[list[Detection]],
-) -> tuple[list[Image.Image], list[float], list[str], bool]:
-    """Pick the best crops across all candidate frames.
-
-    Ranked by ``det_score * sqrt(area)``: confidence alone would favour a tiny, perfectly
-    recognised bird over a large clear one, and area alone would favour a big blurry blob.
-    """
-    scored = []
-    for candidate, found in zip(candidates, detections):
-        for det in found:
-            scored.append((det.score * (det.area ** 0.5), candidate, det))
-    scored.sort(key=lambda item: item[0], reverse=True)
-
-    if scored:
-        chosen = scored[:settings.classify_frames]
-        crops = [frames.crop_box(c.image, d.box, settings.crop_padding) for _, c, d in chosen]
-        return crops, [d.score for _, _, d in chosen], [c.origin for _, c, _ in chosen], True
-
-    # Frigate already decided there is a bird here; our detector just couldn't find it
-    # (too small, occluded, or an odd pose). Classifying the uncropped frame is worse than
-    # a good crop but much better than returning nothing, so long as we say so.
-    log.debug("No bird localized; falling back to uncropped frames.")
-    fallback = candidates[:settings.classify_frames]
-    return (
-        [c.image for c in fallback],
-        [0.1] * len(fallback),
-        [f"{c.origin} (uncropped)" for c in fallback],
-        False,
-    )
-
-
-def _run_inference(crops, det_scores, origins, priors, exclude):
-    """Detector + classifier work, run off the event loop by the caller."""
-    return _classifier.classify(crops, det_scores, origins, priors, exclude)
-
-
-async def _identify_images(
-    candidates: list[frames.Candidate],
-    priors: dict[str, float],
-    started: float,
-    exclude: Optional[list[str]] = None,
-) -> IdentifyResponse:
-    if not candidates:
-        return IdentifyResponse(status="no_media", elapsed_ms=_ms(started))
-
-    async with _gpu_lock:
-        # to_thread because torch inference is blocking C code — without it a long
-        # classification would stall /healthz and every other request on the loop.
-        try:
-            detections = await asyncio.to_thread(
-                _detector.detect, [c.image for c in candidates], settings.detector_batch
-            )
-            crops, det_scores, origins, localized = _select_crops(candidates, detections)
-            del detections
-            # Hand the detector's activations back before loading the classifier's. Both
-            # peaks landing at once is what exhausts a small, shared card.
-            _release_vram()
-            result = await asyncio.to_thread(
-                _run_inference, crops, det_scores, origins, priors, exclude
-            )
-        except torch.cuda.OutOfMemoryError:
-            # Never let this surface as a 500. Aviary can only record that as a generic
-            # failure, and the actual cause — a full GPU — is the one thing worth saying
-            # out loud, because it is usually another process on the same card.
-            _release_vram()
-            log.error(
-                "Out of GPU memory. %s. Another process on this GPU is the usual cause; "
-                "otherwise lower DETECTOR_BATCH/CLASSIFY_FRAMES, set DETECTOR_CPU=1, or "
-                "use a smaller MODEL_NAME.",
-                _classifier.memory_summary(),
-            )
-            return IdentifyResponse(status="out_of_memory", elapsed_ms=_ms(started))
-        except RuntimeError as exc:
-            # cuDNN failures on a full card arrive as a plain RuntimeError rather than
-            # OutOfMemoryError (CUDNN_STATUS_INTERNAL_ERROR is the usual one), so they
-            # need the same treatment or they become a 500 too.
-            _release_vram()
-            log.error("Inference failed: %s. %s", exc, _classifier.memory_summary())
-            return IdentifyResponse(status="error", elapsed_ms=_ms(started))
-
-    if result is None:
-        return IdentifyResponse(status="no_bird", elapsed_ms=_ms(started))
-
-    return IdentifyResponse(
-        status="ok",
-        common_name=result.species.com_name,
-        scientific_name=result.species.sci_name,
-        species_code=result.species.species_code,
-        score=round(result.score, 4),
-        margin=round(result.margin, 4),
-        runner_up=result.runner_up.com_name if result.runner_up else None,
-        localized=localized,
-        frames_used=len(crops),
-        excluded=result.excluded,
-        per_frame=[FrameOut(**vars(f)) for f in result.per_frame],
-        embedding=result.embedding,
-        model_version=_classifier.model_version,
-        elapsed_ms=_ms(started),
-    )
-
-
 def _release_vram() -> None:
     """Return cached blocks to the driver so other processes on this GPU can use them."""
     if _classifier is not None and _classifier.device.type == "cuda":
@@ -227,7 +138,7 @@ def _ms(started: float) -> int:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global _classifier, _detector, _client, _species_source, _ready
+    global _classifier, _detector, _pipeline, _client, _species_source, _ready
 
     logging.basicConfig(
         level=getattr(logging, os.environ.get("LOG_LEVEL", "info").upper(), logging.INFO),
@@ -252,6 +163,7 @@ async def lifespan(_: FastAPI):
     # Off the loop so /healthz answers "ok: false" during startup instead of hanging,
     # which is what lets Aviary show "still loading" rather than "unreachable".
     _classifier, _detector = await asyncio.to_thread(build)
+    _pipeline = Pipeline(_classifier, _detector, settings)
     _ready = True
 
     if not settings.frigate_url:
@@ -267,7 +179,7 @@ async def lifespan(_: FastAPI):
             await _client.aclose()
 
 
-app = FastAPI(title="aviary-id", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="aviary-id", version="0.3.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -315,14 +227,86 @@ async def identify(req: IdentifyRequest) -> IdentifyResponse:
             detail="no Frigate URL: set FRIGATE_URL or pass frigate_url in the request",
         )
 
-    candidates = await frames.gather_candidates(_client, req.event_id, base, settings)
-    response = await _identify_images(candidates, req.priors, started, req.exclude)
+    timings = frames.Timings()
+    media = frames.EventMedia(req.event_id, base, settings)
+    try:
+        await media.gather(_client, timings)
+        response = await _run_pipeline(media, req, timings, started)
+    finally:
+        # The temp dir holds the downloaded clip and its extracted frames; every decoded
+        # image is already in memory by now.
+        await media.close()
+
     log.info(
-        "identify %s -> %s %s (score=%s margin=%s, %d frames, %dms)",
+        "identify %s -> %s %s (score=%s margin=%s, %d/%d frames, %d round(s), "
+        "localized=%s, %dms) [%s]",
         req.event_id, response.status, response.common_name or "-",
-        response.score, response.margin, response.frames_used, response.elapsed_ms,
+        response.score, response.margin, response.frames_used, response.candidates,
+        response.rounds, response.localized, response.elapsed_ms, timings.summary(),
     )
     return response
+
+
+async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
+    """Shared tail: run the pipeline, map failures onto a status, build the response."""
+    async with _gpu_lock:
+        try:
+            result, crops, rounds = await _pipeline.run(
+                media, req.priors, req.exclude, req.min_score, req.min_margin,
+                timings, _release_vram,
+            )
+        except torch.cuda.OutOfMemoryError:
+            # Never let this surface as a 500. The caller can only record that as a generic
+            # failure, and the actual cause — a full GPU — is the one thing worth saying
+            # out loud, because it is usually another process on the same card.
+            _release_vram()
+            log.error(
+                "Out of GPU memory. %s. Another process on this GPU is the usual cause; "
+                "otherwise lower DETECTOR_BATCH/CLASSIFY_FRAMES, set DETECTOR_CPU=1, or "
+                "use a smaller MODEL_NAME.",
+                _classifier.memory_summary(),
+            )
+            return IdentifyResponse(status="out_of_memory", elapsed_ms=_ms(started),
+                                    candidates=len(media.candidates), timings=timings.stages)
+        except RuntimeError as exc:
+            # cuDNN failures on a full card arrive as a plain RuntimeError rather than
+            # OutOfMemoryError (CUDNN_STATUS_INTERNAL_ERROR is the usual one), so they need
+            # the same treatment or they become a 500 too.
+            _release_vram()
+            log.error("Inference failed: %s. %s", exc, _classifier.memory_summary())
+            return IdentifyResponse(status="error", elapsed_ms=_ms(started),
+                                    candidates=len(media.candidates), timings=timings.stages)
+
+    if not media.candidates:
+        return IdentifyResponse(status="no_media", elapsed_ms=_ms(started),
+                                timings=timings.stages)
+    if result is None:
+        # Nothing anywhere in the event looked like a bird, even after escalating.
+        # Deliberately NOT falling back to classifying the whole uncropped frame: on a
+        # 1080p frame that leaves a feeder-distance bird about ten pixels across, and it
+        # only ever produced confidently-wrong answers the caller then rejected anyway.
+        return IdentifyResponse(status="no_bird", elapsed_ms=_ms(started),
+                                candidates=len(media.candidates), timings=timings.stages)
+
+    return IdentifyResponse(
+        status="ok",
+        common_name=result.species.com_name,
+        scientific_name=result.species.sci_name,
+        species_code=result.species.species_code,
+        score=round(result.score, 4),
+        margin=round(result.margin, 4),
+        runner_up=result.runner_up.com_name if result.runner_up else None,
+        localized=True,
+        frames_used=len(crops),
+        candidates=len(media.candidates),
+        rounds=rounds,
+        excluded=result.excluded,
+        per_frame=[FrameOut(**vars(f)) for f in result.per_frame],
+        embedding=result.embedding,
+        model_version=_classifier.model_version,
+        elapsed_ms=_ms(started),
+        timings=timings.stages,
+    )
 
 
 @app.post("/identify/image", response_model=IdentifyResponse,
@@ -345,5 +329,10 @@ async def identify_image(file: UploadFile = File(...)) -> IdentifyResponse:
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"could not decode image: {exc}") from exc
 
-    candidate = frames.Candidate(image=image, origin=file.filename or "upload")
-    return await _identify_images([candidate], {}, started)  # no exclusions on ad-hoc uploads
+    # Treated as pre-cropped: an uploaded reference photo is already a picture OF the
+    # bird, so re-detecting inside it would usually find nothing and discard the image.
+    media = frames.EventMedia("upload", "", settings)
+    media.candidates = [frames.Candidate(image=image, origin=file.filename or "upload",
+                                         pre_cropped=True)]
+    req = IdentifyRequest(event_id="upload")
+    return await _run_pipeline(media, req, frames.Timings(), started)

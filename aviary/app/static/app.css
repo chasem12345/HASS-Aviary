@@ -297,6 +297,15 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 .id-health.warn { color: var(--warn); border-color: var(--warn); }
 .id-health.bad { color: var(--danger); border-color: var(--danger); }
 
+/* Count on the Unidentified nav item. Muted rather than alarm-coloured: a queue of a few
+   is normal operation, not a fault. */
+.nav-badge {
+  display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 2px;
+  border-radius: 8px; background: var(--line); color: var(--muted);
+  font-size: 11px; font-weight: 600; text-align: center; vertical-align: 1px;
+}
+.topbar nav a.active .nav-badge { background: var(--accent); color: #fff; }
+
 /* ------------------------------------------------------------------ clip player */
 /* A page-level overlay, appended to <body>: .det-card and .det-media both set
    overflow:hidden, so anything anchored inside a card would be clipped. */

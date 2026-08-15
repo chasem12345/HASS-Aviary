@@ -93,12 +93,16 @@ def _ingress_context(request: Request) -> dict:
     # from three different templates — putting it here beats threading it through each
     # view's context dict and forgetting one.
     settings = getattr(request.app.state, "settings", None)
+    active = bool(settings and settings.identify_active)
     return {
         "ingress_path": prefix,
         "u": u,
         "asset_ver": ASSET_VER,
         "theme": get_theme(),
-        "identify_active": bool(settings and settings.identify_active),
+        "identify_active": active,
+        # Nav badge. One indexed COUNT on common_name, and only when the tab is shown at
+        # all — the query is skipped entirely for everyone not using identification.
+        "unidentified_count": db.unidentified_count() if active else 0,
     }
 
 

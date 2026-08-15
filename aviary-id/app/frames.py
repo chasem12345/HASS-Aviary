@@ -1,25 +1,27 @@
-"""Fetch a Frigate event's media and turn it into candidate images for classification.
+"""Fetch a Frigate event's media and turn it into candidate crops for classification.
 
-Frigate stores one "best" snapshot per event plus the clip. The snapshot is Frigate's own
-highest-scoring frame, so it is always worth including — but a single frame of a moving
-bird is a coin flip on pose and occlusion, which is exactly where the built-in classifier
-struggles. So we also sample across the clip and let the detector decide which frames
-actually contain a usable bird.
+The guiding principle here is that **Frigate already found the bird**. Locating objects is
+its entire job, and it hands us the answer twice over: `thumbnail.jpg` is cropped to the
+object once an event has ended, and the event API reports the snapshot's bounding box in
+pixels. Earlier versions ignored both, downloaded the full snapshot, and re-derived the box
+with a COCO detector that is worse at this than Frigate is — then classified the whole
+uncropped frame when that failed, which on a 1080p frame leaves a feeder-distance bird about
+ten pixels across.
 
-Note that Frigate's ``crop``/``bbox`` query params only apply while an event is still in
-progress; a finished event returns the stored clean full-frame snapshot. Everything here
-therefore assumes full frames and does its own cropping.
+So: take Frigate's crops when it has them, and use our own detector only for clip frames,
+where Frigate cannot give us a box for an arbitrary timestamp.
 """
 
 from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
@@ -34,13 +36,37 @@ log = logging.getLogger("aviary_id.frames")
 # has pixels left after cropping.
 _MAX_WIDTH = 1920
 
+# Concurrent ffmpeg seeks. Each is cheap, but a feeder in full swing shouldn't be able to
+# fork a dozen decoders at once on a box that is also running a GPU workload.
+_SEEK_CONCURRENCY = 4
+
 
 @dataclass
 class Candidate:
-    """One full frame pulled from the event, before localization."""
+    """One image pulled from the event."""
     image: Image.Image
-    # Where it came from, for the per-frame debug output: "snapshot" or "clip@1.75s".
+    # Where it came from, for the per-frame debug output: "thumbnail", "snapshot",
+    # "snapshot+box", or "clip@1.75s".
     origin: str
+    # True when the image is already a crop of the bird (Frigate's thumbnail, or the
+    # snapshot cropped to Frigate's own box). Such candidates skip the detector entirely —
+    # running a COCO model over an existing tight crop mostly finds nothing.
+    pre_cropped: bool = False
+    # Detector-equivalent confidence for a pre-cropped candidate, used when fusing frames.
+    # Frigate's own score where we have it.
+    score: float = 0.9
+
+
+@dataclass
+class Timings:
+    """Per-stage wall-clock, so a slow event says which stage was slow."""
+    stages: dict = field(default_factory=dict)
+
+    def add(self, name: str, seconds: float) -> None:
+        self.stages[name] = round(seconds * 1000)
+
+    def summary(self) -> str:
+        return " ".join(f"{k}={v}ms" for k, v in self.stages.items())
 
 
 def clip_url(base: str, event_id: str) -> str:
@@ -49,6 +75,10 @@ def clip_url(base: str, event_id: str) -> str:
 
 def snapshot_url(base: str, event_id: str) -> str:
     return f"{base}/api/events/{event_id}/snapshot.jpg"
+
+
+def thumbnail_url(base: str, event_id: str) -> str:
+    return f"{base}/api/events/{event_id}/thumbnail.jpg"
 
 
 def event_url(base: str, event_id: str) -> str:
@@ -78,6 +108,16 @@ async def _fetch(client: httpx.AsyncClient, url: str, headers: dict[str, str],
         return None
 
 
+def _decode(data: bytes, what: str) -> Optional[Image.Image]:
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        return img.convert("RGB")
+    except (OSError, ValueError) as exc:
+        log.warning("Could not decode %s: %s", what, exc)
+        return None
+
+
 async def _run(cmd: list[str], timeout: float) -> tuple[int, bytes]:
     """Run a subprocess, returning (returncode, stdout). Kills it on timeout."""
     proc = await asyncio.create_subprocess_exec(
@@ -93,7 +133,7 @@ async def _run(cmd: list[str], timeout: float) -> tuple[int, bytes]:
     return proc.returncode or 0, stdout or b""
 
 
-async def _probe_duration(path: str, timeout: float) -> Optional[float]:
+async def probe_duration(path: str, timeout: float) -> Optional[float]:
     code, out = await _run([
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
@@ -108,98 +148,208 @@ async def _probe_duration(path: str, timeout: float) -> Optional[float]:
     return duration if duration > 0 else None
 
 
-async def _extract_frames(clip_path: str, outdir: str, settings: Settings) -> list[tuple[str, float]]:
-    """Decode evenly-spaced JPEGs from the clip. Returns [(path, timestamp_seconds)].
+async def _grab_frame(clip_path: str, outdir: str, offset: float, index: int,
+                      settings: Settings, sem: asyncio.Semaphore) -> Optional[tuple[str, float]]:
+    """Extract exactly one frame at ``offset`` seconds.
 
-    A single ffmpeg pass with an ``fps`` filter rather than N seek-and-grab invocations:
-    one process, and it degrades sensibly on clips whose duration can't be probed.
+    ``-ss`` goes BEFORE ``-i`` on purpose. That makes ffmpeg seek to the nearest keyframe
+    and decode from there, instead of decoding the clip from the start. The previous
+    approach used a single `-vf fps=N/duration` pass, which forces a full decode of the
+    entire clip to emit its handful of frames — measured at 34 seconds on one event.
     """
-    duration = await _probe_duration(clip_path, settings.ffmpeg_timeout)
-    if duration:
-        # Slight over-request; ffmpeg's fps filter rounds and we would rather have one
-        # extra frame than one fewer on a short clip.
-        rate = max(settings.sample_frames / duration, 0.1)
-    else:
-        log.debug("Could not probe clip duration; falling back to a fixed sample rate.")
-        rate = 2.0
+    out = os.path.join(outdir, f"f_{index:03d}.jpg")
+    async with sem:
+        code, _ = await _run([
+            "ffmpeg", "-nostdin", "-y",
+            "-ss", f"{offset:.3f}",
+            "-i", clip_path,
+            "-frames:v", "1",
+            "-vf", f"scale='min({_MAX_WIDTH},iw)':-2",
+            "-q:v", "2",
+            out,
+        ], settings.ffmpeg_timeout)
+    if code != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+        return None
+    return out, offset
 
-    # Hard cap the output regardless of what the rate maths produced — a mis-probed
-    # duration on a long clip must not fill the tmpdir.
-    cap = settings.sample_frames * 2
-    pattern = os.path.join(outdir, "f_%03d.jpg")
-    code, _ = await _run([
-        "ffmpeg", "-nostdin", "-y",
-        "-i", clip_path,
-        "-vf", f"fps={rate:.6f},scale='min({_MAX_WIDTH},iw)':-2",
-        "-frames:v", str(cap),
-        "-q:v", "2",
-        pattern,
-    ], settings.ffmpeg_timeout)
-    if code != 0:
-        log.warning("ffmpeg frame extraction failed for %s", clip_path)
+
+def sample_offsets(duration: float, count: int, phase: float = 0.5) -> list[float]:
+    """Evenly spaced timestamps inside the clip.
+
+    ``phase`` positions them within each slice: 0.5 centres them, and a second pass at 0.0
+    or 1.0 lands between the first pass's frames rather than next to them — which is what
+    makes escalation produce genuinely new views instead of near-duplicates.
+    """
+    if count <= 0 or duration <= 0:
         return []
-
-    files = sorted(f for f in os.listdir(outdir) if f.startswith("f_"))
-    step = 1.0 / rate
-    return [(os.path.join(outdir, name), i * step) for i, name in enumerate(files)]
+    step = duration / count
+    return [min(duration - 0.05, max(0.0, (i + phase) * step)) for i in range(count)]
 
 
-def _pick_evenly(items: list, count: int) -> list:
-    """Evenly-spaced subsample, always keeping the first and last."""
-    if len(items) <= count:
-        return items
-    stride = (len(items) - 1) / (count - 1)
-    return [items[round(i * stride)] for i in range(count)]
+async def extract_frames(clip_path: str, outdir: str, offsets: list[float],
+                         settings: Settings) -> list[tuple[Image.Image, float]]:
+    """Decode the given timestamps concurrently. Returns [(image, offset)]."""
+    if not offsets:
+        return []
+    sem = asyncio.Semaphore(_SEEK_CONCURRENCY)
+    results = await asyncio.gather(*[
+        _grab_frame(clip_path, outdir, off, i, settings, sem)
+        for i, off in enumerate(offsets)
+    ])
+    frames: list[tuple[Image.Image, float]] = []
+    for item in results:
+        if item is None:
+            continue
+        path, offset = item
+        img = _decode_file(path)
+        if img is not None:
+            frames.append((img, offset))
+    return frames
 
 
-async def gather_candidates(
-    client: httpx.AsyncClient,
-    event_id: str,
-    frigate_url: str,
-    settings: Settings,
-) -> list[Candidate]:
-    """Collect full frames for an event: Frigate's snapshot plus samples from the clip.
-
-    Never raises for a missing clip or snapshot — an event may legitimately have only one
-    of the two (Frigate's ``snapshots`` and ``record`` settings are independent). Returns
-    an empty list only when neither is available.
-    """
-    headers = settings.frigate_headers
-    candidates: list[Candidate] = []
-
-    snapshot_bytes = await _fetch(client, snapshot_url(frigate_url, event_id), headers)
-    if snapshot_bytes:
-        try:
-            img = Image.open(io.BytesIO(snapshot_bytes))
-            img.load()
-            candidates.append(Candidate(image=img.convert("RGB"), origin="snapshot"))
-        except (OSError, ValueError) as exc:
-            log.warning("Could not decode snapshot for %s: %s", event_id, exc)
-
-    tmpdir = tempfile.mkdtemp(prefix="aviary-id-")
+def _decode_file(path: str) -> Optional[Image.Image]:
     try:
-        clip_path = os.path.join(tmpdir, "clip.mp4")
-        got = await _fetch(client, clip_url(frigate_url, event_id), headers, dest=clip_path)
-        if got is not None and os.path.getsize(clip_path) > 0:
-            framedir = os.path.join(tmpdir, "frames")
-            os.makedirs(framedir, exist_ok=True)
-            frames = await _extract_frames(clip_path, framedir, settings)
-            for path, ts in _pick_evenly(frames, settings.sample_frames):
-                try:
-                    img = Image.open(path)
-                    img.load()  # decode before the tmpdir disappears
-                    candidates.append(
-                        Candidate(image=img.convert("RGB"), origin=f"clip@{ts:.2f}s")
-                    )
-                except (OSError, ValueError) as exc:
-                    log.debug("Could not decode frame %s: %s", path, exc)
-        else:
-            log.debug("No clip available for event %s.", event_id)
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        img = Image.open(path)
+        img.load()  # decode before the tmpdir disappears
+        return img.convert("RGB")
+    except (OSError, ValueError) as exc:
+        log.debug("Could not decode frame %s: %s", path, exc)
+        return None
 
-    log.debug("Event %s: %d candidate frames.", event_id, len(candidates))
-    return candidates
+
+def _box_from_event(event: dict) -> Optional[tuple[float, float, float, float]]:
+    """Frigate's own bounding box for the snapshot frame, in absolute pixels.
+
+    Frigate reports this in a couple of shapes depending on version: a top-level
+    ``snapshot.box``, or ``data.box``. Some builds normalise ``data.box`` to 0-1, which is
+    detected and rejected here rather than guessed at — a normalised box applied as pixels
+    would crop the top-left corner of the frame and quietly ruin every identification.
+    """
+    for path in (("snapshot", "box"), ("data", "box")):
+        node = event
+        for key in path:
+            node = node.get(key) if isinstance(node, dict) else None
+            if node is None:
+                break
+        if not (isinstance(node, (list, tuple)) and len(node) == 4):
+            continue
+        try:
+            box = tuple(float(v) for v in node)
+        except (TypeError, ValueError):
+            continue
+        if max(box) <= 1.0:
+            log.debug("Ignoring a normalised box from %s; expected pixels.", "/".join(path))
+            continue
+        x1, y1, x2, y2 = box
+        if x2 > x1 and y2 > y1:
+            return (x1, y1, x2, y2)
+    return None
+
+
+class EventMedia:
+    """Everything fetched for one event, so escalation can reuse it without re-downloading."""
+
+    def __init__(self, event_id: str, base: str, settings: Settings):
+        self.event_id = event_id
+        self.base = base
+        self.settings = settings
+        self.candidates: list[Candidate] = []
+        self.clip_path: Optional[str] = None
+        self.duration: Optional[float] = None
+        self._tmpdir: Optional[str] = None
+        self._used_offsets: set[int] = set()
+
+    async def close(self) -> None:
+        if self._tmpdir:
+            shutil.rmtree(self._tmpdir, ignore_errors=True)
+            self._tmpdir = None
+
+    async def gather(self, client: httpx.AsyncClient, timings: Timings) -> None:
+        """Fetch Frigate's own crops plus the first pass of clip frames."""
+        headers = self.settings.frigate_headers
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+
+        # Frigate's crops first — these are the ones that do not depend on our detector.
+        thumb_bytes, snap_bytes, event_json = await asyncio.gather(
+            _fetch(client, thumbnail_url(self.base, self.event_id), headers),
+            _fetch(client, snapshot_url(self.base, self.event_id), headers),
+            _fetch(client, event_url(self.base, self.event_id), headers),
+        )
+        timings.add("fetch", loop.time() - started)
+
+        if thumb_bytes and self.settings.use_thumbnail:
+            img = _decode(thumb_bytes, f"thumbnail for {self.event_id}")
+            # On an ended event this is Frigate's crop of the object. While an event is
+            # still in progress it is the full frame instead — size is the tell, and a
+            # thumbnail as large as the snapshot is not a crop.
+            if img is not None:
+                self.candidates.append(Candidate(image=img, origin="thumbnail",
+                                                 pre_cropped=True))
+
+        snapshot = _decode(snap_bytes, f"snapshot for {self.event_id}") if snap_bytes else None
+        if snapshot is not None:
+            box = None
+            if event_json and self.settings.use_event_box:
+                try:
+                    box = _box_from_event(json.loads(event_json))
+                except (ValueError, TypeError):
+                    log.debug("Could not parse the event JSON for %s.", self.event_id)
+            if box:
+                self.candidates.append(Candidate(
+                    image=crop_box(snapshot, box, self.settings.crop_padding),
+                    origin="snapshot+box", pre_cropped=True,
+                ))
+            else:
+                # No box from Frigate: keep the full snapshot and let the detector try.
+                self.candidates.append(Candidate(image=snapshot, origin="snapshot"))
+
+        await self._fetch_clip(client, timings)
+
+    async def _fetch_clip(self, client: httpx.AsyncClient, timings: Timings) -> None:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        self._tmpdir = tempfile.mkdtemp(prefix="aviary-id-")
+        clip_path = os.path.join(self._tmpdir, "clip.mp4")
+        got = await _fetch(client, clip_url(self.base, self.event_id),
+                           self.settings.frigate_headers, dest=clip_path)
+        if got is None or not os.path.exists(clip_path) or os.path.getsize(clip_path) == 0:
+            log.debug("No clip available for event %s.", self.event_id)
+            return
+        self.clip_path = clip_path
+        timings.add("clip", loop.time() - started)
+
+        started = loop.time()
+        self.duration = await probe_duration(clip_path, self.settings.ffmpeg_timeout)
+        if not self.duration:
+            log.debug("Could not probe clip duration for %s; skipping clip frames.",
+                      self.event_id)
+            return
+        await self.add_clip_frames(self.settings.sample_frames, phase=0.5, timings=timings)
+
+    async def add_clip_frames(self, count: int, phase: float, timings: Timings) -> int:
+        """Extract another pass of clip frames. Returns how many were added.
+
+        Escalation calls this a second time with a different ``phase`` so the new frames
+        fall between the ones already seen.
+        """
+        if not (self.clip_path and self.duration):
+            return 0
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        offsets = [
+            off for off in sample_offsets(self.duration, count, phase)
+            # Guard against a second pass landing on a frame we already have.
+            if int(off * 10) not in self._used_offsets
+        ]
+        if not offsets:
+            return 0
+        frames = await extract_frames(self.clip_path, self._tmpdir, offsets, self.settings)
+        for img, offset in frames:
+            self._used_offsets.add(int(offset * 10))
+            self.candidates.append(Candidate(image=img, origin=f"clip@{offset:.2f}s"))
+        timings.add(f"ffmpeg{'' if phase == 0.5 else '2'}", loop.time() - started)
+        return len(frames)
 
 
 def crop_box(image: Image.Image, box: tuple[float, float, float, float],

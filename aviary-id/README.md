@@ -25,22 +25,35 @@ list of ~150 common North American yard birds, which works but is not tailored t
 
 ## How it decides
 
-1. Pulls `snapshot.jpg` (Frigate's own best frame) and `clip.mp4`.
-2. ffmpeg samples ~8 frames evenly across the clip. It oversamples on purpose: Frigate
-   clips include pre/post-capture padding where the bird may not be in frame at all.
-3. A COCO-pretrained detector finds bird boxes in every frame. Frames are ranked by
-   `detector_score × √area` and the best 3 are cropped with padding.
-4. Each crop is classified against the regional vocabulary. Text embeddings are computed
-   once at startup as an 80-template prompt ensemble and cached to disk.
-5. Per-frame probabilities are fused, weighted by detector confidence.
+Frigate has already located the bird — that is its entire job — so the service uses
+Frigate's own crops rather than re-deriving them:
 
-It returns the score **and** the top-1/top-2 margin, and does *not* decide whether the
-answer is good enough to act on — Aviary applies the thresholds. That split means you can
-retune the gates without redeploying this container.
+- **`thumbnail.jpg`** is cropped to the object on an ended event. Used as-is, no detector.
+- **`GET /api/events/{id}`** reports the snapshot's bounding box in pixels. The
+  full-resolution snapshot is cropped to it.
+- The COCO detector is used only for **clip frames**, where Frigate cannot give a box for an
+  arbitrary timestamp.
 
-If the detector finds no bird at all (too small, occluded, odd pose), the frames are
-classified uncropped and the response sets `localized: false`. The answer is usable but
-meaningfully less trustworthy; treat that flag as a reason to review.
+If nothing can be localized, the service answers `no_bird`. It deliberately does **not**
+fall back to classifying the whole frame: on a 1080p frame that leaves a feeder-distance
+bird about ten pixels across, and it only ever produced confidently-wrong answers.
+
+### Escalation
+
+Effort scales with how hard the bird is. Most events finish on the first rung:
+
+1. Classify the best crops, one per source frame where possible.
+2. Still below the caller's thresholds -> classify crops the detector already found but did
+   not use. One more forward pass, **zero** extra I/O.
+3. Still unsure -> extract another pass of clip frames at timestamps *interleaved* with the
+   first, so they are new views rather than neighbours of frames already seen.
+
+Bounded by `MAX_FRAMES` (default 8) and one extra extraction pass. The response reports
+`rounds`, and `timings` gives per-stage milliseconds so a slow event says which stage was
+slow.
+
+The thresholds come from the caller on each request — this service never gates on them, it
+only uses them to decide whether to look harder.
 
 ## Requirements
 
@@ -110,7 +123,12 @@ All configuration is environment variables.
 | `EXTRA_SPECIES` | — | Comma-separated names to add. |
 | `EXCLUDE_SPECIES` | — | Comma-separated names to remove. |
 | `SAMPLE_FRAMES` | `8` | Frames decoded from the clip before filtering. |
-| `CLASSIFY_FRAMES` | `3` | Best frames actually classified. |
+| `CLASSIFY_FRAMES` | `3` | Best frames classified per round. |
+| `MAX_FRAMES` | `8` | Ceiling on frames classified across all escalation rounds. |
+| `DETECTOR_BATCH` | `2` | Frames through the detector at once. Lower = lower VRAM peak. |
+| `DETECTOR_CPU` | — | Detector on CPU, classifier on the GPU. |
+| `NO_THUMBNAIL` | — | Don't use Frigate's cropped thumbnail. |
+| `NO_EVENT_BOX` | — | Don't crop the snapshot to Frigate's box. |
 | `DETECTOR_THRESHOLD` | `0.5` | Minimum detector score for a usable bird box. |
 | `CROP_PADDING` | `0.15` | Context added around the bird before cropping. |
 | `CPU_ONLY` | — | Force CPU. ~5 s/event instead of ~0.3 s; useful for testing without a GPU. |
@@ -164,8 +182,12 @@ curl -s -X POST localhost:8100/identify \
 }
 ```
 
-`status` is `ok`, `no_media` (Frigate had neither clip nor snapshot), `no_bird`, or
+`status` is `ok`, `no_media` (Frigate had neither clip nor snapshot), `no_bird` (nothing in
+the event could be localized, even after escalating), `out_of_memory`, `error`, or
 `not_ready`.
+
+`rounds` is how many classification passes it took: `1` means it was confident immediately,
+more means it escalated. `timings` breaks the elapsed time down by stage.
 
 ## Tuning
 

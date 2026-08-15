@@ -8,7 +8,7 @@ from typing import Optional
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import db
 from . import THEMES, get_theme, ingress_url, render
@@ -67,18 +67,11 @@ def _paged(
     species: Optional[str],
     before: Optional[float],
     since: Optional[float],
-    unidentified: bool = False,
 ) -> tuple[list[dict], Optional[float]]:
     """One page of detections plus the next ``before`` cursor (None = no more)."""
-    if unidentified:
-        # The review queue ignores the source/species/range filters on purpose: every row
-        # in it is a Frigate row with no species, so those filters would either match
-        # everything or nothing.
-        rows = db.unidentified_detections(limit=PAGE_SIZE + 1, before=before)
-    else:
-        rows = db.recent_detections(
-            limit=PAGE_SIZE + 1, source=source, species=species, before=before, since=since
-        )
+    rows = db.recent_detections(
+        limit=PAGE_SIZE + 1, source=source, species=species, before=before, since=since
+    )
     has_more = len(rows) > PAGE_SIZE
     rows = rows[:PAGE_SIZE]
     next_before = rows[-1]["start_time"] if has_more and rows else None
@@ -130,29 +123,20 @@ def _recent_ctx(
     species: Optional[str],
     range_key: str,
     before: Optional[float],
-    state: Optional[str] = None,
 ) -> dict:
     src = _norm_source(source)
     range_key = _norm_range(range_key, default="all")
     since = _since(range_key)
-    # ?state=unidentified is the identification review queue. Like the species review
-    # queue, it only means anything while the feature is on; with it off the parameter is
-    # ignored rather than showing a permanently empty page.
-    identifying = request.app.state.settings.identify_active
-    reviewing = identifying and state == "unidentified"
-    detections, next_before = _paged(src, species, before, since, unidentified=reviewing)
+    detections, next_before = _paged(src, species, before, since)
     older_url = None
     if next_before is not None:
         q: dict = {"before": f"{next_before:.6f}"}
-        if reviewing:
-            q["state"] = "unidentified"
-        else:
-            if src:
-                q["source"] = src
-            if species:
-                q["species"] = species
-            if range_key != "all":
-                q["range"] = range_key
+        if src:
+            q["source"] = src
+        if species:
+            q["species"] = species
+        if range_key != "all":
+            q["range"] = range_key
         older_url = f"{ingress_url(request, 'recent')}?{urlencode(q)}"
     return {
         "request": request,
@@ -160,10 +144,6 @@ def _recent_ctx(
         "source": src or "all",
         "species": species,
         "range": range_key,
-        "reviewing_ids": reviewing,
-        "identifying": identifying,
-        # A to-do count, so always the whole queue rather than the filtered window.
-        "unidentified": db.unidentified_count() if identifying else 0,
         "groups": _day_groups(detections),
         "next_before": next_before,
         "older_url": older_url,
@@ -180,9 +160,8 @@ def recent(
     species: Optional[str] = Query(None),
     range_key: str = Query("all", alias="range"),
     before: Optional[float] = Query(None),
-    state: Optional[str] = Query(None),
 ):
-    ctx = _recent_ctx(request, source, species, range_key, before, state)
+    ctx = _recent_ctx(request, source, species, range_key, before)
     return render("recent.html", ctx)
 
 
@@ -194,12 +173,44 @@ def recent_partial(
     range_key: str = Query("all", alias="range"),
     before: Optional[float] = Query(None),
     highlight_after: Optional[float] = Query(None),
-    state: Optional[str] = Query(None),
 ):
     """Server-rendered detection groups for the Recent page's live refresh."""
-    ctx = _recent_ctx(request, source, species, range_key, before, state)
+    ctx = _recent_ctx(request, source, species, range_key, before)
     ctx["highlight_after"] = highlight_after
     return render("_groups.html", ctx)
+
+
+@router.get("/unidentified", response_class=HTMLResponse)
+def unidentified(request: Request, before: Optional[float] = Query(None)):
+    """Detections Aviary could not put a name to.
+
+    Its own page rather than a filter on Recent, and deliberately separate from the species
+    review queue: these are not a species awaiting approval, they are a *detection* awaiting
+    a species, and the action you take is different (re-identify, not confirm/reject).
+
+    No source/species/range filters — every row here is a Frigate detection with no species,
+    so those controls would match either everything or nothing.
+    """
+    rows = db.unidentified_detections(limit=PAGE_SIZE + 1, before=before)
+    has_more = len(rows) > PAGE_SIZE
+    rows = rows[:PAGE_SIZE]
+    next_before = rows[-1]["start_time"] if has_more and rows else None
+    older_url = None
+    if next_before is not None:
+        older_url = (f"{ingress_url(request, 'unidentified')}"
+                     f"?{urlencode({'before': f'{next_before:.6f}'})}")
+    counts = db.unidentified_counts()
+    ctx = {
+        "request": request,
+        "page": "unidentified",
+        "groups": _day_groups(rows),
+        "counts": counts,
+        "next_before": next_before,
+        "older_url": older_url,
+        "paged": before is not None,
+        "identify_enabled": request.app.state.settings.identify_active,
+    }
+    return render("unidentified.html", ctx)
 
 
 @router.get("/species", response_class=HTMLResponse)
@@ -253,6 +264,11 @@ def species_detail(
     source: Optional[str] = Query(None),
     before: Optional[float] = Query(None),
 ):
+    # "bird" is the absence of a species, not a species. It has no registry entry, no
+    # reference photos and nothing to confirm, so send it to the page that does know what
+    # to do with those detections rather than rendering an empty species page.
+    if name.strip().lower() == db.UNNAMED:
+        return RedirectResponse(ingress_url(request, "unidentified"), status_code=302)
     stats = db.species_stats(name)
     # Only offer a video/audio filter when the species has both; default to video.
     has_both = bool(stats.get("frigate_total")) and bool(stats.get("birdnet_total"))

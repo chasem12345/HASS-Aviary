@@ -257,13 +257,25 @@ def init_db(db_path: str) -> None:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO species_confirmed (common_name, confirmed_at)
-                SELECT DISTINCT common_name, ? FROM detections WHERE common_name != ''
+                SELECT DISTINCT common_name, ? FROM detections
+                WHERE common_name != '' AND common_name != 'bird' COLLATE NOCASE
                 """,
                 (time.time(),),
             )
             conn.execute(
                 "INSERT OR REPLACE INTO app_prefs (key, value) VALUES ('species_confirm_migrated', '1')"
             )
+        # Unidentified detections are stored with the placeholder name 'bird', which the
+        # confirmation migration above (and earlier versions of it) happily stamped as a
+        # species — putting "bird" in the review queue, the registry and the dex numbering.
+        # Every query now excludes it, but a row already written has to be cleared out.
+        conn.execute(
+            "DELETE FROM species_confirmed WHERE common_name = 'bird' COLLATE NOCASE"
+        )
+        # Same reasoning for the reference caches: they may hold a Wikipedia blurb and
+        # photos fetched for the "species" called bird.
+        for table in ("species_info", "species_photos", "species_audio"):
+            conn.execute(f"DELETE FROM {table} WHERE common_name = 'bird' COLLATE NOCASE")
         # Idempotent cleanup: remap rows whose common_name is actually a scientific
         # name (e.g. Frigate's classifier) onto the species' real common name, when
         # another source has recorded the pairing. Keeps species pages and
@@ -375,6 +387,26 @@ def _source_clause(source: Optional[str], params: list) -> str:
         params.append(source)
         return " AND source = ?"
     return ""
+
+
+# The placeholder name carried by a detection with no species. It is the absence of an
+# answer, not an answer — kept in sync with ingest.is_unclassified().
+UNNAMED = "bird"
+
+
+def _named_clause(table: str = "detections") -> str:
+    """Exclude species-less detections from anything species-shaped.
+
+    Before external identification existed this was unnecessary: ``ignore_unclassified``
+    meant a row named 'bird' was never stored, so every query could assume a real species.
+    Identification deliberately stores such rows (pending, then possibly unidentifiable),
+    which turned that assumption into a bug — 'bird' queued for confirmation as a species,
+    took a dex number, and counted toward the species total.
+
+    Applied to every query that answers "which species", so the rule lives in one place
+    rather than being remembered independently in a dozen SQL strings.
+    """
+    return f" AND {table}.common_name != '{UNNAMED}' COLLATE NOCASE"
 
 
 def recent_detections(
@@ -490,7 +522,8 @@ def unconfirmed_count() -> int:
             """
             SELECT COUNT(*) AS c FROM (
                 SELECT common_name FROM detections
-                WHERE common_name != '' AND NOT EXISTS (
+                WHERE common_name != '' AND common_name != 'bird' COLLATE NOCASE
+                  AND NOT EXISTS (
                     SELECT 1 FROM species_confirmed sc
                     WHERE sc.common_name = detections.common_name COLLATE NOCASE
                 )
@@ -509,7 +542,7 @@ def new_species_count(source: Optional[str] = None, since: Optional[float] = Non
     species count.
     """
     params: list = []
-    src = _source_clause(source, params) + _confirmed_clause(only_confirmed)
+    src = _source_clause(source, params) + _confirmed_clause(only_confirmed) + _named_clause()
     if since is None:
         with _connect() as conn:
             row = conn.execute(
@@ -548,7 +581,7 @@ def species_list(
     ignores ``only_confirmed``, since asking for both would always be empty.
     """
     params: list = []
-    where = "WHERE 1=1" + _source_clause(source, params)
+    where = "WHERE 1=1" + _source_clause(source, params) + _named_clause()
     if only_unconfirmed:
         where += (" AND NOT EXISTS (SELECT 1 FROM species_confirmed sc"
                   " WHERE sc.common_name = detections.common_name COLLATE NOCASE)")
@@ -586,7 +619,7 @@ def species_list(
 
 def distinct_species(source: Optional[str] = None) -> list[str]:
     params: list = []
-    where = "WHERE 1=1" + _source_clause(source, params)
+    where = "WHERE 1=1" + _source_clause(source, params) + _named_clause()
     with _connect() as conn:
         rows = conn.execute(
             f"SELECT DISTINCT common_name FROM detections {where} ORDER BY common_name",
@@ -611,7 +644,7 @@ def species_dex_numbers(only_confirmed: bool = False) -> dict[str, int]:
             SELECT common_name,
                    ROW_NUMBER() OVER (ORDER BY MIN(start_time), common_name) AS dex_no
             FROM detections
-            WHERE 1=1{_confirmed_clause(only_confirmed)}
+            WHERE 1=1{_confirmed_clause(only_confirmed)}{_named_clause()}
             GROUP BY common_name
             """
         ).fetchall()
@@ -639,7 +672,7 @@ def registry_stats(only_confirmed: bool = False) -> dict:
                 SELECT MAX(source = 'frigate') AS seen,
                        MAX(source = 'birdnet') AS heard
                 FROM detections
-                WHERE 1=1{_confirmed_clause(only_confirmed)}
+                WHERE 1=1{_confirmed_clause(only_confirmed)}{_named_clause()}
                 GROUP BY common_name
             )
             """
@@ -940,10 +973,25 @@ def pending_identifications(limit: int = 500) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def unidentified_detections(limit: int = 100, before: Optional[float] = None) -> list[dict]:
-    """The review queue: identification ran and did not produce a usable species."""
+# A detection with no species. Deliberately defined by the name rather than by id_status:
+# this is exactly the set _named_clause() keeps out of the species registry, so the tab and
+# the registry can never disagree about what counts as identified. It also catches rows
+# that predate identification, which have no status at all.
+_UNIDENTIFIED = f"common_name = '{UNNAMED}' COLLATE NOCASE"
+
+
+def unidentified_detections(limit: int = 100, before: Optional[float] = None,
+                            include_pending: bool = False) -> list[dict]:
+    """Detections still waiting for a species, newest first.
+
+    ``include_pending`` covers rows in flight to the identification service. Off by
+    default: they resolve within seconds and are reported as a count instead, so the list
+    stays a to-do rather than a progress bar.
+    """
     params: list = []
-    where = "WHERE id_status IN ('failed', 'low_confidence')"
+    where = f"WHERE {_UNIDENTIFIED}"
+    if not include_pending:
+        where += " AND (id_status IS NULL OR id_status != 'pending')"
     if before is not None:
         where += " AND start_time < ?"
         params.append(before)
@@ -955,12 +1003,27 @@ def unidentified_detections(limit: int = 100, before: Optional[float] = None) ->
     return [dict(r) for r in rows]
 
 
-def unidentified_count() -> int:
+def unidentified_counts() -> dict:
+    """Actionable vs in-flight counts for the tab badge and header."""
     with _connect() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS n FROM detections WHERE id_status IN ('failed', 'low_confidence')"
+            f"""
+            SELECT
+                SUM(CASE WHEN id_status = 'pending' THEN 1 ELSE 0 END)  AS pending,
+                SUM(CASE WHEN id_status IS NULL OR id_status != 'pending'
+                         THEN 1 ELSE 0 END)                              AS actionable
+            FROM detections WHERE {_UNIDENTIFIED}
+            """
         ).fetchone()
-    return int(row["n"] or 0)
+    return {
+        "pending": int((row["pending"] if row else 0) or 0),
+        # What the badge shows: things you can actually do something about.
+        "actionable": int((row["actionable"] if row else 0) or 0),
+    }
+
+
+def unidentified_count() -> int:
+    return unidentified_counts()["actionable"]
 
 
 def purge_unidentified(older_than: float) -> int:
@@ -1264,7 +1327,11 @@ def summary_stats(source: Optional[str] = None, since: Optional[float] = None,
             f"""
             SELECT
                 COUNT(*)                     AS total,
-                COUNT(DISTINCT common_name)  AS species,
+                -- Species count excludes unidentified rows, but `total` deliberately
+                -- does NOT: a bird nobody could name was still a bird that showed up,
+                -- and dropping it would understate the detection count for the day.
+                COUNT(DISTINCT CASE WHEN common_name != 'bird' COLLATE NOCASE
+                                    THEN common_name END) AS species,
                 SUM(source = 'frigate')      AS frigate_total,
                 SUM(source = 'birdnet')      AS birdnet_total
             FROM detections {where}
@@ -1284,6 +1351,7 @@ def top_species(
     where = "WHERE 1=1"
     where += _source_clause(source, params)
     where += _confirmed_clause(only_confirmed)
+    where += _named_clause()
     if since is not None:
         where += " AND start_time >= ?"
         params.append(since)

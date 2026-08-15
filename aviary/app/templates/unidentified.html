@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %} · Unidentified{% endblock %}
+{% block content %}
+<div class="species-head">
+  <h1>Unidentified</h1>
+  <span class="count">
+    {{ counts.actionable }} detection{{ '' if counts.actionable == 1 else 's' }} without a species
+    {%- if counts.pending %} · {{ counts.pending }} still being identified{% endif %}
+  </span>
+</div>
+
+{% if not identify_enabled %}
+{# Reachable with the feature off only if rows were left behind by a previous run, or if
+   ignore_unclassified was turned off. Say so, rather than showing an inert page. #}
+<p class="setting-help">
+  Identification is not configured, so nothing here will resolve on its own. Set
+  <code>identify_url</code> and <code>identify_enabled</code> in the add-on options.
+</p>
+{% endif %}
+
+{% if groups %}
+<p class="setting-help">
+  Frigate saw a bird here but no species could be confirmed — either the identification
+  scored below your thresholds, or it could not be completed. Use <strong>↻ re-identify</strong>
+  to try again after changing a threshold or the species list. These are not counted as a
+  species and do not appear in the registry.
+</p>
+{% include "_groups.html" %}
+{% else %}
+<p class="empty">
+  Nothing unidentified. Every bird Aviary has seen has a species.
+</p>
+{% endif %}
+
+{% if older_url %}
+<div class="pager"><a class="btn" href="{{ older_url }}">Load older</a></div>
+{% endif %}
+{% endblock %}

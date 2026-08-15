@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.14.2
+
+- **Fixed: "bird" was being treated as a species.** An unidentified detection keeps the
+  placeholder name `bird`, and every species query in Aviary took that at face value — so it
+  queued for confirmation as a species, **took a dex number**, counted toward the species
+  total, and appeared in the Recent page's species filter. This could not happen before
+  identification existed, because `ignore_unclassified` meant such rows were never stored at
+  all. Every species-facing query now excludes it in one shared place, and a cleanup on
+  first start removes "bird" from the review queue and the reference caches if a previous
+  version already recorded it. Detection *counts* are unchanged: a bird nobody could name
+  was still a bird that showed up.
+- **New Unidentified tab**, with a count in the nav. Detections waiting for a species are
+  not a species waiting for approval — different thing, different action — so they get their
+  own page instead of being mixed into the species review queue. Rows still being identified
+  are shown as a count rather than cards, since they resolve in seconds. Replaces the
+  temporary "N unidentified" link on Recent.
+- `/species/bird` now redirects there rather than rendering a species page for the absence
+  of a species.
+- Aviary now sends its confidence thresholds to the identification service, which uses them
+  to decide when to sample more frames before answering. It still applies the thresholds
+  itself — the service only uses them to know when to try harder — so tuning stays in one
+  place and needs no redeploy of the GPU container.
+
 ## 0.14.1
 
 - **Fixed: the identify and ✗ wrong buttons never appeared.** They were only rendered on

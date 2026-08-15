@@ -13,6 +13,12 @@
     <nav>
       <a href="{{ u('dashboard') }}" class="{{ 'active' if page == 'dashboard' }}">Dashboard</a>
       <a href="{{ u('recent') }}" class="{{ 'active' if page == 'recent' }}">Recent</a>
+      {# Only when identification is configured — with it off, nothing can ever land here. #}
+      {% if identify_active %}
+      <a href="{{ u('unidentified') }}" class="{{ 'active' if page == 'unidentified' }}">
+        Unidentified{% if unidentified_count %} <span class="nav-badge">{{ unidentified_count }}</span>{% endif %}
+      </a>
+      {% endif %}
       <a href="{{ u('species_index') }}" class="{{ 'active' if page == 'species' }}">{{ 'Registry' if theme == 'dex' else 'Species' }}</a>
       <a href="{{ u('settings_page') }}" class="{{ 'active' if page == 'settings' }}">Settings</a>
     </nav>
