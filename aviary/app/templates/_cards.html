@@ -70,7 +70,8 @@
       {% endif %}
     </div>
     <div class="meta sub">
-      {% if d.location %}<span>{{ d.location }}</span>{% endif %}
+      {% if d.location %}<span title="camera{% if d.zone %} · zone{% endif %}">{{ d.location }}{% if d.zone %} · {{ d.zone | replace('_', ' ') }}{% endif %}</span>
+      {% elif d.zone %}<span title="zone">{{ d.zone | replace('_', ' ') }}</span>{% endif %}
       <span title="{{ d.start_time | fmt_time }}">{{ d.start_time | fmt_rel }}</span>
       {% if d.source == 'frigate' and d.has_clip %}
       <button type="button" class="clip-open"
@@ -79,6 +80,13 @@
               data-time="{{ d.start_time }}">⤢ scrub / still</button>
       <a class="dl-link" title="Download video — remuxed so the duration shows correctly when shared"
          href="{{ u('frigate_download', event_id=d.source_ref) }}">⬇ video</a>
+      <button type="button" class="retain-toggle{{ ' retained' if d.retained_at }}"
+              title="{{ 'Kept forever at Frigate — click to release it back to normal retention'
+                        if d.retained_at else
+                        'Keep this clip forever: tells Frigate to never expire this event' }}"
+              data-id="{{ d.id }}" data-retained="{{ 1 if d.retained_at else 0 }}">
+        {{- '📌 kept' if d.retained_at else '📌 keep' -}}
+      </button>
       {% endif %}
     </div>
     {# Identification actions get their own row. The row above is already at four items on

@@ -40,6 +40,12 @@ _MAX_WIDTH = 1920
 # fork a dozen decoders at once on a box that is also running a GPU workload.
 _SEEK_CONCURRENCY = 4
 
+# How far (seconds) a clip frame may sit outside the tracked path's time span and still
+# borrow its nearest endpoint as an anchor. Paths are sparse (a few points across a
+# whole event), so this is deliberately generous — but a frame in the pre/post-capture
+# padding, long before the bird arrived, must not inherit an anchor it has no claim to.
+_ANCHOR_TOLERANCE = 2.0
+
 
 @dataclass
 class Candidate:
@@ -55,6 +61,11 @@ class Candidate:
     # Detector-equivalent confidence for a pre-cropped candidate, used when fusing frames.
     # Frigate's own score where we have it.
     score: float = 0.9
+    # Where the TRACKED bird sits in this frame, normalized (x, y), interpolated from the
+    # event's path_data. Clip frames only. This is Frigate's own answer to "which bird is
+    # this event about" — with two birds in frame, the detector finds both, and without
+    # the anchor the pipeline would happily classify whichever is more photogenic.
+    anchor: Optional[tuple[float, float]] = None
 
 
 @dataclass
@@ -217,6 +228,37 @@ def _decode_file(path: str) -> Optional[Image.Image]:
         return None
 
 
+def _path_from_event(event: dict) -> list[tuple[float, float, float]]:
+    """The tracked object's path as [(wall_time, x, y)], normalized, time-sorted.
+
+    Frigate stores it as ``data.path_data = [[[x, y], timestamp], ...]`` — sparse
+    normalized points (bottom-center of the tracked box) with absolute wall-clock
+    timestamps. Anything malformed is skipped rather than guessed at.
+    """
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    raw = data.get("path_data")
+    if not isinstance(raw, list):
+        return []
+    points: list[tuple[float, float, float]] = []
+    for entry in raw:
+        try:
+            (x, y), t = entry
+            x, y, t = float(x), float(y), float(t)
+        except (TypeError, ValueError):
+            continue
+        if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
+            points.append((t, x, y))
+    points.sort()
+    return points
+
+
+def _as_float(value) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _box_from_event(event: dict) -> Optional[tuple[float, float, float, float]]:
     """Frigate's own bounding box for the snapshot frame, in absolute pixels.
 
@@ -256,6 +298,11 @@ class EventMedia:
         self.candidates: list[Candidate] = []
         self.clip_path: Optional[str] = None
         self.duration: Optional[float] = None
+        # Tracked-object path and event times, for anchoring clip frames to the bird
+        # this event is actually about (see Candidate.anchor).
+        self.path: list[tuple[float, float, float]] = []
+        self.start_time: Optional[float] = None
+        self.end_time: Optional[float] = None
         self._tmpdir: Optional[str] = None
         self._used_offsets: set[int] = set()
 
@@ -287,14 +334,21 @@ class EventMedia:
                 self.candidates.append(Candidate(image=img, origin="thumbnail",
                                                  pre_cropped=True))
 
+        event: dict = {}
+        if event_json:
+            try:
+                parsed = json.loads(event_json)
+                if isinstance(parsed, dict):
+                    event = parsed
+            except (ValueError, TypeError):
+                log.debug("Could not parse the event JSON for %s.", self.event_id)
+        self.path = _path_from_event(event)
+        self.start_time = _as_float(event.get("start_time"))
+        self.end_time = _as_float(event.get("end_time"))
+
         snapshot = _decode(snap_bytes, f"snapshot for {self.event_id}") if snap_bytes else None
         if snapshot is not None:
-            box = None
-            if event_json and self.settings.use_event_box:
-                try:
-                    box = _box_from_event(json.loads(event_json))
-                except (ValueError, TypeError):
-                    log.debug("Could not parse the event JSON for %s.", self.event_id)
+            box = _box_from_event(event) if (event and self.settings.use_event_box) else None
             if box:
                 self.candidates.append(Candidate(
                     image=crop_box(snapshot, box, self.settings.crop_padding),
@@ -345,11 +399,48 @@ class EventMedia:
         if not offsets:
             return 0
         frames = await extract_frames(self.clip_path, self._tmpdir, offsets, self.settings)
+        clip_t0 = self._clip_start()
         for img, offset in frames:
             self._used_offsets.add(int(offset * 10))
-            self.candidates.append(Candidate(image=img, origin=f"clip@{offset:.2f}s"))
+            anchor = (self._anchor_at(clip_t0 + offset)
+                      if clip_t0 is not None else None)
+            self.candidates.append(
+                Candidate(image=img, origin=f"clip@{offset:.2f}s", anchor=anchor))
         timings.add(f"ffmpeg{'' if phase == 0.5 else '2'}", loop.time() - started)
         return len(frames)
+
+    def _clip_start(self) -> Optional[float]:
+        """Estimated wall-clock time of the clip's first frame.
+
+        The clip is the event plus Frigate's pre/post-capture padding, whose exact split
+        Frigate does not report — assume symmetric. Anchor matching is tolerance-based,
+        so being a second off is survivable; having no estimate at all is not.
+        """
+        if self.start_time is None or not self.duration:
+            return None
+        event_span = max(0.0, (self.end_time or self.start_time) - self.start_time)
+        return self.start_time - max(0.0, (self.duration - event_span) / 2)
+
+    def _anchor_at(self, wall: float) -> Optional[tuple[float, float]]:
+        """The tracked bird's normalized position at ``wall`` time, or None.
+
+        Linear interpolation between the sparse path points; outside the path's span the
+        nearest endpoint serves, but only within _ANCHOR_TOLERANCE — a frame from the
+        padding before the bird arrived gets no anchor rather than a fabricated one.
+        """
+        if not self.path:
+            return None
+        first, last = self.path[0], self.path[-1]
+        if wall <= first[0]:
+            return (first[1], first[2]) if first[0] - wall <= _ANCHOR_TOLERANCE else None
+        if wall >= last[0]:
+            return (last[1], last[2]) if wall - last[0] <= _ANCHOR_TOLERANCE else None
+        for (t0, x0, y0), (t1, x1, y1) in zip(self.path, self.path[1:]):
+            if t0 <= wall <= t1:
+                span = t1 - t0
+                f = (wall - t0) / span if span > 0 else 0.0
+                return (x0 + f * (x1 - x0), y0 + f * (y1 - y0))
+        return None
 
 
 def crop_box(image: Image.Image, box: tuple[float, float, float, float],

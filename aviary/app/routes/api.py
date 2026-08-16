@@ -250,6 +250,36 @@ async def reidentify(
     }
 
 
+@router.post("/detections/{det_id}/retain")
+async def retain_detection(det_id: int, request: Request,
+                           keep: int = Query(1, description="1 = keep forever, 0 = release")):
+    """Pin (or release) this event's clip as kept-forever at Frigate.
+
+    Flips Frigate's ``retain_indefinitely`` flag on the event, exempting it from
+    Frigate's normal retention expiry, and records the state here so the card shows it
+    and Aviary's own unidentified-row purge leaves the row alone.
+    """
+    det = await run_in_threadpool(db.detection_by_id, det_id)
+    if det is None:
+        return {"ok": False, "error": "detection not found"}
+    if det["source"] != "frigate":
+        return {"ok": False, "error": "only Frigate events have clips to retain"}
+    settings = request.app.state.settings
+    if not settings.frigate_url:
+        return {"ok": False, "error": "frigate_url not configured"}
+
+    url = proxy.frigate_retain_url(settings.frigate_url, det["source_ref"])
+    try:
+        status, text = await proxy.call_upstream("POST" if keep else "DELETE", url)
+    except httpx.HTTPError as exc:
+        return {"ok": False, "error": f"Frigate unreachable: {exc}"}
+    if status >= 400:
+        return {"ok": False, "error": f"Frigate returned {status}: {text}"}
+
+    await run_in_threadpool(db.set_retained, det_id, bool(keep))
+    return {"ok": True, "retained": bool(keep)}
+
+
 @router.post("/detections/{det_id}/species")
 async def set_species(det_id: int, species: str = Query(..., min_length=1),
                       scientific: Optional[str] = Query(None)):

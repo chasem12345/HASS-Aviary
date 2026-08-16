@@ -26,7 +26,18 @@
         {% endfor %}
       </select>
     </label>
-    {% if species or source != 'all' or range != 'all' %}
+    {# Only rendered once zones exist in the data — a zoneless setup keeps a clean bar. #}
+    {% if zone_options %}
+    <label>Zone
+      <select name="zone" onchange="this.form.submit()">
+        <option value="" {{ 'selected' if not zone }}>All zones</option>
+        {% for z in zone_options %}
+        <option value="{{ z }}" {{ 'selected' if zone == z }}>{{ z | replace('_', ' ') }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    {% if species or zone or source != 'all' or range != 'all' %}
       <a class="filter-chip" href="{{ u('recent') }}">Clear filters ✕</a>
     {% endif %}
   </form>
@@ -43,6 +54,7 @@
   window.aviaryInitRecent({
     source: {{ (none if source == 'all' else source) | tojson }},
     species: {{ (species or none) | tojson }},
+    zone: {{ (zone or none) | tojson }},
     range: {{ range | tojson }},
     newest: {{ (newest or 0) | tojson }},
     paged: {{ paged | tojson }},

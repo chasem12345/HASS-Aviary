@@ -196,14 +196,19 @@ variables:
     {{ is_new or milestone or (species_cooldown | default(0)) == 0
        or since_last in (none, '')
        or (since_last | float(0)) >= (species_cooldown | float(0)) * 60 }}
-  # e.g. "Northern Cardinal detected on bird camera" / "Wood Thrush heard at yard".
-  # Prefixed for milestones (notifications have no title), most significant first: a
-  # brand-new species reads "New species!" even though its first_seen flag is also set.
+  # e.g. "Northern Cardinal detected at bird bath" (zone), "…detected on bird camera"
+  # (no zone) / "Wood Thrush heard at yard". Prefixed for milestones (notifications have
+  # no title), most significant first: a brand-new species reads "New species!" even
+  # though its first_seen flag is also set. The zone is preferred over the camera — it
+  # says WHERE in the yard, which is the interesting part; underscores read as spaces.
   message: >-
     {{ 'New species! ' if is_new
        else ('First sighting! ' if is_first_seen
              else ('First recording! ' if is_first_heard else '')) }}{{ trigger.event.data.common_name }}
-    {%- if verb == 'seen' %} detected{% if trigger.event.data.location %} on
+    {%- if verb == 'seen' %} detected
+    {%- if trigger.event.data.zone %} at
+    {{ trigger.event.data.zone | replace('_', ' ') }}
+    {%- elif trigger.event.data.location %} on
     {{ trigger.event.data.location }} camera{% endif %}
     {%- else %} heard{% if trigger.event.data.location %} at
     {{ trigger.event.data.location }}{% endif %}{% endif %}

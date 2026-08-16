@@ -67,10 +67,12 @@ def _paged(
     species: Optional[str],
     before: Optional[float],
     since: Optional[float],
+    zone: Optional[str] = None,
 ) -> tuple[list[dict], Optional[float]]:
     """One page of detections plus the next ``before`` cursor (None = no more)."""
     rows = db.recent_detections(
-        limit=PAGE_SIZE + 1, source=source, species=species, before=before, since=since
+        limit=PAGE_SIZE + 1, source=source, species=species, before=before, since=since,
+        zone=zone,
     )
     has_more = len(rows) > PAGE_SIZE
     rows = rows[:PAGE_SIZE]
@@ -123,11 +125,12 @@ def _recent_ctx(
     species: Optional[str],
     range_key: str,
     before: Optional[float],
+    zone: Optional[str] = None,
 ) -> dict:
     src = _norm_source(source)
     range_key = _norm_range(range_key, default="all")
     since = _since(range_key)
-    detections, next_before = _paged(src, species, before, since)
+    detections, next_before = _paged(src, species, before, since, zone)
     older_url = None
     if next_before is not None:
         q: dict = {"before": f"{next_before:.6f}"}
@@ -135,6 +138,8 @@ def _recent_ctx(
             q["source"] = src
         if species:
             q["species"] = species
+        if zone:
+            q["zone"] = zone
         if range_key != "all":
             q["range"] = range_key
         older_url = f"{ingress_url(request, 'recent')}?{urlencode(q)}"
@@ -143,12 +148,15 @@ def _recent_ctx(
         "page": "recent",
         "source": src or "all",
         "species": species,
+        "zone": zone,
         "range": range_key,
         "groups": _day_groups(detections),
         "next_before": next_before,
         "older_url": older_url,
         "paged": before is not None,
         "species_options": db.distinct_species(),
+        # Only offered when zones actually exist — a zoneless setup keeps a clean bar.
+        "zone_options": db.distinct_zones(),
         "newest": detections[0]["start_time"] if detections else 0,
     }
 
@@ -158,10 +166,11 @@ def recent(
     request: Request,
     source: Optional[str] = Query(None),
     species: Optional[str] = Query(None),
+    zone: Optional[str] = Query(None),
     range_key: str = Query("all", alias="range"),
     before: Optional[float] = Query(None),
 ):
-    ctx = _recent_ctx(request, source, species, range_key, before)
+    ctx = _recent_ctx(request, source, species, range_key, before, zone)
     return render("recent.html", ctx)
 
 
@@ -170,12 +179,13 @@ def recent_partial(
     request: Request,
     source: Optional[str] = Query(None),
     species: Optional[str] = Query(None),
+    zone: Optional[str] = Query(None),
     range_key: str = Query("all", alias="range"),
     before: Optional[float] = Query(None),
     highlight_after: Optional[float] = Query(None),
 ):
     """Server-rendered detection groups for the Recent page's live refresh."""
-    ctx = _recent_ctx(request, source, species, range_key, before)
+    ctx = _recent_ctx(request, source, species, range_key, before, zone)
     ctx["highlight_after"] = highlight_after
     return render("_groups.html", ctx)
 

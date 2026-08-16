@@ -570,6 +570,7 @@
             const url = withParams(BASE + "/recent/partial", {
               source: opts.source,
               species: opts.species,
+              zone: opts.zone,
               range: opts.range,
               highlight_after: newest,
             });
@@ -993,6 +994,36 @@
       alert("Re-identify failed: " + err);
       btn.disabled = false;
       btn.textContent = original;
+    }
+  });
+
+  // Keep-forever toggle: flips Frigate's retain_indefinitely for the event. Patched in
+  // place rather than reloading — nothing else on the page depends on the flag.
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".retain-toggle");
+    if (!btn) return;
+    e.preventDefault();
+    const keep = btn.dataset.retained === "1" ? 0 : 1;
+    btn.disabled = true;
+    try {
+      const res = await fetch(
+        API + "/detections/" + encodeURIComponent(btn.dataset.id) + "/retain?keep=" + keep,
+        { method: "POST" });
+      const data = await res.json();
+      if (!data.ok) {
+        alert("Couldn't update retention: " + (data.error || res.status));
+        return;
+      }
+      btn.dataset.retained = String(keep);
+      btn.textContent = keep ? "📌 kept" : "📌 keep";
+      btn.classList.toggle("retained", !!keep);
+      btn.title = keep
+        ? "Kept forever at Frigate — click to release it back to normal retention"
+        : "Keep this clip forever: tells Frigate to never expire this event";
+    } catch (err) {
+      alert("Couldn't update retention: " + err);
+    } finally {
+      btn.disabled = false;
     }
   });
 })();

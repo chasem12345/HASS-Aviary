@@ -265,6 +265,14 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 /* When both are present the download sits after the player button, so only the first
    one pushed to the right needs the auto margin. */
 .clip-open + .dl-link { margin-left: 0; }
+.retain-toggle {
+  color: var(--muted); font-size: 12px; white-space: nowrap;
+  background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit;
+}
+.retain-toggle:hover { color: var(--accent); }
+.retain-toggle[disabled] { opacity: .5; cursor: default; }
+/* Pinned state reads at a glance without hunting for the label change. */
+.retain-toggle.retained { color: var(--accent); font-weight: 600; }
 .reidentify {
   color: var(--muted); font-size: 12px; white-space: nowrap;
   background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit;

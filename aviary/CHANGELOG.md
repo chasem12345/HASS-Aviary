@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.0
+
+- **Notifications say where in the yard.** Frigate zones now flow through everything:
+  the notification blueprint reads "Gray Catbird detected at bird bath" (falling back to
+  the camera name when no zone applies), the `aviary_detection` event payload gains a
+  `zone` field, cards show "camera · zone", and the Recent page grows a Zone filter
+  (only shown once zones exist). Existing detections are backfilled from their stored
+  event JSON where possible.
+- **Keep a clip forever.** Frigate detection cards gain a **📌 keep** toggle that flips
+  Frigate's `retain_indefinitely` flag on the event, exempting the clip from retention
+  expiry. Kept rows are also exempt from Aviary's own unidentified-row purge, so the
+  card can't vanish while Frigate still holds the video.
+- **Two birds in frame no longer cross-contaminate** (with aviary-id 0.6.0): clip-frame
+  crops are anchored to the tracked object's own path from Frigate, so the event's bird
+  — not whichever bird is more photogenic — is the one classified. Update the GPU
+  container together with this add-on.
+
 ## 0.16.2
 
 **Stale rejections are no longer invisible.** A rejected answer permanently vetoes that

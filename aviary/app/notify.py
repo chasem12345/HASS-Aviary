@@ -179,6 +179,10 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
         "verb": verb,
         "confidence": row.get("confidence"),
         "location": row.get("location"),
+        # Frigate zone(s) the bird entered, comma-joined ("bird_bath, porch"); None for
+        # BirdNET rows and zoneless cameras. Kept separate from location (the camera
+        # name) so the blueprint's camera allowlist keeps filtering on the camera.
+        "zone": row.get("zone"),
         "image": image_url,
         "detected_at": _iso(row.get("start_time")),
         "is_new_species": bool(is_new),

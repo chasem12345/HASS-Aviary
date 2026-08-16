@@ -184,6 +184,11 @@ def frigate_sub_label_url(base: str, event_id: str) -> str:
     return f"{base}/api/events/{event_id}/sub_label"
 
 
+def frigate_retain_url(base: str, event_id: str) -> str:
+    """POST sets the event's retain_indefinitely flag; DELETE clears it."""
+    return f"{base}/api/events/{event_id}/retain"
+
+
 def birdnet_detection_url(base: str, native_id: str) -> str:
     return f"{base}/api/v2/detections/{quote(str(native_id), safe='')}"
 

@@ -293,7 +293,8 @@ deduplicated):
   "source_ref": "1719854321.123-abc123",  // Frigate event id / BirdNET detection ref
   "verb": "seen",                          // "seen" (camera) or "heard" (audio)
   "confidence": 0.87,
-  "location": "backyard",
+  "location": "backyard",                  // the camera (Frigate) or node (BirdNET-Go)
+  "zone": "bird_bath",                     // Frigate zone(s) entered, comma-joined; null if none
   "image": "/local/aviary/blue-jay.jpg",   // or null when no image was available
   "detected_at": "2026-07-02T09:15:00-05:00",
   "is_new_species": false,                 // first time Aviary has ever recorded it, any source
@@ -312,6 +313,10 @@ been hearing for months finally turning up on camera sets `is_first_seen` while
 `is_new_species` stays false. A genuinely new species sets both. A detection never claims
 the flag for the other source: a *heard* detection of a bird no camera has caught has
 `is_first_seen: false`, because it isn't a sighting.
+
+The blueprint's notification prefers the zone over the camera when one is present —
+"Blue Jay detected at bird bath" rather than "…on backyard camera" — with underscores
+rendered as spaces.
 
 First-ever species also fire the legacy `aviary_new_species` event (same payload) for
 older automations. The image is the Frigate snapshot for visual detections (Aviary
@@ -356,6 +361,18 @@ Notes:
   bird images are stored there.
 - Set `notify_new_species: false` in the add-on options to turn all detection events
   off.
+
+## Keeping a clip forever
+
+Every Frigate detection card with a clip has a **📌 keep** button. It flips Frigate's
+`retain_indefinitely` flag on the event, exempting that clip from Frigate's normal
+retention expiry, and marks the card **📌 kept** (click again to release). Aviary's own
+housekeeping also leaves kept rows alone, so a pinned-but-unidentified detection never
+loses its card while Frigate still holds the video.
+
+Requires Aviary to reach Frigate's API (`frigate_url`). If Frigate authentication is
+enabled, the retain endpoint requires an admin credential — the same constraint as the
+delete-at-source actions.
 
 ## Filtering by camera
 

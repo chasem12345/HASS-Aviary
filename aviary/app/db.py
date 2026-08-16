@@ -8,6 +8,7 @@ and the FastAPI event loop cleanly separated.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -241,9 +242,46 @@ def init_db(db_path: str) -> None:
             # how many of the user's confirmed examples backed it. NULL means the probe
             # abstained (or predates these columns).
             ("id_probe_weight", "REAL"), ("id_probe_examples", "INTEGER"),
+            # Frigate zones the object entered, comma-joined ("bird_bath, porch").
+            # Separate from `location` (the camera name), which the notification
+            # blueprint's camera allowlist filters on.
+            ("zone", "TEXT"),
+            # When the user pinned this event's clip as kept-forever at Frigate
+            # (retain_indefinitely). NULL = not retained. Deliberately absent from
+            # upsert_detection so a later Frigate message can't clobber the flag.
+            ("retained_at", "REAL"),
         ):
             if name not in cols:
                 conn.execute(f"ALTER TABLE detections ADD COLUMN {name} {decl}")
+        # One-time, best-effort zone backfill for rows that predate the zone column.
+        # raw_json stores the Frigate `after` object (size-capped, largest values
+        # dropped first — entered_zones is small and usually survives; some rows have
+        # raw_json NULL and simply stay zoneless).
+        migrated = conn.execute(
+            "SELECT value FROM app_prefs WHERE key = 'zone_backfill_done'"
+        ).fetchone()
+        if not migrated:
+            rows = conn.execute(
+                """
+                SELECT id, raw_json FROM detections
+                WHERE source = 'frigate' AND zone IS NULL AND raw_json IS NOT NULL
+                """
+            ).fetchall()
+            for det_id, raw in rows:
+                try:
+                    obj = json.loads(raw)
+                    zones = (obj.get("entered_zones") or obj.get("zones")
+                             or obj.get("current_zones") or [])
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                joined = ", ".join(str(z) for z in zones if z)
+                if joined:
+                    conn.execute("UPDATE detections SET zone = ? WHERE id = ?",
+                                 (joined, det_id))
+            conn.execute(
+                "INSERT OR REPLACE INTO app_prefs (key, value) "
+                "VALUES ('zone_backfill_done', '1')"
+            )
         # Created here, not in _SCHEMA, because a partial index on a column that does not
         # exist yet is a hard error rather than a skip (see the note in _SCHEMA).
         #
@@ -406,17 +444,20 @@ def upsert_detection(row: dict[str, Any]) -> None:
     final species and confidence are kept. COALESCE preserves any media flags/refs that
     were already captured but are absent from a later message.
     """
+    # Only Frigate rows carry a zone; default it so BirdNET's row shape (and any older
+    # caller) satisfies the named parameters without every builder growing the key.
+    row = {"zone": None, **row}
     with _connect() as conn:
         conn.execute(
             """
             INSERT INTO detections (
                 source, source_ref, common_name, scientific_name, species_code,
-                confidence, location, start_time, end_time,
+                confidence, location, zone, start_time, end_time,
                 has_clip, has_snapshot, clip_ref, snapshot_ref, native_id,
                 raw_json, created_at
             ) VALUES (
                 :source, :source_ref, :common_name, :scientific_name, :species_code,
-                :confidence, :location, :start_time, :end_time,
+                :confidence, :location, :zone, :start_time, :end_time,
                 :has_clip, :has_snapshot, :clip_ref, :snapshot_ref, :native_id,
                 :raw_json, :created_at
             )
@@ -437,6 +478,10 @@ def upsert_detection(row: dict[str, Any]) -> None:
                                       detections.confidence, excluded.confidence
                                   ),
                 location        = excluded.location,
+                -- COALESCE, not last-write-wins: entered_zones is cumulative so the end
+                -- message carries the full list, but a message WITHOUT zones (or a
+                -- BirdNET row shape) must not wipe one already recorded.
+                zone            = COALESCE(excluded.zone, detections.zone),
                 end_time        = COALESCE(excluded.end_time, detections.end_time),
                 has_clip        = MAX(detections.has_clip, excluded.has_clip),
                 has_snapshot    = MAX(detections.has_snapshot, excluded.has_snapshot),
@@ -484,6 +529,7 @@ def recent_detections(
     species: Optional[str] = None,
     before: Optional[float] = None,
     since: Optional[float] = None,
+    zone: Optional[str] = None,
 ) -> list[dict]:
     """Newest-first detections. ``before`` is a start_time cursor for pagination."""
     params: list = []
@@ -492,6 +538,11 @@ def recent_detections(
     if species:
         where += " AND common_name = ?"
         params.append(species)
+    if zone:
+        # zone is comma-joined for multi-zone events ("bird_bath, porch"); match one
+        # whole element, delimiter-wrapped, so "bath" cannot match "bird_bath".
+        where += " AND ',' || REPLACE(zone, ' ', '') || ',' LIKE '%,' || ? || ',%'"
+        params.append(zone.replace(" ", ""))
     if before is not None:
         where += " AND start_time < ?"
         params.append(before)
@@ -505,6 +556,20 @@ def recent_detections(
             params,
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def distinct_zones() -> list[str]:
+    """Individual zone names seen so far, for the Recent page's filter dropdown.
+
+    Rows store comma-joined combinations ("bird_bath, porch"); the dropdown wants the
+    individual zones, so split and dedupe here rather than in SQL.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT zone FROM detections WHERE zone IS NOT NULL AND zone != ''"
+        ).fetchall()
+    zones = {z.strip() for (combo,) in rows for z in combo.split(",") if z.strip()}
+    return sorted(zones)
 
 
 def change_marker(source: Optional[str] = None, species: Optional[str] = None) -> dict:
@@ -1276,6 +1341,9 @@ def purge_unidentified(older_than: float) -> int:
                 """
                 SELECT id FROM detections
                 WHERE id_status IN ('failed', 'low_confidence') AND start_time < ?
+                  -- A clip the user pinned as kept-forever must keep its row too: the
+                  -- video would survive at Frigate while the card vanished here.
+                  AND retained_at IS NULL
                 """,
                 (older_than,),
             ).fetchall()
@@ -1290,6 +1358,15 @@ def purge_unidentified(older_than: float) -> int:
             "DELETE FROM identification_rejections WHERE detection_id = ?", [(i,) for i in ids]
         )
     return len(ids)
+
+
+def set_retained(detection_id: int, retained: bool) -> None:
+    """Record whether this event's clip is pinned kept-forever at Frigate."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE detections SET retained_at = ? WHERE id = ?",
+            (time.time() if retained else None, detection_id),
+        )
 
 
 def tombstoned_refs() -> list[tuple[str, str]]:

@@ -34,6 +34,26 @@ log = logging.getLogger("aviary_id.pipeline")
 # One ranked crop: (rank, image, score, origin).
 Ranked = tuple[float, Image.Image, float, str]
 
+# Anchor matching: a detector box whose bottom-center sits within this normalized
+# distance of the tracked path is "the event's bird"; anything farther is probably a
+# DIFFERENT bird sharing the frame and has its rank cut — deprioritized, never dropped,
+# because the path is sparse and coarse and must not discard the only bird found.
+_ANCHOR_RADIUS = 0.15
+_ANCHOR_PENALTY = 0.2
+
+
+def _anchor_factor(cand: "frames.Candidate", det: Detection) -> float:
+    """1.0 when the box matches the tracked bird's position (or there is no anchor)."""
+    if cand.anchor is None:
+        return 1.0
+    x1, _, x2, y2 = det.box
+    # Bottom-center, normalized — the same reference point Frigate's path_data uses.
+    bx = ((x1 + x2) / 2) / max(1, cand.image.width)
+    by = y2 / max(1, cand.image.height)
+    ax, ay = cand.anchor
+    dist = ((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5
+    return 1.0 if dist <= _ANCHOR_RADIUS else _ANCHOR_PENALTY
+
 
 def localize(
     candidates: list[frames.Candidate],
@@ -44,6 +64,9 @@ def localize(
 
     Ranked by ``score * sqrt(area)``: confidence alone would favour a tiny, perfectly
     recognised bird over a large clear one, and area alone would favour a big blurry blob.
+    Clip-frame boxes are additionally weighted by whether they sit on the tracked
+    object's path — with two birds in frame, the detector finds both, and the anchor is
+    Frigate's own answer to which one THIS event is about.
 
     Pre-cropped candidates — Frigate's thumbnail, or its snapshot cropped to Frigate's own
     box — skip the detector entirely and rank on their own score. They are already the crop
@@ -58,7 +81,7 @@ def localize(
             continue
         for det in detections.get(i, []):
             ranked.append((
-                det.score * (det.area ** 0.5),
+                det.score * (det.area ** 0.5) * _anchor_factor(cand, det),
                 frames.crop_box(cand.image, det.box, settings.crop_padding),
                 det.score,
                 cand.origin,

@@ -275,6 +275,14 @@ def build_frigate_row(obj: dict) -> Optional[dict]:
     has_clip = 1 if obj.get("has_clip") else 0
     has_snapshot = 1 if obj.get("has_snapshot") else 0
 
+    # Zones the object entered. MQTT uses `entered_zones` (cumulative over the event —
+    # the right one) with `current_zones` as the instantaneous fallback; the HTTP events
+    # API calls the same cumulative list `zones`. Kept separate from `location` (the
+    # camera), which the notification blueprint's camera allowlist filters on.
+    zones = (obj.get("entered_zones") or obj.get("zones")
+             or obj.get("current_zones") or [])
+    zone = ", ".join(str(z) for z in zones if z) or None
+
     return {
         "source": "frigate",
         "source_ref": str(event_id),
@@ -283,6 +291,7 @@ def build_frigate_row(obj: dict) -> Optional[dict]:
         "species_code": None,
         "confidence": confidence,
         "location": obj.get("camera"),
+        "zone": zone,
         "start_time": _as_float(obj.get("start_time")) or _now(),
         "end_time": _as_float(obj.get("end_time")),
         "has_clip": has_clip,
