@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.1
+
+- **Ghost events are no longer kept.** A Frigate tracked object that ends with neither a
+  clip nor a snapshot (seconds-long fly-throughs, wind triggers) is an event Frigate
+  itself discards — its API 404s the id moments later. Aviary used to store these,
+  queue them for identification, fail with `no_media`, and flood the review queue with
+  unreviewable "no media / no ID" cards. Such events are now dropped at ingest (any
+  provisional row from their earlier messages is removed too). Rows already in the
+  review queue from before this fix age out via `identify_retain_days`, or can be
+  deleted from the card.
+
 ## 0.17.0
 
 - **Notifications say where in the yard.** Frigate zones now flow through everything:

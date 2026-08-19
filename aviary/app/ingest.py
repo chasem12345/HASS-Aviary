@@ -324,6 +324,20 @@ def handle_frigate(payload: bytes) -> None:
         return
 
     ended = msg.get("type") == "end"
+    # A tracked object that ends with neither a clip nor a snapshot is one Frigate
+    # itself throws away — its API 404s the event id moments later. These are the
+    # seconds-long fly-throughs and wind triggers; there is nothing to identify and
+    # nothing a human could review, so keeping the row would only put an unreviewable
+    # "no media" card in the queue. Earlier new/update messages may already have stored
+    # a provisional row for it — remove that too. drop_detection writes no tombstone on
+    # purpose: if Frigate somehow does keep the event, backfill may re-import it, and
+    # backfill only ever imports events that have media.
+    if ended and not row["has_clip"] and not row["has_snapshot"]:
+        db.drop_detection(row["source"], row["source_ref"])
+        log.debug("Dropped Frigate event %s: ended with no media (Frigate keeps no "
+                  "record of it either).", row["source_ref"])
+        return
+
     # An ended event with no species, and somewhere to send it: hand it to the
     # identification service instead of announcing or discarding it. Only on `end` —
     # in-progress messages would mean paying for a GPU pass on a bird that is still

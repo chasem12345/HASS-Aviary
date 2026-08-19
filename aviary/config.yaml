@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.17.0"
+version: "0.17.1"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
