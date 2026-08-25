@@ -29,20 +29,32 @@ services:
       EBIRD_REGION: ""
 
       # --- tuning (defaults shown) ------------------------------------------------
-      # TRAINED_CLASSIFIER: "aiy"     # supervised primary (Frigate's bird model, CPU);
-      #                               # "none" = zero-shot only, for A/B measurement
+      # TRAINED_CLASSIFIER: "aiy"     # supervised primary: aiy (Frigate's bird model,
+      #                               # CPU), inat21 (timm EVA02 iNat21 fine-tune, GPU,
+      #                               # ~1.2 GB VRAM, markedly more accurate), auto
+      #                               # (inat21 iff CUDA), none (zero-shot only, for A/B)
+      # TRAINED_MODEL: "timm/eva02_large_patch14_clip_336.merged2b_ft_inat21"
+      #                               # HF checkpoint behind inat21 (cc-by-nc-4.0)
+      # TRAINED_BATCH: "4"            # crops per inat21 forward pass
       # TRAINED_WEIGHT: "0.75"        # its share of the mix for species it knows
       # TRAINED_ACCEPT: "0.65"        # best-frame confidence at which its verdict
       #                               # wins outright (not averaged away)
       # SAMPLE_FRAMES: "8"            # frames decoded from the clip before filtering
-      # CLASSIFY_FRAMES: "3"          # best frames actually classified
-      # DETECTOR_BACKEND: "yolo"      # yolo (YOLO11n, better on small/shaded birds,
-      #                               # AGPL-3.0) or frcnn (torchvision, BSD-3)
+      # CLASSIFY_FRAMES: "4"          # best frames actually classified
+      # DETECTOR_BACKEND: "yolo"      # yolo (better on small/shaded birds, AGPL-3.0)
+      #                               # or frcnn (torchvision, BSD-3)
+      # DETECTOR_MODEL: "yolo11n.pt"  # yolo11s.pt/yolo11m.pt find more small, far birds
+      # DETECTOR_IMGSZ: "640"         # 960/1280 helps feeder-distance birds (more VRAM)
       # DETECTOR_THRESHOLD: "0.3"     # min score for a box to count as a bird
       # CROP_PADDING: "0.15"          # context added around the bird before cropping
       # EXTRA_SPECIES: "Painted Bunting,Bobolink"
       # EXCLUDE_SPECIES: "Rock Pigeon"
       # CPU_ONLY: "1"                 # skip the GPU entirely (~5s/event, useful for tests)
+
+      # --- suggested profile for an 8 GB card (e.g. GTX 1070), sidecar-exclusive ---
+      # TRAINED_CLASSIFIER: "inat21"  # measure first with tools/smoke_test.py --labels
+      # DETECTOR_MODEL: "yolo11s.pt"
+      # DETECTOR_IMGSZ: "960"
 
       # --- accuracy tuning --------------------------------------------------------
       # How each species is described to the model. This is the biggest lever on telling
@@ -58,9 +70,11 @@ services:
       # NO_PROMPT_ENSEMBLE: "1"   # single prompt instead of the 80-template average
 
       # --- if the GPU is shared and you hit out-of-memory ------------------------
-      # Check `nvidia-smi` first — this container needs roughly 1.3 GB free, and the
-      # error message names every process holding memory on the card. Then, in
-      # escalating order of what you give up:
+      # Check `nvidia-smi` first — this container needs roughly 1.3 GB free (about
+      # 2.5 GB with TRAINED_CLASSIFIER=inat21), and the error message names every
+      # process holding memory on the card. Then, in escalating order of what you
+      # give up:
+      # TRAINED_CLASSIFIER: "aiy"     # supervised primary back on the CPU
       # DETECTOR_BATCH: "1"           # fewer frames through the detector at once
       # DETECTOR_CPU: "1"             # detector on CPU, classifier stays on the GPU
       # CLASSIFY_FRAMES: "2"          # fewer crops per event

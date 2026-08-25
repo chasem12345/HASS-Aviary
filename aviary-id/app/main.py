@@ -40,9 +40,11 @@ log = logging.getLogger("aviary_id")
 
 settings: Settings = load_settings()
 
-# One lock around all GPU work. The card has 4 GB and one job at a time saturates it;
-# concurrency is the caller's queue, not ours. Keeping the lock here rather than relying
-# on the caller behaving means a stray parallel request degrades to waiting, not OOM.
+# One lock around all GPU work; concurrency is the caller's queue, not ours. Kept even
+# on cards with headroom: media gathering (the slow, I/O-bound part) already overlaps
+# outside this lock, the TFLite interpreter and the YOLO predictor are not safe to share
+# across threads as single instances, and a stray parallel request degrades to waiting
+# rather than OOM.
 _gpu_lock = asyncio.Lock()
 
 _classifier: Optional[Classifier] = None
@@ -179,9 +181,10 @@ async def lifespan(_: FastAPI):
     def build():
         classifier = Classifier(settings)
         classifier.set_species(species)
-        # The supervised primary (CPU, no VRAM). Built after the vocabulary exists so
-        # its label mapping is over the same regional species list.
-        trained = make_trained(settings)
+        # The supervised primary. Built after the vocabulary exists so its label
+        # mapping is over the same regional species list, and after the classifier so
+        # the GPU backend (and "auto") can follow its device choice.
+        trained = make_trained(settings, classifier.device)
         if trained is not None:
             trained.set_species(species)
             classifier.trained = trained
@@ -211,7 +214,7 @@ async def lifespan(_: FastAPI):
             await _client.aclose()
 
 
-app = FastAPI(title="aviary-id", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="aviary-id", version="0.7.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -230,8 +233,12 @@ async def healthz() -> dict:
         "model_version": _classifier.model_version if _classifier else None,
         "embedding_key": _classifier.embedding_key if _classifier else None,
         "trained_classifier": settings.trained_classifier,
+        # The class actually serving as the supervised backend — this is what makes
+        # TRAINED_CLASSIFIER=auto diagnosable from the outside.
+        "trained_backend": (type(_classifier.trained).__name__
+                            if _classifier and _classifier.trained else None),
         # How many regional species the supervised model actually covers; the rest are
-        # zero-shot only. 0 with TRAINED_CLASSIFIER=aiy means the label mapping failed.
+        # zero-shot only. 0 with a backend enabled means the label mapping failed.
         "trained_coverage": (_classifier.trained.coverage
                              if _classifier and _classifier.trained else 0),
         "species_count": len(_classifier.species) if _classifier else 0,

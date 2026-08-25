@@ -52,10 +52,19 @@ class Settings:
 
     # --- model --------------------------------------------------------------------
     # Supervised classifier that carries the primary vote: "aiy" (Google's iNaturalist
-    # bird MobileNet — the model behind Frigate's native classification; CPU, ~5ms) or
-    # "none" for zero-shot only. Zero-shot alone is measurably worse on common regional
-    # birds; "none" exists for A/B measurement, not as a recommendation.
+    # bird MobileNet — the model behind Frigate's native classification; CPU, ~5ms),
+    # "inat21" (a timm iNat21 fine-tune on the GPU — far stronger, ~1.2 GB VRAM, see
+    # TRAINED_MODEL), "auto" (inat21 when CUDA is available, aiy otherwise) or "none"
+    # for zero-shot only. Zero-shot alone is measurably worse on common regional birds;
+    # "none" exists for A/B measurement, not as a recommendation.
     trained_classifier: str = "aiy"
+    # HF Hub id of the timm checkpoint behind TRAINED_CLASSIFIER=inat21. The default is
+    # EVA02-L/14 @336 fine-tuned on iNaturalist 2021 (10,000 species, 92% top-1 there).
+    # Checkpoint license is cc-by-nc-4.0 — see the README licensing note.
+    trained_model: str = "timm/eva02_large_patch14_clip_336.merged2b_ft_inat21"
+    # Crops per forward pass for the inat21 backend. The peak, not the total, is what
+    # OOMs a shared card — same reasoning as DETECTOR_BATCH.
+    trained_batch: int = 4
     # The supervised model's share of the per-frame probability mix, for species it was
     # trained on. The remainder is BioCLIP zero-shot, which alone covers species the
     # trained model has never seen.
@@ -78,17 +87,23 @@ class Settings:
     # is small and its activations are the spikiest part of the pipeline, so on a card
     # shared with other workloads this buys headroom for a few hundred ms per event.
     detector_cpu: bool = False
-    # Frames handed to the detector at once. Lower means a lower peak.
-    detector_batch: int = 2
+    # Frames handed to the detector at once. Lower means a lower peak; drop back to 2
+    # on a 4 GB card or when running a big DETECTOR_MODEL at DETECTOR_IMGSZ 1280.
+    detector_batch: int = 4
 
     # --- frame extraction ---------------------------------------------------------
     # Frames pulled from the clip before filtering. Oversample: Frigate clips include
     # pre_capture/post_capture padding where the bird may not be in frame at all.
+    # Deliberately NOT raised with GPU headroom: each sampled frame costs an ffmpeg
+    # seek+decode (the actual per-event bottleneck), and moment-collapsing in the
+    # consensus dedupes near-duplicate frames anyway.
     sample_frames: int = 8
-    # Frames actually classified in the first pass, chosen best-first.
-    classify_frames: int = 3
+    # Frames actually classified in the first pass, chosen best-first. Pure GPU cost —
+    # the candidates are already extracted and detected — so this is cheap headroom to
+    # spend: more frames means better fusion and more honest consensus votes.
+    classify_frames: int = 4
     # Hard ceiling on frames classified across all escalation rounds.
-    max_frames: int = 8
+    max_frames: int = 10
     # Use Frigate's own crops instead of re-deriving them. thumbnail.jpg is cropped to the
     # object on an ended event; the event API reports the snapshot's box in pixels. Both
     # are more reliable than our COCO detector at finding a small bird, because locating
@@ -104,10 +119,18 @@ class Settings:
     # (pybioclip's CustomLabelsClassifier does this); wrong for full taxonomic strings,
     # which produce text like "a tattoo of a Animalia Chordata Aves ...".
     prompt_ensemble: bool = True
-    # Which bird localizer to run over clip frames: "yolo" (YOLO11n, default — better on
-    # the small, shaded, partly-hidden birds clip frames contain, but AGPL-3.0) or
-    # "frcnn" (torchvision Faster R-CNN, BSD-3, no extra dependency).
+    # Which bird localizer to run over clip frames: "yolo" (default — better on the
+    # small, shaded, partly-hidden birds clip frames contain, but AGPL-3.0) or "frcnn"
+    # (torchvision Faster R-CNN, BSD-3, no extra dependency).
     detector_backend: str = "yolo"
+    # Which official Ultralytics weights the yolo backend runs: yolo11n.pt (default),
+    # yolo11s.pt or yolo11m.pt. Bigger models find more of the small, far birds; on an
+    # 8 GB card yolo11s is a comfortable step up. Ignored by frcnn.
+    detector_model: str = "yolo11n.pt"
+    # Inference resolution for the yolo backend. 640 is the model's native default;
+    # 960/1280 materially helps feeder-distance birds that are tens of pixels across in
+    # a 1080p+ frame, at a VRAM/latency cost. Ignored by frcnn.
+    detector_imgsz: int = 640
     # Minimum detector score for a box to count as a usable bird. Deliberately permissive:
     # downstream ranking (score * sqrt(area)), detector-score-weighted fusion and the
     # per-frame consensus vote all suppress junk boxes, whereas a box never proposed is a
@@ -157,21 +180,27 @@ def load_settings() -> Settings:
         frigate_headers=_frigate_headers(),
         auth_token=os.environ.get("AVIARY_ID_TOKEN", "").strip(),
         trained_classifier=os.environ.get("TRAINED_CLASSIFIER", "aiy").strip().lower(),
+        trained_model=os.environ.get(
+            "TRAINED_MODEL", "timm/eva02_large_patch14_clip_336.merged2b_ft_inat21"
+        ).strip(),
+        trained_batch=max(1, _as_int("TRAINED_BATCH", 4)),
         trained_weight=min(1.0, max(0.0, _as_float("TRAINED_WEIGHT", 0.75))),
         trained_accept=min(1.0, max(0.0, _as_float("TRAINED_ACCEPT", 0.65))),
         model_name=os.environ.get("MODEL_NAME", "hf-hub:imageomics/bioclip-2"),
         cache_dir=os.environ.get("CACHE_DIR", "/models"),
         cpu_only=_as_bool(os.environ.get("CPU_ONLY", "")),
         detector_cpu=_as_bool(os.environ.get("DETECTOR_CPU", "")),
-        detector_batch=_as_int("DETECTOR_BATCH", 2),
+        detector_batch=_as_int("DETECTOR_BATCH", 4),
         sample_frames=_as_int("SAMPLE_FRAMES", 8),
-        classify_frames=_as_int("CLASSIFY_FRAMES", 3),
-        max_frames=_as_int("MAX_FRAMES", 8),
+        classify_frames=_as_int("CLASSIFY_FRAMES", 4),
+        max_frames=_as_int("MAX_FRAMES", 10),
         use_thumbnail=not _as_bool(os.environ.get("NO_THUMBNAIL", "")),
         use_event_box=not _as_bool(os.environ.get("NO_EVENT_BOX", "")),
         label_format=os.environ.get("LABEL_FORMAT", "common").strip().lower(),
         prompt_ensemble=not _as_bool(os.environ.get("NO_PROMPT_ENSEMBLE", "")),
         detector_backend=os.environ.get("DETECTOR_BACKEND", "yolo").strip().lower(),
+        detector_model=os.environ.get("DETECTOR_MODEL", "yolo11n.pt").strip(),
+        detector_imgsz=max(320, _as_int("DETECTOR_IMGSZ", 640)),
         detector_threshold=_as_float("DETECTOR_THRESHOLD", 0.3),
         crop_padding=_as_float("CROP_PADDING", 0.15),
         fetch_timeout=_as_float("FETCH_TIMEOUT", 30.0),

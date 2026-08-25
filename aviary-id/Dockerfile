@@ -1,5 +1,6 @@
-# CUDA 12.6 on purpose. The target GPU is a Quadro P1000 (Pascal, sm_61) and CUDA 13.0
-# drops Pascal entirely, so this is the branch to stay on for this hardware.
+# CUDA 12.6 on purpose. The target GPUs are Pascal cards (Quadro P1000, GTX 10xx —
+# all sm_61) and CUDA 13.0 drops Pascal entirely, so this is the branch to stay on
+# for this hardware.
 FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -42,7 +43,8 @@ WORKDIR /app
 EXPOSE 8100
 
 # Model weights are NOT baked in — they download to /models on first start. Mount that
-# as a volume or every container recreate re-downloads ~2 GB.
+# as a volume or every container recreate re-downloads ~2 GB (~3.5 GB with
+# TRAINED_CLASSIFIER=inat21).
 VOLUME ["/models"]
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=600s --retries=3 \

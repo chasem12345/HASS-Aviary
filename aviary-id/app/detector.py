@@ -7,11 +7,12 @@ then guessing from the background. Cropping to the bird is most of the differenc
 
 Two backends, selected by DETECTOR_BACKEND:
 
-* ``yolo`` (default) — Ultralytics YOLO11n. Measurably better at small, shaded and
-  partially-occluded birds, which is exactly what clip frames contain; it runs at 640px
-  where the Faster R-CNN alternative runs at 320. Ultralytics is AGPL-3.0 — acceptable
-  here and called out in the README; if that license doesn't work for your deployment,
-  set DETECTOR_BACKEND=frcnn and nothing else changes.
+* ``yolo`` (default) — Ultralytics YOLO11 (yolo11n by default; DETECTOR_MODEL selects a
+  bigger variant, DETECTOR_IMGSZ the inference resolution). Measurably better at small,
+  shaded and partially-occluded birds, which is exactly what clip frames contain; it
+  runs at 640px+ where the Faster R-CNN alternative runs at 320. Ultralytics is
+  AGPL-3.0 — acceptable here and called out in the README; if that license doesn't work
+  for your deployment, set DETECTOR_BACKEND=frcnn and nothing else changes.
 * ``frcnn`` — torchvision's COCO Faster R-CNN (BSD-3, zero extra dependencies). The
   original backend, kept as the permissively-licensed fallback.
 
@@ -45,24 +46,30 @@ class Detection:
 
 
 class YoloBirdDetector:
-    """YOLO11n, filtered to the COCO bird class."""
+    """An Ultralytics YOLO model (yolo11n by default), filtered to the COCO bird class."""
 
-    def __init__(self, device: torch.device, threshold: float, cache_dir: str):
+    def __init__(self, device: torch.device, settings: Settings):
         # Imported here rather than at module top so the frcnn backend works even if the
         # (AGPL) ultralytics package were removed from the image.
         from ultralytics import YOLO
 
-        self.threshold = threshold
+        self.threshold = settings.detector_threshold
+        # Inference resolution. 640 is native; higher values trade VRAM/latency for the
+        # feeder-distance birds that are tens of pixels across in a full frame.
+        self.imgsz = settings.detector_imgsz
         # Ultralytics takes a device string per predict() call rather than moving a
         # module; str() of a torch.device ("cpu", "cuda") is a form it accepts.
         self.device = device
         self._device_str = str(device)
 
+        # basename() so DETECTOR_MODEL can only name an official asset, never traverse
+        # to an arbitrary path on the volume.
+        model_name = os.path.basename(settings.detector_model) or "yolo11n.pt"
         # Keep the weights on the model volume so a container rebuild doesn't
         # re-download them, same as the CLIP weights and the text-embedding cache.
-        path = os.path.join(cache_dir, "yolo11n.pt")
+        path = os.path.join(settings.cache_dir, model_name)
         if not os.path.exists(path):
-            log.info("Downloading YOLO11n weights to %s ...", path)
+            log.info("Downloading %s weights to %s ...", model_name, path)
             try:
                 # Internal ultralytics util — the only way to control WHERE the asset
                 # lands. Guarded because it is not public API and could move.
@@ -74,7 +81,7 @@ class YoloBirdDetector:
                     "ultralytics' default location — the weights will re-download "
                     "after a container rebuild.", exc,
                 )
-                path = "yolo11n.pt"
+                path = model_name
         self.model = YOLO(path)
 
         # Read the class index off the model rather than hard-coding COCO's "bird is 14":
@@ -86,8 +93,8 @@ class YoloBirdDetector:
             raise RuntimeError(
                 "The YOLO weights have no 'bird' class; cannot localize birds."
             ) from exc
-        log.info("YOLO11n detector ready on %s (bird class index %d).",
-                 self._device_str, self.bird_index)
+        log.info("YOLO detector %s ready on %s at imgsz %d (bird class index %d).",
+                 model_name, self._device_str, self.imgsz, self.bird_index)
 
     @torch.inference_mode()
     def detect(self, images: list[Image.Image], batch_size: int = 2) -> list[list[Detection]]:
@@ -106,6 +113,7 @@ class YoloBirdDetector:
                 chunk,
                 conf=self.threshold,
                 classes=[self.bird_index],
+                imgsz=self.imgsz,
                 device=self._device_str,
                 verbose=False,
             )
@@ -221,5 +229,9 @@ class FrcnnBirdDetector:
 def make_detector(device: torch.device, settings: Settings):
     """Build the configured backend. Both share the detect() contract."""
     if settings.detector_backend == "frcnn":
+        if settings.detector_imgsz != 640 or settings.detector_model != "yolo11n.pt":
+            # Say so rather than silently ignoring a mis-aimed env var.
+            log.info("DETECTOR_IMGSZ/DETECTOR_MODEL apply to the yolo backend only; "
+                     "frcnn runs at its own fixed size.")
         return FrcnnBirdDetector(device, settings.detector_threshold)
-    return YoloBirdDetector(device, settings.detector_threshold, settings.cache_dir)
+    return YoloBirdDetector(device, settings)

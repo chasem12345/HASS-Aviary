@@ -5,10 +5,11 @@ candidate species into an embedding once at startup, and classification is then 
 multiply against the image embedding. Swapping regions or adding a species is a restart,
 not a retraining run.
 
-Hardware note: everything here runs in FP32 on purpose. The intended GPU is a Quadro
-P1000 (Pascal), which has no tensor cores and roughly 1/64 FP16 throughput — half
-precision would be slower *and* less accurate. FP32 ViT-L/14 is ~1.2 GB of weights, which
-fits the card's 4 GB with room for a small batch.
+Hardware note: everything here runs in FP32 on purpose. The intended GPUs are Pascal
+cards (Quadro P1000, GTX 10xx), which have no tensor cores and roughly 1/64 FP16
+throughput — half precision would be slower *and* less accurate. FP32 ViT-L/14 is
+~1.2 GB of weights, which fits even the smallest of those cards (4 GB) with room for a
+small batch.
 """
 
 from __future__ import annotations
@@ -29,11 +30,13 @@ from PIL import Image
 from .prompts import OPENAI_IMAGENET_TEMPLATES
 from .settings import Settings
 from .species import Species
+from .trained import TrainedClassifier
 
 log = logging.getLogger("aviary_id.model")
 
-# Text-encoder batch size. Small enough to stay well inside 4 GB alongside the image
-# tower, large enough that 32k prompts don't take all day.
+# Text-encoder batch size. Small enough to stay well inside a 4 GB card alongside the
+# image tower (still worthwhile on bigger cards — the GPU may be shared), large enough
+# that 32k prompts don't take all day.
 _TEXT_BATCH = 256
 
 # How many species to report back. The caller's few-shot probe blends this list with its
@@ -169,8 +172,18 @@ class Classifier:
     def model_version(self) -> str:
         # The label format is part of the identity: the same model and species list under a
         # different format is a different classifier, and results are not comparable.
-        return (f"{self.settings.model_name}"
-                f"/{self.settings.label_format}@{self.vocab_digest}")
+        # A non-default supervised backend is appended for the same reason — switching it
+        # changes answers — but AFTER the digest, and deliberately NOT inside _digest():
+        # the text embedding cache depends only on the zero-shot side, and folding the
+        # backend into the digest would needlessly invalidate it. AIY (the long-standing
+        # default) is left unmarked so existing deployments' stored provenance stays
+        # comparable. Aviary stores this string opaquely; its legacy embedding-key
+        # fallback splits at '@' and is unaffected by a suffix behind the digest.
+        version = (f"{self.settings.model_name}"
+                   f"/{self.settings.label_format}@{self.vocab_digest}")
+        if self.trained is not None and not isinstance(self.trained, TrainedClassifier):
+            version += f"+{self.trained.version_tag}"
+        return version
 
     @property
     def embedding_key(self) -> str:
@@ -193,8 +206,9 @@ class Classifier:
         ``set_species`` nothing ever calls ``encode_text`` again. Changing the species list
         requires a restart regardless, which rebuilds the model.
 
-        On a 4 GB card that is shared with other workloads this is the difference between
-        fitting and not. Defensive throughout — open_clip exposes the text tower
+        On a 4 GB card shared with other workloads this is the difference between fitting
+        and not, and on a bigger card it is headroom the GPU supervised backend now
+        spends. Defensive throughout — open_clip exposes the text tower
         differently across model classes (CLIP vs CustomTextCLIP), and failing to free it
         costs memory but must never cost correctness.
         """

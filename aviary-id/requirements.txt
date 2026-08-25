@@ -13,7 +13,12 @@ python-multipart==0.0.20
 # ai-edge-litert is Google's maintained TFLite runtime; the older tflite-runtime
 # package (last built 2023, against numpy 1.x) crashes on import next to numpy 2.
 ai-edge-litert==2.2.0
-# YOLO11n bird localizer (DETECTOR_BACKEND=yolo, the default). AGPL-3.0 — see the README
+# GPU supervised classifier backend (TRAINED_CLASSIFIER=inat21/auto). Its torch and
+# torchvision requirements are already satisfied by the cu126 wheels installed in the
+# Dockerfile, so pip will not touch them. The default checkpoint it loads
+# (eva02_large...ft_inat21) is cc-by-nc-4.0 — see the README licensing note.
+timm==1.0.28
+# YOLO bird localizer (DETECTOR_BACKEND=yolo, the default). AGPL-3.0 — see the README
 # licensing note. Its torch/torchvision requirements are already satisfied by the cu126
 # wheels installed in the Dockerfile, so pip will not touch them. Must be 8.4+: the 8.3
 # line capped numpy at <=2.1.1, which conflicts with the numpy pinned above; 8.4 dropped
