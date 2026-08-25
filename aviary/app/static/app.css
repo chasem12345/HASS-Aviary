@@ -243,6 +243,23 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 }
 .det-card:hover .det-delete, .det-delete:focus { opacity: 1; }
 @media (hover: none) { .det-delete { opacity: .75; } }
+/* Bulk select (Unidentified page). The checkbox sits top-LEFT because .det-delete owns
+   the top-right corner, and both must stay reachable while a video is loaded. */
+.bulk-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 14px; }
+.bulk-controls { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bulk-controls[hidden] { display: none; }
+.bulk-count { color: var(--muted); font-size: 13px; }
+.bulk-danger:hover { border-color: var(--danger); color: var(--danger); }
+.btn[disabled] { opacity: .5; cursor: default; }
+.btn[disabled]:hover { border-color: var(--line); color: inherit; }
+.bulk-pick {
+  position: absolute; top: 6px; left: 6px; z-index: 5;
+  background: rgba(0, 0, 0, .55); border-radius: 6px; padding: 4px;
+  display: flex; cursor: pointer;
+}
+.bulk-pick input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; margin: 0; }
+.det-card.bulk-selected { box-shadow: 0 0 0 2px var(--accent); }
+
 .del-menu {
   position: absolute; top: 34px; right: 6px; z-index: 30;
   background: var(--card); border: 1px solid var(--line); border-radius: 10px;

@@ -25,6 +25,20 @@
   to try again after changing a threshold or the species list. These are not counted as a
   species and do not appear in the registry.
 </p>
+{# Bulk actions over the cards on THIS page (pagination loads more). Re-identify queues
+   through the normal identification workers; delete never touches Frigate — both are
+   explained in the JS confirms. The bar is why app.js binds bulk mode only here. #}
+<div class="bulk-bar" id="bulk-bar">
+  <button type="button" class="btn" id="bulk-toggle">☑ Select</button>
+  <span class="bulk-controls" hidden>
+    <button type="button" class="btn" id="bulk-all">Select all</button>
+    <span class="bulk-count" id="bulk-count">0 selected</span>
+    {% if identify_enabled %}
+    <button type="button" class="btn" id="bulk-reidentify" disabled>↻ Re-identify selected</button>
+    {% endif %}
+    <button type="button" class="btn bulk-danger" id="bulk-delete" disabled>× Delete selected</button>
+  </span>
+</div>
 {% include "_groups.html" %}
 {% else %}
 <p class="empty">

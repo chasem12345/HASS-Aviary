@@ -1026,4 +1026,140 @@
       btn.disabled = false;
     }
   });
+
+  // ------------------------------------------------------------------- bulk select
+  // Only the Unidentified page renders #bulk-bar, so this binds nowhere else. The
+  // checkboxes are injected when select mode is entered rather than baked into the
+  // shared card macro — no other page's cards change, and cards loaded by pagination
+  // are full page loads anyway.
+  (function () {
+    const bar = document.getElementById("bulk-bar");
+    if (!bar) return;
+    const controls = bar.querySelector(".bulk-controls");
+    const toggle = document.getElementById("bulk-toggle");
+    const allBtn = document.getElementById("bulk-all");
+    const count = document.getElementById("bulk-count");
+    const reidBtn = document.getElementById("bulk-reidentify");
+    const delBtn = document.getElementById("bulk-delete");
+
+    function boxes() {
+      return Array.from(document.querySelectorAll(".bulk-pick input"));
+    }
+    function selectedIds() {
+      return boxes().filter((b) => b.checked).map((b) => Number(b.dataset.id));
+    }
+    function refresh() {
+      const n = selectedIds().length;
+      count.textContent = n + " selected";
+      if (reidBtn) reidBtn.disabled = !n;
+      delBtn.disabled = !n;
+    }
+
+    function enter() {
+      document.querySelectorAll(".det-card").forEach((card) => {
+        // The delete button already carries the detection id on every card; reuse it
+        // rather than teaching the template a second id attribute.
+        const del = card.querySelector(".det-delete");
+        if (!del || card.querySelector(".bulk-pick")) return;
+        const label = document.createElement("label");
+        label.className = "bulk-pick";
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.dataset.id = del.dataset.id;
+        label.appendChild(box);
+        card.appendChild(label);
+      });
+      controls.hidden = false;
+      toggle.textContent = "Cancel";
+      refresh();
+    }
+    function exit() {
+      document.querySelectorAll(".bulk-pick").forEach((el) => el.remove());
+      document.querySelectorAll(".det-card.bulk-selected").forEach((el) =>
+        el.classList.remove("bulk-selected"));
+      controls.hidden = true;
+      toggle.textContent = "☑ Select";
+    }
+
+    toggle.addEventListener("click", () => {
+      if (controls.hidden) enter(); else exit();
+    });
+
+    allBtn.addEventListener("click", () => {
+      // Toggles: everything on — or, if everything already was, everything off.
+      const all = boxes();
+      const everyOn = all.length > 0 && all.every((b) => b.checked);
+      all.forEach((b) => {
+        b.checked = !everyOn;
+        b.closest(".det-card").classList.toggle("bulk-selected", b.checked);
+      });
+      refresh();
+    });
+
+    document.addEventListener("change", (e) => {
+      const box = e.target.closest(".bulk-pick input");
+      if (!box) return;
+      box.closest(".det-card").classList.toggle("bulk-selected", box.checked);
+      refresh();
+    });
+
+    async function bulkPost(path, ids) {
+      const res = await fetch(API + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: ids }),
+      });
+      return res.json();
+    }
+
+    if (reidBtn) reidBtn.addEventListener("click", async () => {
+      const ids = selectedIds();
+      if (!ids.length) return;
+      reidBtn.disabled = true;
+      reidBtn.textContent = "↻ queueing…";
+      try {
+        const data = await bulkPost("/detections/bulk-identify", ids);
+        if (!data.ok) {
+          alert("Bulk re-identify failed: " + (data.error || "error"));
+          return;
+        }
+        // Fire-and-forget by design (unlike the single button): the workers drain the
+        // queue in the background, so say what was queued before reloading.
+        alert("Queued " + data.queued + " detection(s) for identification" +
+              (data.skipped ? "; " + data.skipped + " skipped (audio rows, already " +
+               "running, or the queue is full — select those again in a bit)" : "") +
+              ".\n\nThey resolve in the background as the GPU works through them.");
+        window.location.reload();
+      } catch (err) {
+        alert("Bulk re-identify failed: " + err);
+      } finally {
+        reidBtn.textContent = "↻ Re-identify selected";
+        refresh();
+      }
+    });
+
+    delBtn.addEventListener("click", async () => {
+      const ids = selectedIds();
+      if (!ids.length) return;
+      if (!window.confirm(
+        "Delete " + ids.length + " detection(s) from Aviary?\n\n" +
+        "Their Frigate events and clips are left alone. The rows are tombstoned so a " +
+        "backfill won't re-import them. This cannot be undone.")) return;
+      delBtn.disabled = true;
+      delBtn.textContent = "× deleting…";
+      try {
+        const data = await bulkPost("/detections/bulk-delete", ids);
+        if (!data.ok) {
+          alert("Bulk delete failed: " + (data.error || "error"));
+          return;
+        }
+        window.location.reload();
+      } catch (err) {
+        alert("Bulk delete failed: " + err);
+      } finally {
+        delBtn.textContent = "× Delete selected";
+        refresh();
+      }
+    });
+  })();
 })();

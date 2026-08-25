@@ -10,6 +10,7 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Query, Request
 from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel
 
 from .. import (
     bootstrap, db, identify, ingest, notify, probe, proxy, species_audio, species_info,
@@ -248,6 +249,84 @@ async def reidentify(
         "margin": updated.get("id_margin"),
         "rejected": rejected,
     }
+
+
+class BulkIds(BaseModel):
+    """Detection ids for a bulk action, from the Unidentified page's select mode."""
+    ids: list[int]
+
+
+# Caps on one bulk call. Not limits on what the user can do — the UI can call again —
+# but a bound on how much one request is allowed to chew through.
+_BULK_IDENTIFY_MAX = 500
+_BULK_DELETE_MAX = 1000
+
+
+@router.post("/detections/bulk-identify")
+async def bulk_reidentify(payload: BulkIds):
+    """Queue many detections for re-identification, without waiting for answers.
+
+    Deliberately asynchronous where the single re-identify holds for the result: a
+    backlog (say, after the GPU host was down) is drained by the normal identification
+    workers, which already pace one another against the GPU. Rows still land in
+    'pending' and resolve as results come back.
+
+    ``skipped`` counts ids that were not queued: unknown ids, audio (BirdNET) rows,
+    detections already in flight, or a full queue — re-run the action later for those.
+    """
+    if not identify.enabled():
+        return {"ok": False, "error": "identification is not configured"}
+    queued = skipped = 0
+    for det_id in payload.ids[:_BULK_IDENTIFY_MAX]:
+        det = await run_in_threadpool(db.detection_by_id, det_id)
+        if det is None or det["source"] != "frigate":
+            skipped += 1
+            continue
+        # Mark it pending like ingest does, BEFORE submitting so the status can't land
+        # after the worker's result. The card badge tells the truth while the queue
+        # drains, and — because the startup requeue resubmits pending rows — a restart
+        # mid-drain resumes the backlog instead of stranding the remainder. Both
+        # submit-failure paths self-correct: a full queue overwrites this with
+        # 'failed', and an already-in-flight row gets its real status from its worker.
+        await run_in_threadpool(
+            db.set_identification, det["source"], det["source_ref"], "pending"
+        )
+        if identify.submit(det):
+            queued += 1
+        else:
+            skipped += 1
+    log.info("Bulk re-identify: queued %d, skipped %d.", queued, skipped)
+    return {"ok": True, "queued": queued, "skipped": skipped}
+
+
+@router.post("/detections/bulk-delete")
+async def bulk_delete(payload: BulkIds):
+    """Delete many detections at once.
+
+    Same bookkeeping as the single delete — tombstoned so backfill can't re-import
+    them, species forgotten if nothing remains, probe refreshed — but with no
+    ``source_action``: bulk delete never touches Frigate/BirdNET-Go. Removing events
+    at the source in bulk is exactly the kind of irreversible sweep that should stay
+    a deliberate per-detection choice.
+    """
+    deleted = 0
+    names: set[str] = set()
+    for det_id in payload.ids[:_BULK_DELETE_MAX]:
+        det = await run_in_threadpool(db.detection_by_id, det_id)
+        if det is None:
+            continue
+        await run_in_threadpool(db.delete_detection, det_id)
+        ingest.add_tombstone(det["source"], det["source_ref"])
+        names.add(det["common_name"])
+        deleted += 1
+    for name in names:
+        await run_in_threadpool(_forget_if_gone, name)
+    # One refresh at the end, not per row — same reasoning as the single delete's
+    # immediate refresh, minus the N-1 redundant rebuilds.
+    if deleted:
+        await _refresh_probe()
+    log.info("Bulk delete removed %d detection(s).", deleted)
+    return {"ok": True, "deleted": deleted}
 
 
 @router.post("/detections/{det_id}/retain")

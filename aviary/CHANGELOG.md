@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.18.0
+
+- **Bulk select on the Unidentified page.** A **☑ Select** toggle adds a checkbox to
+  every card (plus **Select all**), with two actions: **↻ Re-identify selected** feeds
+  the rows back through the normal identification queue — made for draining the backlog
+  after the GPU host was down — and **× Delete selected** removes them from Aviary
+  (tombstoned so backfill can't re-import them; Frigate events and clips are never
+  touched — deleting at the source stays a per-card action on purpose). Re-identify is
+  fire-and-forget: rows go `pending` and resolve as the GPU works through them; events
+  already past Frigate's retention simply come back `no_media`.
+- Pairs with (but does not require) **aviary-id 0.7.0**, which adds a GPU supervised
+  classifier (`TRAINED_CLASSIFIER=inat21`, a 10,000-species iNat21 EVA02-L) and
+  detector size/resolution knobs (`DETECTOR_MODEL`, `DETECTOR_IMGSZ`) for cards with
+  headroom beyond the original 4 GB target.
+
 ## 0.17.1
 
 - **Ghost events are no longer kept.** A Frigate tracked object that ends with neither a
