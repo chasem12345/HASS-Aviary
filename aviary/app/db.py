@@ -1326,38 +1326,59 @@ def unidentified_count() -> int:
     return unidentified_counts()["actionable"]
 
 
-def purge_unidentified(older_than: float) -> int:
-    """Drop stale unidentifiable rows. Returns the number removed.
+def purge_unidentified(older_than: float) -> list[str]:
+    """Drop stale unidentifiable rows. Returns the removed rows' source_refs.
 
     These are kept deliberately (with Frigate's own classifier off, dropping them would
     mean no record a bird was ever there) but they must not grow without bound on a busy
     feeder. No tombstone is written: this is housekeeping, not a user deletion, and
     tombstoning would stop a future backfill from re-importing a row that a better model
     could since identify.
+
+    Refs, not a count: the caller owns per-detection files (stored crops) that must be
+    removed alongside the rows.
     """
     with _connect() as conn:
-        ids = [
-            r["id"] for r in conn.execute(
-                """
-                SELECT id FROM detections
-                WHERE id_status IN ('failed', 'low_confidence') AND start_time < ?
-                  -- A clip the user pinned as kept-forever must keep its row too: the
-                  -- video would survive at Frigate while the card vanished here.
-                  AND retained_at IS NULL
-                """,
-                (older_than,),
-            ).fetchall()
-        ]
-        if not ids:
-            return 0
-        conn.executemany("DELETE FROM detections WHERE id = ?", [(i,) for i in ids])
+        rows = conn.execute(
+            """
+            SELECT id, source_ref FROM detections
+            WHERE id_status IN ('failed', 'low_confidence') AND start_time < ?
+              -- A clip the user pinned as kept-forever must keep its row too: the
+              -- video would survive at Frigate while the card vanished here.
+              AND retained_at IS NULL
+            """,
+            (older_than,),
+        ).fetchall()
+        if not rows:
+            return []
+        ids = [(r["id"],) for r in rows]
+        conn.executemany("DELETE FROM detections WHERE id = ?", ids)
         conn.executemany(
-            "DELETE FROM identification_embeddings WHERE detection_id = ?", [(i,) for i in ids]
+            "DELETE FROM identification_embeddings WHERE detection_id = ?", ids
         )
         conn.executemany(
-            "DELETE FROM identification_rejections WHERE detection_id = ?", [(i,) for i in ids]
+            "DELETE FROM identification_rejections WHERE detection_id = ?", ids
         )
-    return len(ids)
+    return [r["source_ref"] for r in rows]
+
+
+def overlapping_detections(source_ref: str, start: float, end: float) -> list[dict]:
+    """Frigate detections whose time window overlaps [start, end], excluding one ref.
+
+    Backs the zoom gate: another bird on camera during this event means the PTZ may have
+    been filming it instead. A row with no end_time is an event still in progress and
+    counts as overlapping.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT source_ref, zone, start_time, end_time FROM detections
+            WHERE source = 'frigate' AND source_ref != ?
+              AND start_time < ? AND (end_time IS NULL OR end_time > ?)
+            """,
+            (source_ref, end, start),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def set_retained(detection_id: int, retained: bool) -> None:

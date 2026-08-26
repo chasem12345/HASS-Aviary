@@ -185,7 +185,7 @@ string would degrade that species' embedding.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /identify` | yes | `{event_id, frigate_url?, priors?}` → species |
+| `POST /identify` | yes | `{event_id, frigate_url?, priors?, zoom?}` → species |
 | `POST /identify/image` | yes | multipart upload of a single image |
 | `GET /species` | yes | the active candidate list |
 | `GET /healthz` | no | liveness + device + vocabulary facts |
@@ -197,6 +197,22 @@ pill work without provisioning the token. It exposes no secrets.
 detections near the same timestamp — a species *heard* on the microphone two minutes ago
 is genuinely more likely to be the one in the picture. `3.0` means "treat as three times
 more likely a priori".
+
+`zoom` is `{camera, start, end}` (epoch seconds): a second camera's recordings window
+that **replaces the event clip** — for a rig where a wide camera runs detection and a
+record-only PTZ camera holds the zoomed view. Frames come from
+`/api/{camera}/start/{start}/end/{end}/clip.mp4`; the event's thumbnail/snapshot are
+still gathered as the first fallback. Two further fallbacks: a missing recording falls
+back to the event clip immediately, and a zoomed clip in which the detector never finds
+a bird (the PTZ was travelling or parked elsewhere) triggers a one-shot last-resort swap
+to the event clip before the service gives up. The clip frames from the other camera
+carry no path anchors (the event's `path_data` is in the detect camera's pixel space).
+Note `FETCH_TIMEOUT` (default 30 s) also bounds these downloads — a long window's
+recordings clip is bigger than an event clip.
+
+The response's `best_crop` is a small base64 JPEG of the crop that best backed the
+winner (the same frame the learning embedding comes from); Aviary stores it and shows it
+on the detection card.
 
 ```bash
 curl -s -X POST localhost:8100/identify \

@@ -17,7 +17,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 
-from .. import db, proxy, species_audio, species_info, species_photos
+from .. import crops, db, proxy, species_audio, species_info, species_photos
 from ..notify import species_slug
 
 log = logging.getLogger("aviary.media")
@@ -42,6 +42,20 @@ async def frigate_snapshot(event_id: str, request: Request, thumbnail: bool = Fa
         return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
     url = proxy.frigate_snapshot_url(base, event_id, thumbnail=thumbnail)
     return await proxy.stream_upstream(request, url)
+
+
+@router.get("/frigate/{event_id}/crop.jpg")
+async def frigate_crop(event_id: str):
+    """The identification service's best crop for this event, when one was stored.
+
+    Served from local disk, not proxied: the crop may show footage from a different
+    camera than the event (a zoomed PTZ recording), so Frigate has no equivalent to
+    proxy. 404 lets templates fall back to the normal Frigate thumbnail.
+    """
+    path = await run_in_threadpool(crops.path_if_exists, event_id)
+    if not path:
+        return JSONResponse({"error": "no stored crop for event"}, status_code=404)
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @router.get("/species/{name}/image")

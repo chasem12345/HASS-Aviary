@@ -103,6 +103,10 @@ class ClassifyResult:
     consensus: Optional[dict] = None
     # Whether the supervised (trained) classifier contributed to this answer.
     trained: bool = False
+    # Index (into the classified crops, = per_frame order) of the frame that best backed
+    # the winner — the same frame the embedding comes from. Lets the caller hand back the
+    # winning crop itself (Aviary shows it as the card thumbnail).
+    best_frame: int = 0
 
 
 class Classifier:
@@ -417,6 +421,10 @@ class Classifier:
         runner_up = self.species[int(top.indices[1])] if len(top.indices) > 1 else None
         second_score = float(top.values[1]) if len(top.values) > 1 else 0.0
 
+        # The frame that best backed the winner — shared by the embedding (below) and,
+        # via best_frame, the caller's crop-thumbnail. One argmax, one definition.
+        best_frame = int(torch.argmax(probs[:, best_idx]))
+
         return ClassifyResult(
             species=self.species[best_idx],
             score=best_score,
@@ -427,11 +435,12 @@ class Classifier:
                 for i, v in zip(top.indices.tolist(), top.values.tolist())
             ],
             per_frame=self._per_frame(probs, det_scores, origins, trained_frames),
-            embedding=self._encode_embedding(image_features, probs, best_idx),
+            embedding=self._encode_embedding(image_features, best_frame),
             excluded=len(excluded),
             consensus=self._consensus(consensus_src, det_scores, origins, best_idx,
                                       consensus_floor),
             trained=trained_used,
+            best_frame=best_frame,
         )
 
     def _apply_priors(self, probs: torch.Tensor, priors: dict[str, float]) -> torch.Tensor:
@@ -548,16 +557,14 @@ class Classifier:
             ))
         return results
 
-    def _encode_embedding(self, image_features: torch.Tensor, probs: torch.Tensor,
-                          best_idx: int) -> str:
+    def _encode_embedding(self, image_features: torch.Tensor, best_frame: int) -> str:
         """Base64 float16 of the embedding from whichever frame backed the winner best.
 
         Stored by Aviary against the detection, keyed by ``embedding_key``. Aviary's
         few-shot probe compares it against embeddings of human-confirmed detections and
         blends the result with the zero-shot answer — see aviary/app/probe.py.
         """
-        frame = int(torch.argmax(probs[:, best_idx]))
-        vector = image_features[frame].to(torch.float16).cpu().numpy()
+        vector = image_features[best_frame].to(torch.float16).cpu().numpy()
         return base64.b64encode(vector.tobytes()).decode("ascii")
 
     # ------------------------------------------------------------------ diagnostics

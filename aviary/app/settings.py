@@ -67,6 +67,20 @@ def _pick_list(env_key: str, opts: dict, opt_key: str) -> tuple[str, ...]:
     return tuple(v for v in (str(x).strip().lower() for x in values) if v)
 
 
+def _zoom_map(pairs: tuple[str, ...]) -> dict:
+    """Parse "detect_camera:ptz_camera" pairs (already lowercased by _pick_list).
+
+    Malformed entries are skipped rather than guessed at — a wrong camera name here
+    would silently classify the wrong footage forever.
+    """
+    mapping: dict[str, str] = {}
+    for pair in pairs:
+        detect, sep, ptz = pair.partition(":")
+        if sep and detect.strip() and ptz.strip():
+            mapping[detect.strip()] = ptz.strip()
+    return mapping
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: str
@@ -110,6 +124,16 @@ class Settings:
     identify_retain_days: int
     identify_use_audio_priors: bool
     identify_exclude_blacklisted: bool
+    # --- Cross-camera zoom ---------------------------------------------------------
+    # {detect_camera: ptz_camera}, lowercased. Events from a detect camera have the PTZ
+    # camera's recordings classified instead of the event clip (the PTZ is record-only
+    # and steered by home automation; it must record continuously in Frigate).
+    identify_zoom_map: dict
+    # Seconds trimmed from the zoom window's start — PTZ travel time, so a leftover view
+    # of the previous target is not classified.
+    identify_zoom_start_offset: float
+    # The PTZ automation's zone priority, highest first (lowercased). Empty = no gating.
+    identify_zoom_zone_priority: tuple[str, ...]
 
     # HA config folder mount (map: homeassistant_config). Missing on bare metal —
     # the blueprint install and notification images degrade gracefully then.
@@ -172,6 +196,11 @@ def load_settings() -> Settings:
             _pick("IDENTIFY_USE_AUDIO_PRIORS", opts, "identify_use_audio_priors", "true")),
         identify_exclude_blacklisted=_as_bool(
             _pick("IDENTIFY_EXCLUDE_BLACKLISTED", opts, "identify_exclude_blacklisted", "true")),
+        identify_zoom_map=_zoom_map(_pick_list("IDENTIFY_ZOOM_MAP", opts, "identify_zoom_map")),
+        identify_zoom_start_offset=max(0.0, _pick_float(
+            "IDENTIFY_ZOOM_START_OFFSET", opts, "identify_zoom_start_offset", 2.0)),
+        identify_zoom_zone_priority=_pick_list(
+            "IDENTIFY_ZOOM_ZONE_PRIORITY", opts, "identify_zoom_zone_priority"),
         # Matches the explicit `path:` on the homeassistant_config map entry.
         ha_config_dir=os.environ.get("HA_CONFIG_DIR", "/homeassistant"),
         log_level=_pick("LOG_LEVEL", opts, "log_level", "info").lower(),

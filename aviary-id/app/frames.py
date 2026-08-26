@@ -69,6 +69,20 @@ class Candidate:
 
 
 @dataclass
+class Zoom:
+    """A second camera's recordings window that replaces the event clip.
+
+    The caller's setup: a wide camera runs detection (and owns the event), while a PTZ
+    camera — record-only, steered by home automation — holds the zoomed view. The event
+    id still fetches the wide camera's thumbnail/snapshot (Frigate's own crops, and the
+    fallback when the PTZ missed); this window fetches the footage worth classifying.
+    """
+    camera: str
+    start: float  # epoch seconds
+    end: float
+
+
+@dataclass
 class Timings:
     """Per-stage wall-clock, so a slow event says which stage was slow."""
     stages: dict = field(default_factory=dict)
@@ -94,6 +108,11 @@ def thumbnail_url(base: str, event_id: str) -> str:
 
 def event_url(base: str, event_id: str) -> str:
     return f"{base}/api/events/{event_id}"
+
+
+def recordings_url(base: str, camera: str, start: float, end: float) -> str:
+    """Frigate's recordings-by-window clip endpoint (any camera, event or not)."""
+    return f"{base}/api/{camera}/start/{start:.3f}/end/{end:.3f}/clip.mp4"
 
 
 async def _fetch(client: httpx.AsyncClient, url: str, headers: dict[str, str],
@@ -291,10 +310,12 @@ def _box_from_event(event: dict) -> Optional[tuple[float, float, float, float]]:
 class EventMedia:
     """Everything fetched for one event, so escalation can reuse it without re-downloading."""
 
-    def __init__(self, event_id: str, base: str, settings: Settings):
+    def __init__(self, event_id: str, base: str, settings: Settings,
+                 zoom: Optional[Zoom] = None):
         self.event_id = event_id
         self.base = base
         self.settings = settings
+        self.zoom = zoom
         self.candidates: list[Candidate] = []
         self.clip_path: Optional[str] = None
         self.duration: Optional[float] = None
@@ -303,6 +324,16 @@ class EventMedia:
         self.path: list[tuple[float, float, float]] = []
         self.start_time: Optional[float] = None
         self.end_time: Optional[float] = None
+        # Exact wall-clock time of the clip's first frame, known only for a zoomed
+        # recordings clip (we asked for that window); event clips get an estimate.
+        self._clip_t0: Optional[float] = None
+        # Whether the current clip IS the zoomed recordings — the pipeline consults this
+        # for the last-resort swap back to the event clip (see swap_to_event_clip).
+        self.zoom_used = False
+        # The event's own path_data, kept even while zoom suppresses anchors, so the
+        # swap back to the event clip restores them.
+        self._event_path: list[tuple[float, float, float]] = []
+        self._client: Optional[httpx.AsyncClient] = None
         self._tmpdir: Optional[str] = None
         self._used_offsets: set[int] = set()
 
@@ -313,6 +344,9 @@ class EventMedia:
 
     async def gather(self, client: httpx.AsyncClient, timings: Timings) -> None:
         """Fetch Frigate's own crops plus the first pass of clip frames."""
+        # Kept for the pipeline's last-resort event-clip swap, which happens after
+        # gather() has returned. The client outlives every request (see main.py).
+        self._client = client
         headers = self.settings.frigate_headers
         loop = asyncio.get_running_loop()
         started = loop.time()
@@ -343,6 +377,7 @@ class EventMedia:
             except (ValueError, TypeError):
                 log.debug("Could not parse the event JSON for %s.", self.event_id)
         self.path = _path_from_event(event)
+        self._event_path = self.path
         self.start_time = _as_float(event.get("start_time"))
         self.end_time = _as_float(event.get("end_time"))
 
@@ -365,13 +400,46 @@ class EventMedia:
         started = loop.time()
         self._tmpdir = tempfile.mkdtemp(prefix="aviary-id-")
         clip_path = os.path.join(self._tmpdir, "clip.mp4")
-        got = await _fetch(client, clip_url(self.base, self.event_id),
-                           self.settings.frigate_headers, dest=clip_path)
-        if got is None or not os.path.exists(clip_path) or os.path.getsize(clip_path) == 0:
-            log.debug("No clip available for event %s.", self.event_id)
-            return
-        self.clip_path = clip_path
-        timings.add("clip", loop.time() - started)
+
+        if self.zoom is not None:
+            # The zoomed camera's recordings REPLACE the event clip when available: the
+            # bird occupies vastly more pixels there, which is most of the accuracy.
+            got = await _fetch(
+                client,
+                recordings_url(self.base, self.zoom.camera, self.zoom.start, self.zoom.end),
+                self.settings.frigate_headers, dest=clip_path,
+            )
+            if got is not None and os.path.exists(clip_path) and os.path.getsize(clip_path) > 0:
+                self.clip_path = clip_path
+                self.zoom_used = True
+                # We asked for this exact window, so the first frame's wall-clock time
+                # is known — unlike an event clip, whose padding split is a guess.
+                self._clip_t0 = self.zoom.start
+                # path_data lives in the DETECT camera's normalized pixel space. Applied
+                # to the zoomed camera it would anchor-penalize precisely the best crops,
+                # so zoomed clip frames carry no anchors at all.
+                self.path = []
+                timings.add("zoom_clip", loop.time() - started)
+                log.info("Event %s: using zoomed recordings from '%s' (%.0fs window).",
+                         self.event_id, self.zoom.camera, self.zoom.end - self.zoom.start)
+            else:
+                # Recording gaps, expired retention, a wrong camera name — say so once
+                # and fall back to the event's own clip. (_fetch opens the destination
+                # with "wb", so a partial zoom download is truncated by the retry.)
+                log.warning(
+                    "Event %s: no zoomed recordings from '%s' for %.0f-%.0f; "
+                    "falling back to the event clip.",
+                    self.event_id, self.zoom.camera, self.zoom.start, self.zoom.end,
+                )
+
+        if self.clip_path is None:
+            got = await _fetch(client, clip_url(self.base, self.event_id),
+                               self.settings.frigate_headers, dest=clip_path)
+            if got is None or not os.path.exists(clip_path) or os.path.getsize(clip_path) == 0:
+                log.debug("No clip available for event %s.", self.event_id)
+                return
+            self.clip_path = clip_path
+            timings.add("clip", loop.time() - started)
 
         started = loop.time()
         self.duration = await probe_duration(clip_path, self.settings.ffmpeg_timeout)
@@ -409,13 +477,53 @@ class EventMedia:
         timings.add(f"ffmpeg{'' if phase == 0.5 else '2'}", loop.time() - started)
         return len(frames)
 
-    def _clip_start(self) -> Optional[float]:
-        """Estimated wall-clock time of the clip's first frame.
+    async def swap_to_event_clip(self, timings: Timings) -> bool:
+        """Last resort after a PTZ miss: replace the zoomed clip with the event's own.
 
-        The clip is the event plus Frigate's pre/post-capture padding, whose exact split
-        Frigate does not report — assume symmetric. Anchor matching is tolerance-based,
-        so being a second off is survivable; having no estimate at all is not.
+        Called by the pipeline when the zoomed recordings never contained a detectable
+        bird — the PTZ was travelling, blocked, or parked elsewhere — so the event clip,
+        which zoom deliberately skipped, is the only footage left that can help. One
+        shot: after the swap this EventMedia behaves exactly like a non-zoom event
+        (padding-estimated clip start, anchors restored from path_data).
         """
+        if not self.zoom_used or self._client is None or self._tmpdir is None:
+            return False
+        self.zoom_used = False  # one shot, whatever the outcome
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        clip_path = os.path.join(self._tmpdir, "event_clip.mp4")
+        got = await _fetch(self._client, clip_url(self.base, self.event_id),
+                           self.settings.frigate_headers, dest=clip_path)
+        if got is None or not os.path.exists(clip_path) or os.path.getsize(clip_path) == 0:
+            log.debug("No event clip to fall back to for %s.", self.event_id)
+            return False
+        duration = await probe_duration(clip_path, self.settings.ffmpeg_timeout)
+        if not duration:
+            log.debug("Could not probe the fallback clip for %s.", self.event_id)
+            return False
+        self.clip_path = clip_path
+        self.duration = duration
+        self._clip_t0 = None
+        self.path = self._event_path
+        # A different clip is a different timeline: offsets already sampled from the
+        # zoomed clip say nothing about this one.
+        self._used_offsets.clear()
+        timings.add("clip_fallback", loop.time() - started)
+        log.info("Event %s: zoomed footage had no detectable bird; "
+                 "falling back to the event clip.", self.event_id)
+        return True
+
+    def _clip_start(self) -> Optional[float]:
+        """Wall-clock time of the clip's first frame.
+
+        Exact for a zoomed recordings clip (the window was requested explicitly). For an
+        event clip it is an estimate: the clip is the event plus Frigate's pre/post-capture
+        padding, whose exact split Frigate does not report — assume symmetric. Anchor
+        matching is tolerance-based, so being a second off is survivable; having no
+        estimate at all is not.
+        """
+        if self._clip_t0 is not None:
+            return self._clip_t0
         if self.start_time is None or not self.duration:
             return None
         event_span = max(0.0, (self.end_time or self.start_time) - self.start_time)

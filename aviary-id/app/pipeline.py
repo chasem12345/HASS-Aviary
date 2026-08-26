@@ -162,7 +162,18 @@ class Pipeline:
         detected_from = 0
         escalated = False
 
+        def clip_hit(dets: dict[int, list[Detection]]) -> bool:
+            """Whether any CLIP frame produced a detection.
+
+            Clip frames only, not the boxless snapshot: with zoom active the snapshot is
+            the wide camera, and a bird found there says nothing about whether the
+            zoomed footage has one — which is exactly what the fallback swap gates on.
+            """
+            return any(boxes and media.candidates[i].origin.startswith("clip@")
+                       for i, boxes in dets.items())
+
         detections = await self._detect(media.candidates, detected_from)
+        clip_bird_seen = clip_hit(detections)
         detected_from = len(media.candidates)
         ranked = localize(media.candidates, detections, self.settings)
         release_vram()
@@ -177,18 +188,29 @@ class Pipeline:
                 break
             take = diverse(ranked, min(self.settings.classify_frames, room), used)
             if not take:
-                # Nothing left in hand. Spend one extraction pass, at timestamps
-                # interleaved with the first so the new frames are genuinely different
-                # views — then stop. Bounded on purpose: a bird that cannot be identified
-                # should cost a few seconds, not an unbounded hunt.
-                if escalated or not media.clip_path:
-                    break
-                escalated = True
-                added = await media.add_clip_frames(
-                    self.settings.sample_frames, phase=0.0, timings=timings)
+                # Nothing left in hand. Two bounded ways to find more: one extraction
+                # pass on the current clip at timestamps interleaved with the first, so
+                # the new frames are genuinely different views — and, when a ZOOMED clip
+                # never contained a detectable bird at all (the PTZ was travelling,
+                # blocked, or parked on another zone), one swap to the event's own clip,
+                # which zoom deliberately skipped. Bounded on purpose: a bird that
+                # cannot be identified should cost a few seconds, not an unbounded hunt.
+                added = 0
+                if not escalated and media.clip_path:
+                    escalated = True
+                    added = await media.add_clip_frames(
+                        self.settings.sample_frames, phase=0.0, timings=timings)
+                if not added and media.zoom_used and not clip_bird_seen:
+                    if await media.swap_to_event_clip(timings):
+                        # A fresh clip starts its sampling over and earns its own
+                        # interleave pass if this one comes up short too.
+                        escalated = False
+                        added = await media.add_clip_frames(
+                            self.settings.sample_frames, phase=0.5, timings=timings)
                 if not added:
                     break
                 detections = await self._detect(media.candidates, detected_from)
+                clip_bird_seen = clip_bird_seen or clip_hit(detections)
                 detected_from = len(media.candidates)
                 ranked = localize(media.candidates, detections, self.settings)
                 release_vram()

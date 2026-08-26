@@ -21,7 +21,7 @@ from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.templating import Jinja2Templates
 
-from .. import db
+from .. import crops, db
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
@@ -194,6 +194,9 @@ def _from_json(value):
 
 templates.env.filters["conf_class"] = _fmt_conf_class
 templates.env.filters["from_json"] = _from_json
+# Whether a detection has a stored best-crop image (one os.path stat; page-size bounded).
+# A global rather than per-view context so the card macro works from every page.
+templates.env.globals["has_crop"] = crops.exists
 
 
 def register_routes(app: FastAPI) -> None:

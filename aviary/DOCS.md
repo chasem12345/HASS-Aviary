@@ -456,6 +456,30 @@ Every Frigate detection gains a **↻ re-identify** button. Adjust a threshold o
 list, re-run a bird you can name yourself, and compare. That is the intended way to tune the
 thresholds; the defaults are starting points, not recommendations.
 
+### Cross-camera zoom
+
+For a two-camera rig — a wide camera running bird detection over zones, and a record-only
+PTZ camera your automation points at whichever zone is occupied — set
+`identify_zoom_map: ["<wide_camera>:<ptz_camera>"]`. Detection then runs on ONE camera:
+the wide camera owns the event (and its zones, which flow into the Zone filter and the
+`aviary_detection` payload), while the identification service classifies the PTZ camera's
+recordings for the event's time window. Requirements: aviary-id **0.8.0+**, the PTZ camera
+recording **continuously** in Frigate, and the wide camera removed from `ignore_cameras`
+if it was there. If the recordings are missing (gap, expired retention) the service falls
+back to the event's own clip immediately — and if the zoomed footage exists but never
+shows a detectable bird (the PTZ was travelling or blocked), it swaps to the event clip
+as a last resort before giving up, so a PTZ miss still gets the full wide-camera video,
+not just the event stills.
+
+If your automation uses a zone priority list ("stay on the higher-priority zone until it's
+empty"), mirror that list in `identify_zoom_zone_priority`: when two birds overlap in
+different zones, the outranked event is classified from its own camera's media instead of
+the PTZ footage — which would be showing the other bird.
+
+Identified cards also show the **crop that backed the answer** as their preview image
+(stored under `/data/crops`, removed with the detection) — with cross-camera zoom that is
+the zoomed bird, not the wide-frame speck.
+
 ### When it can't decide
 
 A detection that fails the thresholds shows the shortlist the model actually considered —
@@ -566,6 +590,9 @@ stay independent.
 | `identify_retain_days` | Days to keep unidentified detections before purging them (default `14`; `0` keeps forever). |
 | `identify_use_audio_priors` | Bias identification toward species BirdNET-Go heard around the same time (default `true`). |
 | `identify_exclude_blacklisted` | Rule blacklisted species out of the identifier's candidate list (default `true`). Turn off if you blacklisted a species that genuinely visits. |
+| `identify_zoom_map` | `"detect_camera:ptz_camera"` pairs (default empty). Events from the detect camera are classified from the PTZ camera's recordings for the event's time window instead of the event clip — see *Cross-camera zoom* below. Needs aviary-id 0.8.0+. |
+| `identify_zoom_start_offset` | Seconds trimmed from the zoom window's start for PTZ travel time (default `2.0`). |
+| `identify_zoom_zone_priority` | Your PTZ automation's zone priority list, highest first (default empty = no gating). With two birds in different zones at once, the lower-priority event skips the zoomed footage rather than classifying the bird the PTZ was actually filming. |
 | `log_level` | Logging verbosity. |
 
 Changing any of these needs an add-on restart. The **Settings** page inside Aviary holds

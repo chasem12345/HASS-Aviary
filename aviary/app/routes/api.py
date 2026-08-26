@@ -13,8 +13,8 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from .. import (
-    bootstrap, db, identify, ingest, notify, probe, proxy, species_audio, species_info,
-    species_photos, traits,
+    bootstrap, crops, db, identify, ingest, notify, probe, proxy, species_audio,
+    species_info, species_photos, traits,
 )
 from . import ingress_url, set_theme
 
@@ -160,6 +160,7 @@ async def delete_detection(det_id: int, request: Request, source_action: Optiona
     source_result = await _source_action(request.app.state.settings, det, action)
     await run_in_threadpool(db.delete_detection, det_id)
     ingest.add_tombstone(det["source"], det["source_ref"])
+    await run_in_threadpool(crops.remove, det["source_ref"])
     await run_in_threadpool(_forget_if_gone, det["common_name"])
     # A deleted detection is usually a misclassification — the probe must stop learning
     # from its embedding immediately, not at the next restart.
@@ -178,6 +179,7 @@ async def delete_species(name: str, request: Request, source_action: Optional[st
     source_errors = []
     for det in rows:
         ingest.add_tombstone(det["source"], det["source_ref"])
+        await run_in_threadpool(crops.remove, det["source_ref"])
         result = await _source_action(request.app.state.settings, det, action)
         if result and not result["ok"]:
             source_errors.append(f"{det['source']} {det['source_ref']}: {result['error']}")
@@ -317,6 +319,7 @@ async def bulk_delete(payload: BulkIds):
             continue
         await run_in_threadpool(db.delete_detection, det_id)
         ingest.add_tombstone(det["source"], det["source_ref"])
+        await run_in_threadpool(crops.remove, det["source_ref"])
         names.add(det["common_name"])
         deleted += 1
     for name in names:
@@ -546,6 +549,7 @@ async def add_blacklist(
     source_errors = []
     for det in rows:
         ingest.add_tombstone(det["source"], det["source_ref"])
+        await run_in_threadpool(crops.remove, det["source_ref"])
         result = await _source_action(request.app.state.settings, det, action)
         if result and not result["ok"]:
             source_errors.append(f"{det['source']} {det['source_ref']}: {result['error']}")

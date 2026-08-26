@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.19.0
+
+- **Cross-camera zoom** (with aviary-id **0.8.0**). New `identify_zoom_map` option
+  (`"detect_camera:ptz_camera"`): events from a wide detect camera are classified from a
+  record-only PTZ camera's recordings for the event's time window, pulled via Frigate's
+  recordings API — detection runs on one camera, classification sees the zoomed bird. The
+  event's own thumbnail/snapshot stay in the mix as the fallback when the PTZ missed, and
+  the service falls back to the event clip if the recordings don't exist — or, as a last
+  resort, when the zoomed footage never showed a detectable bird at all.
+  `identify_zoom_start_offset` (default 2 s) trims PTZ travel off the window. Frigate-side:
+  strip detect/objects from the PTZ camera and record it continuously; remove the wide
+  camera from `ignore_cameras`. Zones flow in automatically (capture, per-zone filtering
+  and the notification payload shipped in 0.17.0).
+- **Concurrent-bird gate.** `identify_zoom_zone_priority` mirrors the PTZ automation's
+  zone priority list: when another bird's event overlaps in a higher-priority zone, the
+  outranked event skips the zoomed footage (the PTZ was filming the other bird) and
+  classifies from its own camera's media.
+- **Cards show the crop that backed the answer.** The service now returns its best crop
+  as a small JPEG; Aviary stores it (`/data/crops`, deleted with the detection, purged
+  with retention) and cards use it as the preview — the actual bird, zoomed, instead of a
+  wide-frame speck. Applies to review-queue cards too, where seeing what the model saw
+  matters most.
+
 ## 0.18.0
 
 - **Bulk select on the Unidentified page.** A **☑ Select** toggle adds a checkbox to

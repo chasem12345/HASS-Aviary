@@ -27,13 +27,24 @@ export IDENTIFY_TIMEOUT="$(bashio::config 'identify_timeout')"
 export IDENTIFY_RETAIN_DAYS="$(bashio::config 'identify_retain_days')"
 export IDENTIFY_USE_AUDIO_PRIORS="$(bashio::config 'identify_use_audio_priors')"
 export IDENTIFY_EXCLUDE_BLACKLISTED="$(bashio::config 'identify_exclude_blacklisted')"
-# List option: bashio emits one item per line, and the app parses this comma-separated.
-# An unset list yields "null", which must not become a camera name.
+export IDENTIFY_ZOOM_START_OFFSET="$(bashio::config 'identify_zoom_start_offset')"
+# List options: bashio emits one item per line, and the app parses these comma-separated.
+# An unset list yields "null", which must not become a value.
 ignore_cameras="$(bashio::config 'ignore_cameras' | tr '\n' ',')"
 if [ "${ignore_cameras}" = "null," ] || [ "${ignore_cameras}" = "null" ]; then
     ignore_cameras=""
 fi
 export IGNORE_CAMERAS="${ignore_cameras}"
+zoom_map="$(bashio::config 'identify_zoom_map' | tr '\n' ',')"
+if [ "${zoom_map}" = "null," ] || [ "${zoom_map}" = "null" ]; then
+    zoom_map=""
+fi
+export IDENTIFY_ZOOM_MAP="${zoom_map}"
+zoom_priority="$(bashio::config 'identify_zoom_zone_priority' | tr '\n' ',')"
+if [ "${zoom_priority}" = "null," ] || [ "${zoom_priority}" = "null" ]; then
+    zoom_priority=""
+fi
+export IDENTIFY_ZOOM_ZONE_PRIORITY="${zoom_priority}"
 export DATA_DIR="/data"
 
 # --- MQTT broker resolution ---------------------------------------------------

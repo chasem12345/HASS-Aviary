@@ -14,6 +14,7 @@ redeploying the GPU container.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
 import io
 import logging
@@ -57,10 +58,25 @@ _ready = False
 
 # ------------------------------------------------------------------------------ models
 
+class ZoomWindow(BaseModel):
+    """A second camera's recordings window that replaces the event clip.
+
+    For setups where a wide camera runs detection (and owns the event) while a
+    record-only PTZ camera holds the zoomed view: the event id still provides the wide
+    camera's thumbnail/snapshot (Frigate's crops, and the fallback when the PTZ missed);
+    this window names the footage actually worth classifying.
+    """
+    camera: str
+    start: float  # epoch seconds
+    end: float
+
+
 class IdentifyRequest(BaseModel):
     event_id: str
     # Per-request override, so one service can serve more than one Frigate instance.
     frigate_url: Optional[str] = None
+    # Optional zoomed-footage source (see ZoomWindow). Ignored when malformed.
+    zoom: Optional[ZoomWindow] = None
     # {species name: likelihood multiplier}. Aviary populates this from BirdNET-Go audio
     # detections near the same timestamp; 3.0 means "treat as 3x more likely a priori".
     priors: dict[str, float] = Field(default_factory=dict)
@@ -134,6 +150,11 @@ class IdentifyResponse(BaseModel):
     # What the embedding is keyed by: the model name alone. Image embeddings survive
     # vocabulary and label-format changes; model_version deliberately does not.
     embedding_key: Optional[str] = None
+    # Small JPEG (base64) of the crop that best backed the winner — the same frame the
+    # embedding comes from. Aviary stores it and shows it as the card thumbnail, which
+    # matters most when the classified footage (e.g. a zoomed PTZ recording) is not the
+    # event's own media.
+    best_crop: Optional[str] = None
     elapsed_ms: int = 0
 
 
@@ -160,6 +181,27 @@ def _release_vram() -> None:
 
 def _ms(started: float) -> int:
     return int((time.monotonic() - started) * 1000)
+
+
+# Long edge of the best-crop JPEG returned to the caller. A card thumbnail, not an
+# archive — tens of KB, never the full frame.
+_CROP_MAX_EDGE = 480
+
+
+def _encode_crop(image: Image.Image) -> Optional[str]:
+    """Base64 JPEG of a crop, downscaled for use as a card thumbnail."""
+    try:
+        img = image
+        scale = _CROP_MAX_EDGE / max(img.width, img.height)
+        if scale < 1.0:
+            img = img.resize((max(1, round(img.width * scale)),
+                              max(1, round(img.height * scale))), Image.BICUBIC)
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=85)
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except (OSError, ValueError) as exc:
+        log.debug("Could not encode the best crop: %s", exc)
+        return None
 
 
 # ------------------------------------------------------------------------------ routes
@@ -214,7 +256,7 @@ async def lifespan(_: FastAPI):
             await _client.aclose()
 
 
-app = FastAPI(title="aviary-id", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="aviary-id", version="0.8.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -272,8 +314,12 @@ async def identify(req: IdentifyRequest) -> IdentifyResponse:
             detail="no Frigate URL: set FRIGATE_URL or pass frigate_url in the request",
         )
 
+    zoom = None
+    if req.zoom and req.zoom.camera.strip() and req.zoom.end > req.zoom.start:
+        zoom = frames.Zoom(camera=req.zoom.camera.strip(),
+                           start=req.zoom.start, end=req.zoom.end)
     timings = frames.Timings()
-    media = frames.EventMedia(req.event_id, base, settings)
+    media = frames.EventMedia(req.event_id, base, settings, zoom=zoom)
     try:
         await media.gather(_client, timings)
         response = await _run_pipeline(media, req, timings, started)
@@ -365,6 +411,8 @@ async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
         embedding=result.embedding,
         model_version=_classifier.model_version,
         embedding_key=_classifier.embedding_key,
+        best_crop=(_encode_crop(crops[result.best_frame][1])
+                   if 0 <= result.best_frame < len(crops) else None),
         elapsed_ms=_ms(started),
         timings=timings.stages,
     )

@@ -4,21 +4,25 @@
           data-id="{{ d.id }}" data-source="{{ d.source }}" data-name="{{ d.common_name }}">×</button>
   <div class="det-media">
     {% if d.source == 'frigate' %}
+      {# When the identification service stored the crop that backed its answer, lead
+         with it — it shows the actual bird, which the event's own media may not (the
+         classified footage can be a zoomed PTZ recording of another camera). #}
+      {% set crop = u('frigate_crop', event_id=d.source_ref) if has_crop(d.source_ref) else None %}
       {% if d.has_clip %}
         {# Inline preview plays the clip straight from Frigate: instant, but not seekable
            (fragmented MP4, zero-duration header). The ⤢ button below opens the player
            that is. playsinline keeps iOS from hijacking it into the system player. #}
         <video controls playsinline preload="none"
-               poster="{{ u('frigate_snapshot', event_id=d.source_ref) }}?thumbnail=true">
+               poster="{{ crop or u('frigate_snapshot', event_id=d.source_ref) ~ '?thumbnail=true' }}">
           <source src="{{ u('frigate_clip', event_id=d.source_ref) }}" type="video/mp4">
         </video>
       {% elif d.has_snapshot %}
         <img loading="lazy" alt="{{ d.common_name }}"
-             src="{{ u('frigate_snapshot', event_id=d.source_ref) }}">
+             src="{{ crop or u('frigate_snapshot', event_id=d.source_ref) }}">
       {% else %}
         <div class="nomedia"><span class="bird-mark">🐦</span><span>no media</span></div>
         <img loading="lazy" class="overlay-img" alt="{{ d.common_name }}"
-             src="{{ u('species_image', name=d.common_name) }}" onerror="this.remove()">
+             src="{{ crop or u('species_image', name=d.common_name) }}" onerror="this.remove()">
       {% endif %}
     {% elif d.source == 'birdnet' %}
       {% if d.has_clip %}

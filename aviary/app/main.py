@@ -14,8 +14,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    backfill, bootstrap, db, identify, ingest, notify, probe, proxy, species_audio,
-    species_info, species_photos,
+    backfill, bootstrap, crops, db, identify, ingest, notify, probe, proxy,
+    species_audio, species_info, species_photos,
 )
 from .mqtt_client import MqttIngestor
 from .routes import ASSET_VER, register_routes
@@ -145,6 +145,7 @@ def create_app() -> FastAPI:
 
     os.makedirs(settings.data_dir, exist_ok=True)
     db.init_db(settings.db_path)
+    crops.configure(settings.data_dir)
     ingest.configure(
         ignore_unclassified=settings.ignore_unclassified,
         ignore_cameras=settings.ignore_cameras,

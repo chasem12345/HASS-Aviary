@@ -27,7 +27,7 @@ from typing import Any, Optional
 
 import httpx
 
-from . import db, ingest, probe
+from . import crops, db, ingest, probe
 from .settings import Settings
 
 log = logging.getLogger("aviary.identify")
@@ -261,11 +261,75 @@ async def _ensure_probe(embed_key: str) -> None:
     await asyncio.to_thread(probe.rebuild, embed_key)
 
 
+def _zoom_for(row: dict[str, Any]) -> Optional[dict]:
+    """The PTZ recordings window the service should classify instead of the event clip.
+
+    None whenever zoom doesn't apply: no mapping for this camera, or no usable time
+    window (the end message carries end_time, so a live dispatch always has one; a
+    missing one means an odd row, and the event's own media is the honest fallback).
+    """
+    if not _settings or not _settings.identify_zoom_map:
+        return None
+    camera = (row.get("location") or "").strip().lower()
+    ptz = _settings.identify_zoom_map.get(camera)
+    if not ptz:
+        return None
+    start, end = row.get("start_time"), row.get("end_time")
+    if not start or not end or end <= start:
+        return None
+    # Trim PTZ travel time off the front so a leftover view of the camera's previous
+    # target is not classified — unless the event is shorter than the trim itself.
+    offset = _settings.identify_zoom_start_offset
+    if start + offset < end:
+        start += offset
+    return {"camera": ptz, "start": start, "end": end}
+
+
+def _zone_rank(zone_csv: Optional[str], rank: dict[str, int], unranked: int) -> int:
+    """Best (lowest) priority rank among a row's comma-joined zones."""
+    zones = (z.strip().lower() for z in (zone_csv or "").split(","))
+    return min((rank.get(z, unranked) for z in zones if z), default=unranked)
+
+
+async def _zoom_allowed(row: dict[str, Any]) -> bool:
+    """Whether the PTZ was plausibly pointed at THIS event's bird.
+
+    The PTZ automation parks on the highest-priority occupied zone, so when another
+    bird's event overlaps this one in a higher-priority zone, the zoomed footage would
+    show the wrong bird — skip zoom and classify the event's own media instead.
+    Conservative on purpose: overlap at any point in the window disqualifies, because
+    PTZ timing within the window is unknowable from here.
+    """
+    priority = _settings.identify_zoom_zone_priority
+    if not priority:
+        return True
+    rank = {name: i for i, name in enumerate(priority)}
+    unranked = len(priority)
+    own = _zone_rank(row.get("zone"), rank, unranked)
+    others = await asyncio.to_thread(
+        db.overlapping_detections, row["source_ref"],
+        row.get("start_time") or 0.0, row.get("end_time") or 0.0,
+    )
+    for other in others:
+        if _zone_rank(other.get("zone"), rank, unranked) < own:
+            log.info(
+                "Zoom skipped for %s: concurrent event %s in a higher-priority zone "
+                "(%s outranks %s) — the PTZ was likely filming that bird.",
+                row["source_ref"], other.get("source_ref"),
+                other.get("zone"), row.get("zone") or "no zone",
+            )
+            return False
+    return True
+
+
 async def _process(row: dict[str, Any]) -> None:
     ref = row["source_ref"]
     priors = await _audio_priors(row)
     exclude = await _exclusions(row)
-    result = await _call_service(ref, priors, exclude)
+    zoom = _zoom_for(row)
+    if zoom is not None and not await _zoom_allowed(row):
+        zoom = None
+    result = await _call_service(ref, priors, exclude, zoom)
 
     if result is None or result.get("status") != "ok":
         status = (result or {}).get("status", "failed")
@@ -360,6 +424,11 @@ async def _process(row: dict[str, Any]) -> None:
             consensus.get("votes", 0), name,
         )
 
+    # Keep the crop that backed the answer either way. The review queue is where seeing
+    # what the model actually looked at matters MOST — especially when the classified
+    # footage (a zoomed PTZ recording) is not the event's own media.
+    await asyncio.to_thread(crops.save, ref, result.get("best_crop"))
+
     if not passes and not rescued:
         log.info(
             "Identification for %s below threshold: %s score=%.3f margin=%.3f "
@@ -390,9 +459,11 @@ async def _process(row: dict[str, Any]) -> None:
     stored = await asyncio.to_thread(ingest.store_row, identified, True, True)
     if not stored:
         # Filtered on the way in; almost always a blacklisted species. Remove the
-        # provisional row rather than leaving an orphan stuck in 'pending'.
+        # provisional row rather than leaving an orphan stuck in 'pending' — and the
+        # crop stored above, which now has no row to belong to.
         log.debug("Identified %s as %s, which is filtered; dropping the row.", ref, name)
         await asyncio.to_thread(db.drop_detection, row["source"], ref)
+        await asyncio.to_thread(crops.remove, ref)
         return
 
     await asyncio.to_thread(
@@ -450,7 +521,8 @@ async def _audio_priors(row: dict[str, Any]) -> dict[str, float]:
 
 
 async def _call_service(event_id: str, priors: dict[str, float],
-                        exclude: Optional[list[str]] = None) -> Optional[dict]:
+                        exclude: Optional[list[str]] = None,
+                        zoom: Optional[dict] = None) -> Optional[dict]:
     """POST to the service, retrying once. Returns the parsed body or None."""
     if _client is None:
         return None
@@ -465,6 +537,11 @@ async def _call_service(event_id: str, priors: dict[str, float],
         "min_score": _settings.identify_min_score,
         "min_margin": _settings.identify_min_margin,
     }
+    if zoom:
+        # The PTZ camera's recordings window to classify instead of the event clip —
+        # see _zoom_for. The service falls back to the event clip on its own if the
+        # recordings turn out not to exist.
+        payload["zoom"] = zoom
     url = f"{_settings.identify_url}/identify"
 
     for attempt in (1, 2):
@@ -592,8 +669,13 @@ async def backfill_embedding(row: dict[str, Any]) -> bool:
         if ref in _inflight:
             return False
         _inflight.add(ref)
+    # Same zoom decision as a live identification: the embedding should come from the
+    # same footage a live run would have looked at.
+    zoom = _zoom_for(row)
+    if zoom is not None and not await _zoom_allowed(row):
+        zoom = None
     try:
-        result = await _call_service(ref, {}, [])
+        result = await _call_service(ref, {}, [], zoom)
     finally:
         _discard(ref)
     if not result or result.get("status") != "ok":
@@ -615,8 +697,10 @@ async def purge_old() -> int:
     if not enabled() or _settings.identify_retain_days <= 0:
         return 0
     cutoff = time.time() - _settings.identify_retain_days * 86400
-    removed = await asyncio.to_thread(db.purge_unidentified, cutoff)
-    if removed:
+    refs = await asyncio.to_thread(db.purge_unidentified, cutoff)
+    for ref in refs:
+        await asyncio.to_thread(crops.remove, ref)
+    if refs:
         log.info("Purged %d unidentified detection(s) older than %d days.",
-                 removed, _settings.identify_retain_days)
-    return removed
+                 len(refs), _settings.identify_retain_days)
+    return len(refs)
