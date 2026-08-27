@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% import "_cards.html" as cards with context %}
+{% block title %} · Kept{% endblock %}
+{% block content %}
+<div class="species-head">
+  <h1>Kept footage</h1>
+  <span class="count">{{ total }} clip{{ '' if total == 1 else 's' }} pinned to keep forever</span>
+</div>
+
+{% if groups %}
+{% for g in groups %}
+<div class="species-head kept-species">
+  <h2><a href="{{ u('species_detail', name=g.species) }}">{{ g.species }}</a></h2>
+  {% if g.scientific_name %}<span class="sci">{{ g.scientific_name }}</span>{% endif %}
+  <span class="count">{{ g["items"] | length }}</span>
+</div>
+<div class="cards">
+  {% for d in g["items"] %}
+  {{ cards.detection_card(d, absolute_time=True) }}
+  {% endfor %}
+</div>
+{% endfor %}
+{% else %}
+<p class="empty">
+  Nothing kept yet. Use the <strong>📌 keep</strong> button on any Frigate detection
+  card to pin its clip forever — it will be protected from retention expiry at Frigate
+  and collected here.
+</p>
+{% endif %}
+{% endblock %}

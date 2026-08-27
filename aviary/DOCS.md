@@ -342,8 +342,11 @@ update, run *Developer Tools → YAML → Reload Automations* so HA re-reads it)
    - **Returning species** (default 2 days, 0 disables) — a species absent for at
      least this many days announces "Back after N days!". Milestone-like: it fires
      even when the every-seen/every-heard toggles are off and bypasses the cooldown —
-     a long-absent bird showing up is worth knowing about on any configuration. Uses
-     the any-source gap, so a bird heard yesterday has not "returned" today on camera.
+     a long-absent bird showing up is worth knowing about on any configuration.
+     **Returning species counts…** picks what "absent" means: *Camera sightings only*
+     (default) announces a return only when a bird is seen again, measured against its
+     last camera sighting — audio detections neither count as a return nor reset the
+     clock; *Seen or heard* counts any detection on both sides.
    - **Per-species cooldown** (default 10 min) — a species re-notifies only after it
      has been quiet that long, counting only detections of the same kind (camera
      cooldown ignores audio detections and vice versa); other species are
@@ -383,6 +386,14 @@ When `identify_zoom_map` pairs two cameras, every Frigate detection card gains a
 for the event's exact time window — both directions, wide→zoomed and zoomed→wide. It
 uses Frigate's recordings API, so the paired camera must be recording continuously
 (which the cross-camera zoom setup already requires). Windows are capped at 10 minutes.
+
+## The Kept catalogue
+
+Everything pinned with **📌 keep** is collected on the **Kept** page (top navigation),
+grouped by species with the newest clips first. Cards there show the full date and time
+of the detection rather than "2h ago" — a curated shelf is about *when it was*.
+Releasing a pin (clicking **📌 kept**) removes the clip from the catalogue on the next
+visit.
 
 ## Keeping a clip forever
 

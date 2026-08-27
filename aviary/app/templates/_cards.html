@@ -1,4 +1,6 @@
-{% macro detection_card(d, highlight_after=None) %}
+{# absolute_time renders the full timestamp instead of "2h ago" — for catalogue pages
+   (Kept) where WHEN it happened is the point and relative times go stale. #}
+{% macro detection_card(d, highlight_after=None, absolute_time=False) %}
 <article class="det-card{{ ' new' if highlight_after and d.start_time > highlight_after }}">
   <button type="button" class="det-delete" title="Remove this detection (misclassified?)"
           data-id="{{ d.id }}" data-source="{{ d.source }}" data-name="{{ d.common_name }}">×</button>
@@ -76,7 +78,8 @@
     <div class="meta sub">
       {% if d.location %}<span title="camera{% if d.zone %} · zone{% endif %}">{{ d.location }}{% if d.zone %} · {{ d.zone | replace('_', ' ') }}{% endif %}</span>
       {% elif d.zone %}<span title="zone">{{ d.zone | replace('_', ' ') }}</span>{% endif %}
-      <span title="{{ d.start_time | fmt_time }}">{{ d.start_time | fmt_rel }}</span>
+      {% if absolute_time %}<span>{{ d.start_time | fmt_time }}</span>
+      {% else %}<span title="{{ d.start_time | fmt_time }}">{{ d.start_time | fmt_rel }}</span>{% endif %}
       {% if d.source == 'frigate' and d.has_clip %}
       <button type="button" class="clip-open"
               title="Open the full player: scrub the clip and save a still at full resolution"

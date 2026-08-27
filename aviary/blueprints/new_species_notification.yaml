@@ -104,6 +104,22 @@ blueprint:
           max: 365
           unit_of_measurement: days
           mode: box
+    returning_source:
+      name: Returning species counts…
+      description: >
+        What "absent" means for the return announcement. "Camera sightings
+        only" (default) announces a return the first time a bird is SEEN
+        after the gap — audio detections neither count as a return nor reset
+        the clock, so a wren singing daily off-camera can still make a
+        camera comeback. "Seen or heard" counts any detection on both sides.
+      default: seen
+      selector:
+        select:
+          options:
+            - label: Camera sightings only
+              value: seen
+            - label: Seen or heard
+              value: any
     species_cooldown:
       name: Per-species cooldown (minutes)
       description: >
@@ -168,6 +184,7 @@ variables:
   cameras: !input cameras
   blacklist: !input blacklist
   returning_after_days: !input returning_after_days
+  returning_source: !input returning_source
   species_cooldown: !input species_cooldown
   seen_image: !input seen_image
   frigate_proxy_base: !input frigate_proxy_base
@@ -189,16 +206,21 @@ variables:
        if verb == 'seen' else
        (trigger.event.data.seconds_since_species_last_heard
         | default(trigger.event.data.seconds_since_species_last_detected)) }}
-  # A species back after a long absence. Uses the ANY-source gap, not the per-kind one
-  # the cooldown uses: a bird heard yesterday but photographed today has not "returned".
-  # Excludes brand-new species (they have their own, stronger announcement).
-  since_any: >-
-    {{ trigger.event.data.seconds_since_species_last_detected | default(none, true) }}
+  # A species back after a long absence. The gap source is configurable: "seen" (the
+  # default) announces a return only on a CAMERA sighting, measured against the last
+  # camera sighting — audio chatter neither counts as a return nor resets the clock.
+  # "any" counts every detection on both sides. Excludes brand-new species (they have
+  # their own, stronger announcement).
+  returning_gap: >-
+    {{ (trigger.event.data.seconds_since_species_last_seen | default(none, true))
+       if returning_source | default('seen') == 'seen' else
+       (trigger.event.data.seconds_since_species_last_detected | default(none, true)) }}
   returning: >-
     {{ not is_new and (returning_after_days | default(0) | float(0)) > 0
-       and since_any not in (none, '')
-       and (since_any | float(0)) >= (returning_after_days | float(0)) * 86400 }}
-  returning_days: "{{ ((since_any | float(0)) / 86400) | int }}"
+       and (returning_source | default('seen') != 'seen' or verb == 'seen')
+       and returning_gap not in (none, '')
+       and (returning_gap | float(0)) >= (returning_after_days | float(0)) * 86400 }}
+  returning_days: "{{ ((returning_gap | float(0)) / 86400) | int }}"
   milestone: >-
     {{ (is_first_seen and notify_first_seen) or (is_first_heard and notify_first_heard)
        or returning }}

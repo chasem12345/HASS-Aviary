@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.21.0
+
+- **The Kept catalogue.** Everything pinned with 📌 keep now has its own page (**Kept**
+  in the top navigation), grouped by species, newest first. Cards there show the full
+  date and time instead of "2h ago" — a curated shelf is about when it was.
+- **Returning-species announcements can ignore audio.** New blueprint selector
+  **"Returning species counts…"**: *Camera sightings only* (now the default) announces
+  a return only when the bird is seen again, measured against its last camera sighting
+  — a wren singing daily off-camera can still make a camera comeback, and a heard
+  detection never triggers the announcement. *Seen or heard* restores the 0.20.0
+  behavior. Reload automations after updating so HA re-reads the blueprint.
+
 ## 0.20.0
 
 - **Daily Recap page.** New top-nav page showing one local day at a glance: every

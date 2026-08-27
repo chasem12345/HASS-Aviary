@@ -214,6 +214,32 @@ def recap(request: Request, day: Optional[str] = Query(None)):
     })
 
 
+@router.get("/kept", response_class=HTMLResponse)
+def kept(request: Request):
+    """The kept-forever catalogue: every 📌-pinned clip, grouped by species.
+
+    A curated shelf rather than a feed — full timestamps instead of relative ones
+    (the cards render with absolute_time), because "when was this" is the point of
+    keeping something.
+    """
+    rows = db.retained_detections()
+    groups: list[dict] = []
+    for det in rows:  # rows arrive species A→Z, newest first — one walk groups them
+        if not groups or groups[-1]["species"] != det["common_name"]:
+            groups.append({
+                "species": det["common_name"],
+                "scientific_name": det.get("scientific_name"),
+                "items": [],
+            })
+        groups[-1]["items"].append(det)
+    return render("kept.html", {
+        "request": request,
+        "page": "kept",
+        "groups": groups,
+        "total": len(rows),
+    })
+
+
 @router.get("/recent", response_class=HTMLResponse)
 def recent(
     request: Request,

@@ -890,3 +890,11 @@ img.overlay-img {
 @media (max-width: 560px) {
   .recap-times { display: none; }
 }
+
+/* --------------------------------------------------------------- kept catalogue */
+.kept-species { margin: 22px 0 10px; align-items: baseline; }
+.kept-species h2 { margin: 0; font-size: 17px; }
+.kept-species .sci { color: var(--muted); font-style: italic; font-size: 12px; }
+.kept-species .count {
+  background: var(--line); border-radius: 12px; padding: 1px 9px; font-size: 12px;
+}

@@ -805,6 +805,24 @@ def daily_recap(day_start: float, day_end: float,
     return recap
 
 
+def retained_detections() -> list[dict]:
+    """Every kept-forever detection, for the Kept catalogue.
+
+    Ordered species A→Z then newest first, so the caller can group by walking the list
+    once. No confirmation gating on purpose: the user pinned this exact footage, which
+    outranks whether the species has been approved into the registry yet.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM detections
+            WHERE retained_at IS NOT NULL
+            ORDER BY common_name COLLATE NOCASE ASC, start_time DESC
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def distinct_species(source: Optional[str] = None) -> list[str]:
     params: list = []
     where = "WHERE 1=1" + _source_clause(source, params) + _named_clause()
