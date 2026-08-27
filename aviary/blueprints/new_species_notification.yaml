@@ -89,6 +89,21 @@ blueprint:
       selector:
         text:
           multiple: true
+    returning_after_days:
+      name: Returning species (days)
+      description: >
+        A species that has not been detected for at least this many days
+        notifies as "Back after N days!" — like a milestone, it fires even
+        when routine notifications are off and bypasses the cooldown. A
+        long-absent bird showing up again is worth knowing about even on a
+        quiet configuration. 0 disables.
+      default: 2
+      selector:
+        number:
+          min: 0
+          max: 365
+          unit_of_measurement: days
+          mode: box
     species_cooldown:
       name: Per-species cooldown (minutes)
       description: >
@@ -152,6 +167,7 @@ variables:
   notify_first_heard: !input notify_first_heard
   cameras: !input cameras
   blacklist: !input blacklist
+  returning_after_days: !input returning_after_days
   species_cooldown: !input species_cooldown
   seen_image: !input seen_image
   frigate_proxy_base: !input frigate_proxy_base
@@ -163,17 +179,29 @@ variables:
   # from add-on builds before 0.11.0, where the fields simply don't exist.
   is_first_seen: "{{ trigger.event.data.is_first_seen | default(false, true) }}"
   is_first_heard: "{{ trigger.event.data.is_first_heard | default(false, true) }}"
-  milestone: >-
-    {{ (is_first_seen and notify_first_seen) or (is_first_heard and notify_first_heard) }}
-  # Cooldown counts only detections of the same kind (seen vs heard), so audio
+# Cooldown counts only detections of the same kind (seen vs heard), so audio
   # chatter never suppresses camera notifications. Falls back to the any-source
-  # gap for events from add-on versions before 0.4.2.
+  # gap for events from add-on versions before 0.4.2. (Defined before `milestone`,
+  # which now depends on it via `returning`.)
   since_last: >-
     {{ (trigger.event.data.seconds_since_species_last_seen
         | default(trigger.event.data.seconds_since_species_last_detected))
        if verb == 'seen' else
        (trigger.event.data.seconds_since_species_last_heard
         | default(trigger.event.data.seconds_since_species_last_detected)) }}
+  # A species back after a long absence. Uses the ANY-source gap, not the per-kind one
+  # the cooldown uses: a bird heard yesterday but photographed today has not "returned".
+  # Excludes brand-new species (they have their own, stronger announcement).
+  since_any: >-
+    {{ trigger.event.data.seconds_since_species_last_detected | default(none, true) }}
+  returning: >-
+    {{ not is_new and (returning_after_days | default(0) | float(0)) > 0
+       and since_any not in (none, '')
+       and (since_any | float(0)) >= (returning_after_days | float(0)) * 86400 }}
+  returning_days: "{{ ((since_any | float(0)) / 86400) | int }}"
+  milestone: >-
+    {{ (is_first_seen and notify_first_seen) or (is_first_heard and notify_first_heard)
+       or returning }}
   blacklisted: >-
     {{ trigger.event.data.common_name | lower
        in (blacklist | default([]) | map('lower') | list) }}
@@ -204,7 +232,8 @@ variables:
   message: >-
     {{ 'New species! ' if is_new
        else ('First sighting! ' if is_first_seen
-             else ('First recording! ' if is_first_heard else '')) }}{{ trigger.event.data.common_name }}
+             else ('First recording! ' if is_first_heard
+                   else ('Back after ' ~ returning_days ~ ' days! ' if returning else ''))) }}{{ trigger.event.data.common_name }}
     {%- if verb == 'seen' %} detected
     {%- if trigger.event.data.zone %} at
     {{ trigger.event.data.zone | replace('_', ' ') }}

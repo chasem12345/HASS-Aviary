@@ -95,12 +95,18 @@ def _ingress_context(request: Request) -> dict:
     # view's context dict and forgetting one.
     settings = getattr(request.app.state, "settings", None)
     active = bool(settings and settings.identify_active)
+    # Camera pairs for the cards' "view on the other camera" button. Reuses the zoom
+    # map's detect→ptz pairs, made BIDIRECTIONAL: an event on either camera offers the
+    # other one's recordings for the same window.
+    zoom_map = dict(getattr(settings, "identify_zoom_map", {}) or {})
+    camera_pairs = {**zoom_map, **{v: k for k, v in zoom_map.items()}}
     return {
         "ingress_path": prefix,
         "u": u,
         "asset_ver": ASSET_VER,
         "theme": get_theme(),
         "identify_active": active,
+        "camera_pairs": camera_pairs,
         # Nav badge. One indexed COUNT on common_name, and only when the tab is shown at
         # all — the query is skipped entirely for everyone not using identification.
         "unidentified_count": db.unidentified_count() if active else 0,

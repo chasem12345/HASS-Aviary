@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.20.0
+
+- **Daily Recap page.** New top-nav page showing one local day at a glance: every
+  identified species with seen/heard counts, first–last detection times, a thumbnail
+  from the day's own footage, and a **new!** badge on first-ever species. Previous/next
+  day links plus a date picker; "today" matches the dashboard's local-midnight boundary.
+- **⇄ View on the other camera.** When `identify_zoom_map` pairs two cameras, Frigate
+  detection cards can play the *paired* camera's continuous recordings for the event's
+  exact time window — both directions — in the existing scrub-capable player. Uses
+  Frigate's recordings API through two new proxied media routes (windows capped at 10
+  minutes; camera names validated).
+- **"Back after N days!" notifications.** New blueprint input **Returning species**
+  (default 2 days, 0 disables): a species absent that long announces its return like a
+  milestone — even when routine notifications are off, bypassing the cooldown. Derived
+  from the payload's existing time-since fields, so it works for events from any add-on
+  since 0.11. Run *Developer Tools → YAML → Reload Automations* after updating so HA
+  re-reads the blueprint.
+
 ## 0.19.0
 
 - **Cross-camera zoom** (with aviary-id **0.8.0**). New `identify_zoom_map` option

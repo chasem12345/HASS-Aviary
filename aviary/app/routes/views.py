@@ -161,6 +161,59 @@ def _recent_ctx(
     }
 
 
+@router.get("/recap", response_class=HTMLResponse)
+def recap(request: Request, day: Optional[str] = Query(None)):
+    """Daily recap: every species active on one local day, with seen/heard counts.
+
+    ``day`` is YYYY-MM-DD; anything unparseable (or in the future) falls back to today
+    rather than erroring — a hand-edited URL should degrade, not 400.
+    """
+    today = date.today()
+    try:
+        chosen = date.fromisoformat(day) if day else today
+    except (TypeError, ValueError):
+        chosen = today
+    if chosen > today:
+        chosen = today
+
+    # Local-midnight bounds, same boundary as the dashboard's "today" stats (_since).
+    def _midnight(d: date) -> float:
+        return time.mktime((d.year, d.month, d.day, 0, 0, 0, 0, 0, -1))
+
+    day_start = _midnight(chosen)
+    day_end = _midnight(chosen + timedelta(days=1))
+
+    gated = request.app.state.settings.require_species_confirmation
+    rows = db.daily_recap(day_start, day_end, only_confirmed=gated)
+    for r in rows:
+        r["first_hm"] = time.strftime("%H:%M", time.localtime(r["first_time"]))
+        r["last_hm"] = time.strftime("%H:%M", time.localtime(r["last_time"]))
+
+    if chosen == today:
+        label = "Today"
+    elif chosen == today - timedelta(days=1):
+        label = "Yesterday"
+    else:
+        label = chosen.strftime("%A, %B %d, %Y").replace(" 0", " ")
+
+    return render("recap.html", {
+        "request": request,
+        "page": "recap",
+        "day": chosen.isoformat(),
+        "today": today.isoformat(),
+        "day_label": label,
+        "prev_day": (chosen - timedelta(days=1)).isoformat(),
+        "next_day": (chosen + timedelta(days=1)).isoformat() if chosen < today else None,
+        "rows": rows,
+        "totals": {
+            "species": len(rows),
+            "detections": sum(r["count"] for r in rows),
+            "seen": sum(r["seen"] or 0 for r in rows),
+            "heard": sum(r["heard"] or 0 for r in rows),
+        },
+    })
+
+
 @router.get("/recent", response_class=HTMLResponse)
 def recent(
     request: Request,

@@ -339,6 +339,11 @@ update, run *Developer Tools → YAML → Reload Automations* so HA re-reads it)
    - **Blacklist** — species that never notify, even as new species.
    - **Cameras to notify on** (default: all) — only these Frigate cameras notify. See
      [Filtering by camera](#filtering-by-camera).
+   - **Returning species** (default 2 days, 0 disables) — a species absent for at
+     least this many days announces "Back after N days!". Milestone-like: it fires
+     even when the every-seen/every-heard toggles are off and bypasses the cooldown —
+     a long-absent bird showing up is worth knowing about on any configuration. Uses
+     the any-source gap, so a bird heard yesterday has not "returned" today on camera.
    - **Per-species cooldown** (default 10 min) — a species re-notifies only after it
      has been quiet that long, counting only detections of the same kind (camera
      cooldown ignores audio detections and vice versa); other species are
@@ -361,6 +366,23 @@ Notes:
   bird images are stored there.
 - Set `notify_new_species: false` in the add-on options to turn all detection events
   off.
+
+## Daily recap
+
+The **Recap** page (top navigation) is one local day at a glance: every identified
+species active that day with seen/heard counts, first and last detection times, a
+thumbnail from the day's own footage, and a **new!** badge on species whose first-ever
+detection happened that day. Navigate with the previous/next links or the date picker;
+"today" uses the same local-midnight boundary as the dashboard stats. Species without a
+confirmed identification (review-queue rows) are not counted.
+
+## Viewing the same moment on the other camera
+
+When `identify_zoom_map` pairs two cameras, every Frigate detection card gains a
+**⇄ view on <camera>** button that plays the *paired* camera's continuous recordings
+for the event's exact time window — both directions, wide→zoomed and zoomed→wide. It
+uses Frigate's recordings API, so the paired camera must be recording continuously
+(which the cross-camera zoom setup already requires). Windows are capped at 10 minutes.
 
 ## Keeping a clip forever
 

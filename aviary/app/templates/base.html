@@ -13,6 +13,7 @@
     <nav>
       <a href="{{ u('dashboard') }}" class="{{ 'active' if page == 'dashboard' }}">Dashboard</a>
       <a href="{{ u('recent') }}" class="{{ 'active' if page == 'recent' }}">Recent</a>
+      <a href="{{ u('recap') }}" class="{{ 'active' if page == 'recap' }}">Recap</a>
       {# Only when identification is configured — with it off, nothing can ever land here. #}
       {% if identify_active %}
       <a href="{{ u('unidentified') }}" class="{{ 'active' if page == 'unidentified' }}">

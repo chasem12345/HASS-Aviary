@@ -667,7 +667,12 @@
 
   function openPlayer(ds) {
     closePlayer();
-    const clipBase = BASE + "/media/frigate/" + encodeURIComponent(ds.event);
+    // Sources default to the event's own media; ds.src/ds.fallback override them for
+    // non-event footage (a paired camera's recordings window). Everything downstream —
+    // blob playback, stepping, still capture — is URL-agnostic.
+    const clipBase = BASE + "/media/frigate/" + encodeURIComponent(ds.event || "");
+    const src = ds.src || clipBase + "/play.mp4";
+    const fallback = ds.fallback || clipBase + "/clip.mp4";
 
     player = document.createElement("div");
     player.className = "clip-player";
@@ -695,7 +700,7 @@
     // Fetch the remuxed clip whole, then play from memory. The stage stays black while
     // that happens and the browser's own buffering UI takes over once src is set — no
     // custom loading overlay, which is one less thing to sit on top of the video.
-    fetch(clipBase + "/play.mp4")
+    fetch(src)
       .then((res) => { if (!res.ok) throw new Error(res.status); return res.blob(); })
       .then((blob) => {
         playerObjectUrl = URL.createObjectURL(blob);
@@ -704,7 +709,7 @@
       .catch(() => {
         // Remux unavailable (no ffmpeg, Frigate unreachable): play the original so there
         // is still something to watch, and say in the title why it won't scrub.
-        video.src = clipBase + "/clip.mp4";
+        video.src = fallback;
         title.textContent = (ds.name || "Clip") + " · seeking unavailable";
       });
 
@@ -728,6 +733,24 @@
     if (!btn) return;
     e.preventDefault();
     openPlayer({ event: btn.dataset.event, name: btn.dataset.name, time: btn.dataset.time });
+  });
+
+  // "View on the other camera": the same time window, from the paired camera's
+  // continuous recordings. Same player, different source URLs.
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".other-cam-open");
+    if (!btn) return;
+    e.preventDefault();
+    const q = "?start=" + encodeURIComponent(btn.dataset.start) +
+              "&end=" + encodeURIComponent(btn.dataset.end);
+    const recBase = BASE + "/media/frigate/recordings/" +
+      encodeURIComponent(btn.dataset.camera) + "/";
+    openPlayer({
+      name: (btn.dataset.name || "Clip") + " · " + btn.dataset.camera,
+      time: btn.dataset.start,
+      src: recBase + "play.mp4" + q,
+      fallback: recBase + "clip.mp4" + q,
+    });
   });
 
   document.addEventListener("keydown", (e) => {

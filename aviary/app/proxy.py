@@ -207,6 +207,15 @@ def frigate_snapshot_url(base: str, event_id: str, thumbnail: bool = False) -> s
     return f"{base}/api/events/{event_id}/{kind}"
 
 
+def frigate_recordings_url(base: str, camera: str, start: float, end: float) -> str:
+    """A recordings window from any recorded camera, event or not.
+
+    Same endpoint (and the same 3-decimal formatting) the aviary-id service uses for
+    the cross-camera zoom — see aviary-id's frames.recordings_url.
+    """
+    return f"{base}/api/{camera}/start/{start:.3f}/end/{end:.3f}/clip.mp4"
+
+
 def birdnet_audio_urls(base: str, det: dict) -> list[str]:
     """Candidate URLs for a BirdNET-Go detection's audio, best first.
 

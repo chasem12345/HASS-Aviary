@@ -751,6 +751,60 @@ def species_list(
     return [dict(r) for r in rows]
 
 
+def daily_recap(day_start: float, day_end: float,
+                only_confirmed: bool = False) -> list[dict]:
+    """Per-species activity within [day_start, day_end) — the Recap page's day view.
+
+    The only aggregate query with BOTH time bounds: every other stat is "since", but a
+    recap for last Tuesday needs Tuesday alone. ``is_first_ever`` marks species whose
+    first detection ever falls inside the window ("new!" on the page) — computed from
+    the species' all-time minimum, not the window's, so revisiting an old day doesn't
+    re-badge everything that was merely new-to-that-window.
+    """
+    params: list = [day_start, day_end]
+    where = ("WHERE start_time >= ? AND start_time < ?"
+             + _named_clause() + _confirmed_clause(only_confirmed))
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT common_name,
+                   MAX(scientific_name) AS scientific_name,
+                   COUNT(*)             AS count,
+                   SUM(source = 'frigate') AS seen,
+                   SUM(source = 'birdnet') AS heard,
+                   MIN(start_time)      AS first_time,
+                   MAX(start_time)      AS last_time,
+                   -- A representative image for the row: the latest snapshot-bearing
+                   -- Frigate event of the day (MAX pairs ref with time lexically well
+                   -- enough here; refs are same-day event ids).
+                   MAX(CASE WHEN source = 'frigate' AND has_snapshot = 1
+                            THEN snapshot_ref END) AS snapshot_ref
+            FROM detections {where}
+            GROUP BY common_name
+            ORDER BY count DESC, last_time DESC
+            """,
+            params,
+        ).fetchall()
+        recap = [dict(r) for r in rows]
+        if recap:
+            marks = ",".join("?" for _ in recap)
+            firsts = conn.execute(
+                f"""
+                SELECT common_name, MIN(start_time) AS first_ever
+                FROM detections
+                WHERE common_name IN ({marks}) COLLATE NOCASE
+                GROUP BY common_name
+                """,
+                [r["common_name"] for r in recap],
+            ).fetchall()
+            first_ever = {r["common_name"].lower(): r["first_ever"] for r in firsts}
+            for row in recap:
+                ever = first_ever.get(row["common_name"].lower())
+                row["is_first_ever"] = bool(
+                    ever is not None and day_start <= ever < day_end)
+    return recap
+
+
 def distinct_species(source: Optional[str] = None) -> list[str]:
     params: list = []
     where = "WHERE 1=1" + _source_clause(source, params) + _named_clause()

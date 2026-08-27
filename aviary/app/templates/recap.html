@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %} · Recap{% endblock %}
+{% block content %}
+<div class="controls recap-nav">
+  <a class="filter-chip" href="{{ u('recap') }}?day={{ prev_day }}" title="{{ prev_day }}">‹ previous day</a>
+  <h1 class="recap-title">{{ day_label }}</h1>
+  {% if next_day %}
+  <a class="filter-chip" href="{{ u('recap') }}?day={{ next_day }}" title="{{ next_day }}">next day ›</a>
+  {% endif %}
+  <form method="get" action="{{ u('recap') }}" class="recap-jump">
+    <input type="date" name="day" value="{{ day }}" max="{{ today }}"
+           onchange="this.form.submit()" title="Jump to a date">
+  </form>
+</div>
+
+{% if rows %}
+<p class="recap-summary">
+  <strong>{{ totals.species }}</strong> species ·
+  <strong>{{ totals.detections }}</strong> identified detection{{ '' if totals.detections == 1 else 's' }}
+  ({{ totals.seen }} seen / {{ totals.heard }} heard)
+</p>
+
+<div class="recap-list">
+  {% for r in rows %}
+  <div class="recap-row">
+    {% if r.snapshot_ref %}
+    {# The day's own footage where we have it; the generic species photo otherwise
+       (audio-only species), vanishing quietly when neither exists. #}
+    <img class="recap-thumb" loading="lazy" alt=""
+         src="{{ u('frigate_snapshot', event_id=r.snapshot_ref) }}?thumbnail=true"
+         onerror="this.remove()">
+    {% else %}
+    <img class="recap-thumb" loading="lazy" alt=""
+         src="{{ u('species_image', name=r.common_name) }}" onerror="this.remove()">
+    {% endif %}
+    <div class="recap-name">
+      <a href="{{ u('species_detail', name=r.common_name) }}">{{ r.common_name }}</a>
+      {% if r.is_first_ever %}<span class="recap-new">new!</span>{% endif %}
+      {% if r.scientific_name %}<div class="sci">{{ r.scientific_name }}</div>{% endif %}
+    </div>
+    <div class="recap-counts">
+      {% if r.seen %}<span class="badge badge-frigate">seen ×{{ r.seen }}</span>{% endif %}
+      {% if r.heard %}<span class="badge badge-birdnet">heard ×{{ r.heard }}</span>{% endif %}
+    </div>
+    <div class="recap-times" title="first – last detection">
+      {{ r.first_hm }}{% if r.last_hm != r.first_hm %} – {{ r.last_hm }}{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="recap-summary">No identified detections on this day.</p>
+{% endif %}
+{% endblock %}

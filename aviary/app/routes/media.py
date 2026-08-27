@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -113,8 +114,9 @@ async def species_reference_audio(name: str, request: Request, kind: str = "song
     )
 
 
-async def _remuxed_clip(base: str, event_id: str) -> Optional[tuple[str, str]]:
-    """Fetch a Frigate clip and remux it into a seekable MP4. Returns (path, tmpdir).
+async def _remuxed_clip(url: str, label: str) -> Optional[tuple[str, str]]:
+    """Fetch a Frigate MP4 (event clip or recordings window) and remux it into a
+    seekable MP4. Returns (path, tmpdir). ``label`` is for log lines only.
 
     Frigate serves clips as streaming (fragmented) MP4s whose header declares zero
     duration. Two consequences: they fail upload validation elsewhere (Discord sees an
@@ -130,12 +132,12 @@ async def _remuxed_clip(base: str, event_id: str) -> Optional[tuple[str, str]]:
     src = os.path.join(tmpdir, "src.mp4")
     out = os.path.join(tmpdir, "out.mp4")
 
-    if not await proxy.fetch_to_file(proxy.frigate_clip_url(base, event_id), src):
+    if not await proxy.fetch_to_file(url, src):
         shutil.rmtree(tmpdir, ignore_errors=True)
         return None
 
     if not shutil.which("ffmpeg"):
-        log.warning("ffmpeg not found; serving the original clip for %s (not seekable)", event_id)
+        log.warning("ffmpeg not found; serving the original clip for %s (not seekable)", label)
         return src, tmpdir
 
     proc = None
@@ -148,18 +150,18 @@ async def _remuxed_clip(base: str, event_id: str) -> Optional[tuple[str, str]]:
         if proc.returncode == 0 and os.path.getsize(out) > 0:
             return out, tmpdir
         log.warning("ffmpeg remux failed for %s (rc=%s): %s",
-                    event_id, proc.returncode, (stderr or b"")[-300:])
+                    label, proc.returncode, (stderr or b"")[-300:])
     except asyncio.TimeoutError:
         # Kill it: otherwise it keeps writing into a directory we're about to delete.
-        log.warning("ffmpeg remux timed out for %s after %ss", event_id, _FFMPEG_TIMEOUT_S)
+        log.warning("ffmpeg remux timed out for %s after %ss", label, _FFMPEG_TIMEOUT_S)
         if proc is not None:
             with contextlib.suppress(ProcessLookupError, OSError):
                 proc.kill()
             with contextlib.suppress(Exception):  # noqa: BLE001 - reaping is best-effort
                 await proc.communicate()
     except OSError as exc:
-        log.warning("ffmpeg remux errored for %s: %s", event_id, exc)
-    log.debug("Falling back to the un-remuxed clip for %s; it will not be seekable.", event_id)
+        log.warning("ffmpeg remux errored for %s: %s", label, exc)
+    log.debug("Falling back to the un-remuxed clip for %s; it will not be seekable.", label)
     return src, tmpdir
 
 
@@ -174,7 +176,7 @@ async def frigate_play(event_id: str, request: Request):
     base = request.app.state.settings.frigate_url
     if not base:
         return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
-    result = await _remuxed_clip(base, event_id)
+    result = await _remuxed_clip(proxy.frigate_clip_url(base, event_id), event_id)
     if result is None:
         return JSONResponse({"error": "could not fetch clip from Frigate"}, status_code=502)
     path, tmpdir = result
@@ -190,7 +192,7 @@ async def frigate_download(event_id: str, request: Request):
     base = request.app.state.settings.frigate_url
     if not base:
         return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
-    result = await _remuxed_clip(base, event_id)
+    result = await _remuxed_clip(proxy.frigate_clip_url(base, event_id), event_id)
     if result is None:
         return JSONResponse({"error": "could not fetch clip from Frigate"}, status_code=502)
     path, tmpdir = result
@@ -204,6 +206,64 @@ async def frigate_download(event_id: str, request: Request):
         fname = f"aviary-{event_id}.mp4"
     return FileResponse(
         path, media_type="video/mp4", filename=fname,
+        background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True),
+    )
+
+
+# ------------------------------------------------------------ recordings by window
+# Backs the cards' "view on the other camera" button: the same time window as an event,
+# but from the paired camera's continuous recordings (Frigate's recordings-by-window
+# endpoint works for any recorded camera, event or not).
+
+# A malformed request must not make ffmpeg remux an hour of 4K.
+_RECORDING_MAX_S = 600.0
+_CAMERA_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
+
+
+def _recording_window(camera: str, start: float, end: float
+                      ) -> Optional[tuple[str, float, float]]:
+    """Validate a recordings request. None = reject with 400."""
+    camera = (camera or "").strip().lower()
+    if not _CAMERA_RE.match(camera):
+        return None
+    if not (end > start) or (end - start) > _RECORDING_MAX_S:
+        return None
+    return camera, float(start), float(end)
+
+
+@router.get("/frigate/recordings/{camera}/clip.mp4", name="frigate_recording_clip")
+async def frigate_recording_clip(camera: str, start: float, end: float, request: Request):
+    """Straight passthrough of a recordings window — the player's non-seekable fallback."""
+    base = request.app.state.settings.frigate_url
+    if not base:
+        return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
+    window = _recording_window(camera, start, end)
+    if window is None:
+        return JSONResponse({"error": "invalid camera or window"}, status_code=400)
+    return await proxy.stream_upstream(
+        request, proxy.frigate_recordings_url(base, *window))
+
+
+@router.get("/frigate/recordings/{camera}/play.mp4", name="frigate_recording_play")
+async def frigate_recording_play(camera: str, start: float, end: float, request: Request):
+    """A seekable recordings window, same remux as an event's play.mp4."""
+    base = request.app.state.settings.frigate_url
+    if not base:
+        return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
+    window = _recording_window(camera, start, end)
+    if window is None:
+        return JSONResponse({"error": "invalid camera or window"}, status_code=400)
+    cam, w_start, w_end = window
+    result = await _remuxed_clip(
+        proxy.frigate_recordings_url(base, cam, w_start, w_end),
+        f"{cam}@{w_start:.0f}-{w_end:.0f}",
+    )
+    if result is None:
+        return JSONResponse(
+            {"error": "no recordings from Frigate for that window"}, status_code=502)
+    path, tmpdir = result
+    return FileResponse(
+        path, media_type="video/mp4",
         background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True),
     )
 

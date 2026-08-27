@@ -125,8 +125,14 @@
               title="Name this bird yourself">✎ identify manually</button>
     </div>
     {% endif %}
-    {% if identify_active and d.source == 'frigate' %}
+    {# The paired camera (from identify_zoom_map, both directions) — offers the same
+       time window from the other camera's continuous recordings. Needs end_time: an
+       in-progress event has no window yet. #}
+    {% set other_cam = camera_pairs.get((d.location or '') | lower)
+                       if d.source == 'frigate' and d.end_time else none %}
+    {% if (identify_active and d.source == 'frigate') or other_cam %}
     <div class="meta sub id-actions">
+      {% if identify_active and d.source == 'frigate' %}
       <button type="button" class="reidentify"
               title="Run identification again — after changing thresholds or the species list, or to retry a failure"
               data-id="{{ d.id }}">{{ '↻ re-identify' if d.id_status else '⌕ identify' }}</button>
@@ -136,6 +142,14 @@
       <button type="button" class="reidentify reject"
               title="Not a {{ d.common_name }} — rule it out and try the next best match"
               data-id="{{ d.id }}" data-name="{{ d.common_name }}">✗ wrong</button>
+      {% endif %}
+      {% endif %}
+      {% if other_cam %}
+      <button type="button" class="other-cam-open"
+              title="Play the {{ other_cam }} camera's recordings for this exact time window"
+              data-camera="{{ other_cam }}" data-start="{{ d.start_time }}"
+              data-end="{{ d.end_time }}" data-name="{{ d.common_name }}">
+        ⇄ view on {{ other_cam }}</button>
       {% endif %}
     </div>
     {% endif %}
