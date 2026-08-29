@@ -468,51 +468,65 @@ class Classifier:
     def _consensus(self, probs: torch.Tensor, det_scores: list[float],
                    origins: list[str], best_idx: int,
                    score_floor: float = _VOTE_SCORE_FLOOR) -> Optional[dict]:
-        """How many independent moments voted for the fused winner.
+        """How many independent moments backed the fused winner.
 
-        Each usable frame casts one vote for its own top-1 species. Clip frames closer
-        together than _MOMENT_SECONDS collapse into a single moment (best-scoring frame
-        speaks for the group), because two decodes of the same pose are one observation.
-        The thumbnail and the snapshot are inherently distinct views and always count
-        singly. Returns None with fewer than two votes — no data, not disagreement.
+        Each usable frame casts one vote. A moment SUPPORTS the winner when the winner
+        sits within that frame's top-2 with at least ``score_floor`` mass — not only
+        when it is the frame's top-1. Congeners fragment top-1 votes structurally: at a
+        hummingbird feeder, "Anna's 0.45 / Ruby-throated 0.40" is corroboration for a
+        fused Ruby-throated answer, not conflict. A frame whose top-2 holds genuinely
+        different birds still dissents, which is the conflict this gate exists to catch.
 
-        ``score_floor`` is the minimum top-1 a frame needs to vote at all. Callers pass
-        a higher floor when voting over the trained model's raw (unnormalized) rows,
+        Clip frames closer together than _MOMENT_SECONDS collapse into a single moment
+        (best-scoring frame speaks for the group), because two decodes of the same pose
+        are one observation. The thumbnail and the snapshot are inherently distinct
+        views and always count singly. Returns None with fewer than two votes — no
+        data, not disagreement.
+
+        ``score_floor`` is the minimum top-1 a frame needs to vote at all, and the
+        minimum winner mass for a top-2 placement to count as support. Callers pass a
+        higher floor when voting over the trained model's raw (unnormalized) rows,
         where a low top-1 means "saw nothing", not "weak opinion".
         """
         top_scores, top_idx = probs.max(dim=-1)
         top_scores, top_idx = top_scores.tolist(), top_idx.tolist()
+        top2 = probs.topk(min(2, probs.shape[-1]), dim=-1).indices.tolist()
+        winner_mass = probs[:, best_idx].tolist()
 
-        moments: list[tuple[int, float]] = []  # (species index, top-1 score)
-        clip_votes: list[tuple[float, int, float]] = []  # (time, species index, score)
+        # Vote tuples: (top-1 index, top-1 score, supports winner, winner's mass).
+        moments: list[tuple[int, float, bool, float]] = []
+        clip_votes: list[tuple[float, int, float, bool, float]] = []  # + leading time
         for i, origin in enumerate(origins):
             if det_scores[i] < _VOTE_DET_FLOOR or top_scores[i] < score_floor:
                 continue
+            supports = best_idx in top2[i] and winner_mass[i] >= score_floor
             if origin.startswith("clip@") and origin.endswith("s"):
                 try:
-                    clip_votes.append((float(origin[5:-1]), top_idx[i], top_scores[i]))
+                    clip_votes.append((float(origin[5:-1]), top_idx[i], top_scores[i],
+                                       supports, winner_mass[i]))
                     continue
                 except ValueError:
                     pass  # unparseable timestamp; treat as a standalone view below
-            moments.append((top_idx[i], top_scores[i]))
+            moments.append((top_idx[i], top_scores[i], supports, winner_mass[i]))
 
-        clip_votes.sort()
-        cluster: list[tuple[float, int, float]] = []
+        clip_votes.sort(key=lambda v: v[0])
+        cluster: list[tuple[float, int, float, bool, float]] = []
         for vote in clip_votes:
             if cluster and vote[0] - cluster[-1][0] < _MOMENT_SECONDS:
                 cluster.append(vote)
             else:
                 if cluster:
-                    _, idx, score = max(cluster, key=lambda v: v[2])
-                    moments.append((idx, score))
+                    moments.append(max(cluster, key=lambda v: v[2])[1:])
                 cluster = [vote]
         if cluster:
-            _, idx, score = max(cluster, key=lambda v: v[2])
-            moments.append((idx, score))
+            moments.append(max(cluster, key=lambda v: v[2])[1:])
 
         if len(moments) < _CONSENSUS_MIN_VOTES:
             return None
-        supporting = sorted((s for idx, s in moments if idx == best_idx), reverse=True)
+        # The winner's own mass on each supporting moment — the honest number when
+        # support came via a rank-2 placement rather than the frame's top-1.
+        supporting = sorted((mass for _, _, supports, mass in moments if supports),
+                            reverse=True)
         fraction = len(supporting) / len(moments)
         return {
             "votes": len(moments),

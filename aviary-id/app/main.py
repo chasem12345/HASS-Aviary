@@ -256,7 +256,7 @@ async def lifespan(_: FastAPI):
             await _client.aclose()
 
 
-app = FastAPI(title="aviary-id", version="0.8.0", lifespan=lifespan)
+app = FastAPI(title="aviary-id", version="0.9.0", lifespan=lifespan)
 
 
 @app.get("/healthz")

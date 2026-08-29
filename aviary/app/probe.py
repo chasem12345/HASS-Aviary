@@ -330,6 +330,31 @@ def blend(embedding: str, zero_shot: list[dict], model: str,
     ranked = sorted(merged.items(), key=lambda kv: kv[1], reverse=True)
     best, best_score = ranked[0]
     second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+
+    # Two abstention guards. The blend exists to do exactly two things: RESCUE a
+    # borderline answer (same winner, more confidence) and CORRECT the winner to the
+    # probe's own best-evidenced guess. Anything else is the two signals conflicting,
+    # and a conflict must resolve to the service's answer — it is the stronger prior
+    # now that a supervised classifier leads the fused score — not to an average.
+    zero_best = max(zero, key=zero.get) if zero else None
+
+    # A merged winner that was NOBODY'S first choice only won by averaging: the blend
+    # weight was earned by probe_best's evidence and must not be spent crowning some
+    # third species (seen in the wild: service said Common Ground Dove, the probe's
+    # well-evidenced pick was elsewhere, and Mourning Dove — zero examples — emerged
+    # at 0.153 with a 0.008 margin, a guaranteed trip to the review queue).
+    if best != zero_best and best != probe_best:
+        log.debug("Probe abstaining: merged winner %s was neither the service's "
+                  "answer (%s) nor the probe's (%s).", best, zero_best, probe_best)
+        return None
+
+    # Keeping the same winner while LOWERING its score adds no information — the
+    # probe's softmax mass just diluted it — and can only demote a passing answer.
+    if best == zero_best and best_score < zero.get(best, 0.0):
+        log.debug("Probe abstaining: it would only deflate %s (%.3f -> %.3f).",
+                  best, zero.get(best, 0.0), best_score)
+        return None
+
     info = meta.get(best, {})
 
     return {

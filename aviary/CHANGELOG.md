@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.22.0
+
+Two review-queue fixes, diagnosed from live logs. Pairs with **aviary-id 0.9.0** — update
+both, then drain the queue with Unidentified → Select all → Re-identify selected.
+
+- **Look-alike species no longer veto each other** (sidecar 0.9.0). Frame consensus
+  counted only each frame's top-1 vote, so two frames splitting between Ruby-throated
+  and Anna's Hummingbird read as disagreement (`1/2`) and demoted a passing 0.78 to
+  review — even though the winner was every frame's close second. A frame now supports
+  the winner when it sits in that frame's top-2 with real probability mass; a frame
+  whose top-2 holds genuinely different birds still dissents.
+- **The learning probe can no longer crown a compromise winner.** Its blend could
+  produce a species that was NEITHER the service's answer nor the probe's own pick
+  (seen live: Common Ground Dove 0.39 reranked to Mourning Dove 0.15 with *zero*
+  confirmed examples), and could also keep the winner while merely deflating its
+  score. Both cases now abstain and the service's answer stands. The legitimate paths
+  are untouched: correcting to the probe's well-evidenced pick, and raising a
+  borderline score.
+- The below-threshold review log now prints the blended ranking's actual runner-up
+  instead of the service's stale one ("Mourning Dove … runner-up Mourning Dove").
+
 ## 0.21.0
 
 - **The Kept catalogue.** Everything pinned with 📌 keep now has its own page (**Kept**

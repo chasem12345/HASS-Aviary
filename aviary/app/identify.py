@@ -348,6 +348,9 @@ async def _process(row: dict[str, Any]) -> None:
     embed_key = result.get("embedding_key") or db.embedding_key_from(model or "")
     embedding = result.get("embedding")
     name = result.get("common_name")
+    # Tracked alongside name so the review log stays truthful after a probe rerank —
+    # the service's runner-up says nothing about the blended ranking.
+    runner_up = result.get("runner_up")
     # The shortlist the model considered. Kept whatever the outcome: it is most useful
     # precisely when the top answer was rejected, because it shows the model did try and
     # lets the right bird be picked by hand from what it was weighing up.
@@ -384,6 +387,8 @@ async def _process(row: dict[str, Any]) -> None:
             )
         name = blended["name"]
         score, margin = blended["score"], blended["margin"]
+        if len(blended.get("candidates") or []) > 1:
+            runner_up = blended["candidates"][1].get("name")
         probe_examples = blended["probe_examples"]
         probe_weight = blended.get("probe_weight")
         result["scientific_name"] = blended.get("sci") or result.get("scientific_name")
@@ -433,7 +438,7 @@ async def _process(row: dict[str, Any]) -> None:
         log.info(
             "Identification for %s below threshold: %s score=%.3f margin=%.3f "
             "(runner-up %s) — queued for review.",
-            ref, name, score, margin, result.get("runner_up"),
+            ref, name, score, margin, runner_up,
         )
         await asyncio.to_thread(
             db.set_identification, row["source"], ref, "low_confidence",
