@@ -1,4 +1,4 @@
-/* Pixel font for the Pokedex theme: Silkscreen, SIL OFL 1.1 (see fonts/OFL.txt).
+/* Pixel font for the Dex theme: Silkscreen, SIL OFL 1.1 (see fonts/OFL.txt).
    Latin subset only (~16KB total) and served locally — the add-on has to work without
    outbound internet, so no external font host. URLs are relative so they resolve under
    the versioned /static-<ver>/ mount and inherit its cache-busting. Only the dex theme
@@ -545,7 +545,7 @@ img.overlay-img {
 }
 
 /* ==========================================================================
-   Pokedex theme (data-theme="dex")
+   Dex theme (data-theme="dex")
    --------------------------------------------------------------------------
    A field-registry reskin of the same pages. The heard/seen split Aviary already
    tracks maps onto a dex's two states: HEARD is an encounter (silhouette), SEEN is

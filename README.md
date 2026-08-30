@@ -23,7 +23,7 @@ Species pages also play a **reference call** for the species (a community-confir
 recording from [iNaturalist](https://www.inaturalist.org)) so you can judge a
 classification by ear, and show **what it eats**, where it forages and its habitat from a
 bundled subset of the [AVONET](https://doi.org/10.1111/ele.13898) dataset (no API needed). Species a classifier is reliably wrong about can be
-**blacklisted** — purged and refused at ingest from then on. An optional **Pokédex mode**
+**blacklisted** — purged and refused at ingest from then on. An optional **Dex mode**
 rebuilds the species pages as a field registry — a numbered list of entries and a dex-style
 data readout, where a bird BirdNET-Go has only *heard* stays a silhouette until a camera
 *sees* it — navigable with the arrow keys.
@@ -31,6 +31,26 @@ data readout, where a bird BirdNET-Go has only *heard* stays a silhouette until 
 > By default Aviary does **no** classification of its own — it reads the species Frigate
 > emits in the event `sub_label` and the species BirdNET-Go emits in its MQTT payload.
 > Optionally it can take over visual identification entirely; see below.
+
+## Screenshots
+
+Every page has two looks: the **Standard** theme and the optional **Dex mode**
+(pixel type, dex-style readouts, silhouettes for species only *heard* so far).
+
+| Standard | Dex mode |
+|---|---|
+| **Dashboard** — totals, detections per day, activity by hour, top species and the latest clip | |
+| ![Dashboard, standard theme](images/Home%20-%20Standard.png) | ![Dashboard, Dex mode](images/home%20-%20dex.png) |
+| **Species / Registry** — every species with seen/heard counts; the dex view numbers them as entries | |
+| ![Species grid, standard theme](images/Registry%20-%20Standard.png) | ![Registry, Dex mode](images/Registry%20-%20Dex.png) |
+| **Species page** — stats, reference photos (iNaturalist) and a reference song/call (xeno-canto) to judge a classification by eye and ear | |
+| ![Species page header, standard theme](images/SpeciesPage%20-%20Standard%201.png) | ![Species page header, Dex mode](images/SpeciesPage%20-%20Dex%201.png) |
+| **Species page (continued)** — About, diet/foraging/habitat from AVONET, per-species charts, and the day's clips | |
+| ![Species page charts and clips, standard theme](images/SpeciesPage%20-%20Standard%202.png) | ![Species page charts and clips, Dex mode](images/SpeciesPage%20-%20Dex%202.png) |
+
+**Recap** — one day at a time: each species with how often it was seen and heard, and the window it was active.
+
+![Recap page](images/Recap%20-%20Standard.png)
 
 ## Better bird identification (optional)
 

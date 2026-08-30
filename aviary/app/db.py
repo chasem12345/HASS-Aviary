@@ -845,7 +845,7 @@ def species_dex_numbers(only_confirmed: bool = False) -> dict[str, int]:
 
     Derived rather than stored, so there's no counter to keep in sync with deletions.
     Removing a species renumbers the ones after it, which is fine — the number is a
-    display flourish for the Pokedex theme, not an identifier anything keys on.
+    display flourish for the Dex theme, not an identifier anything keys on.
 
     Unconfirmed species get no number at all while the gate is on: the templates already
     render ``No.???`` for a missing one, so a species earns its entry by being approved.
@@ -864,7 +864,7 @@ def species_dex_numbers(only_confirmed: bool = False) -> dict[str, int]:
 
 
 def registry_stats(only_confirmed: bool = False) -> dict:
-    """Species counts for the Pokedex completion readout.
+    """Species counts for the Dex completion readout.
 
     ``seen`` (on camera, the "caught" analogue) is the subset of ``total`` that has at
     least one Frigate detection; ``heard`` likewise for BirdNET-Go. A species can be

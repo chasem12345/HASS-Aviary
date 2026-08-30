@@ -324,7 +324,7 @@ def species_index(
         only_confirmed=gated and not reviewing,
         only_unconfirmed=reviewing,
     )
-    # Registry framing for the Pokedex theme. The number is attached to each row rather
+    # Registry framing for the Dex theme. The number is attached to each row rather
     # than reordering here, because the default theme's ordering (count DESC) must not
     # change — the dex template sorts by dex_no itself.
     dex = db.species_dex_numbers(only_confirmed=gated)
