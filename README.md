@@ -1,3 +1,13 @@
+# Note from a human
+
+Hello - If it's not painfully obvious, this repo is pretty much entirely vibecoded. This is an app I made for myself, suited to my specific bird setup. While I could have written this myself by-hand, that's bringing too much work home for my taste, cutting into valuable birding time. Us IT guys need to get *away* from the screens every once in awhile, lest we go mad 🙂.
+
+This may not work for you, or it may fill the same gap for you it did for me. Either way, this is your disclosure that this was pretty much 100% AI written.
+
+Feel free to fork it, use it as-is, or abstain out of principle. I don't really care. 
+
+Anyways, onto the claude drivel
+
 # Aviary — Home Assistant Add-on
 
 **Aviary** aggregates already-classified bird detections from two independent sources —
