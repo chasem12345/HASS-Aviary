@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.25.0
+
+- **Clip padding is now configurable and applies to BOTH views.** New option
+  `clip_pad_seconds` (default 10, was a fixed 30 on the alt view only): the primary
+  ⤢ player now plays the event camera's own recordings for the padded window — birds
+  arrive before tracking starts and linger after it drops — falling back to the bare
+  event clip when those recordings have expired. The ⇄ other-camera view and the kept
+  zoomed export use the same knob, so preview and saved footage always cover identical
+  spans. Recordings-window cap raised to 15 minutes to fit the maximum padding.
+
 ## 0.24.1
 
 - **Other-camera footage is padded by 30 s on each side** — both the ⇄ view button and

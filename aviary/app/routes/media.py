@@ -215,8 +215,9 @@ async def frigate_download(event_id: str, request: Request):
 # but from the paired camera's continuous recordings (Frigate's recordings-by-window
 # endpoint works for any recorded camera, event or not).
 
-# A malformed request must not make ffmpeg remux an hour of 4K.
-_RECORDING_MAX_S = 600.0
+# A malformed request must not make ffmpeg remux an hour of 4K. Sized to fit a long
+# event plus clip_pad_seconds at its maximum (300 each side).
+_RECORDING_MAX_S = 900.0
 _CAMERA_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
 
 

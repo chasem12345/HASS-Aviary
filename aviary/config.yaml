@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.24.1"
+version: "0.25.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -56,6 +56,7 @@ options:
   identify_zoom_map: []
   identify_zoom_start_offset: 2.0
   identify_zoom_zone_priority: []
+  clip_pad_seconds: 10.0
   log_level: "info"
 schema:
   frigate_url: "url"
@@ -131,4 +132,9 @@ schema:
   # use the zoomed footage.
   identify_zoom_zone_priority:
     - "str"
+  # Seconds of recordings played before and after a detection when viewing it (the
+  # player and the ⇄ other-camera button) and when exporting kept zoomed footage —
+  # birds arrive before tracking starts and linger after it ends. Needs the camera's
+  # recordings to cover the padding; falls back to the bare event clip when they don't.
+  clip_pad_seconds: "float(0.0,300.0)"
   log_level: "list(debug|info|warning|error)"

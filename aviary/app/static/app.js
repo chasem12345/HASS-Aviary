@@ -732,7 +732,18 @@
     const btn = e.target.closest(".clip-open");
     if (!btn) return;
     e.preventDefault();
-    openPlayer({ event: btn.dataset.event, name: btn.dataset.name, time: btn.dataset.time });
+    const ds = { event: btn.dataset.event, name: btn.dataset.name, time: btn.dataset.time };
+    // When the card carries a padded window, play the camera's own recordings for it
+    // (±clip_pad_seconds around the event). The bare event clip stays the fallback —
+    // recordings older than the camera's retention are gone while the event clip
+    // survives under alert/detection retention.
+    if (btn.dataset.camera && btn.dataset.start && btn.dataset.end) {
+      ds.src = BASE + "/media/frigate/recordings/" + encodeURIComponent(btn.dataset.camera) +
+        "/play.mp4?start=" + encodeURIComponent(btn.dataset.start) +
+        "&end=" + encodeURIComponent(btn.dataset.end);
+      ds.fallback = BASE + "/media/frigate/" + encodeURIComponent(btn.dataset.event) + "/clip.mp4";
+    }
+    openPlayer(ds);
   });
 
   // The kept zoomed footage: a Frigate export made when the event was pinned. Already

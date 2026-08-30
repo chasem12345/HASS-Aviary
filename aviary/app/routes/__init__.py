@@ -105,9 +105,9 @@ def _ingress_context(request: Request) -> dict:
         "theme": get_theme(),
         "identify_active": active,
         "camera_pairs": camera_pairs,
-        # Padding the ⇄ button applies around the event window — the same constant the
+        # Padding the player buttons apply around the event window — the same knob the
         # kept-export uses, so preview and saved footage cover identical spans.
-        "window_pad": kept.WINDOW_PAD_S,
+        "window_pad": kept.view_pad(settings),
         # Nav badge. One indexed COUNT on common_name, and only when the tab is shown at
         # all — the query is skipped entirely for everyone not using identification.
         "unidentified_count": db.unidentified_count() if active else 0,

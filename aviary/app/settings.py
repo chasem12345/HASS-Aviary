@@ -139,6 +139,10 @@ class Settings:
     # the blueprint install and notification images degrade gracefully then.
     ha_config_dir: str
 
+    # Seconds of recordings played on each side of a detection when viewing it (player
+    # and ⇄ other-camera button) and exported around kept zoomed footage.
+    clip_pad_seconds: float
+
     log_level: str
 
     @property
@@ -214,5 +218,7 @@ def load_settings() -> Settings:
             "IDENTIFY_ZOOM_ZONE_PRIORITY", opts, "identify_zoom_zone_priority"),
         # Matches the explicit `path:` on the homeassistant_config map entry.
         ha_config_dir=os.environ.get("HA_CONFIG_DIR", "/homeassistant"),
+        clip_pad_seconds=min(300.0, max(0.0, _pick_float(
+            "CLIP_PAD_SECONDS", opts, "clip_pad_seconds", 10.0))),
         log_level=_pick("LOG_LEVEL", opts, "log_level", "info").lower(),
     )

@@ -15,6 +15,7 @@ export IGNORE_UNCLASSIFIED="$(bashio::config 'ignore_unclassified')"
 export NOTIFY_NEW_SPECIES="$(bashio::config 'notify_new_species')"
 export REQUIRE_SPECIES_CONFIRMATION="$(bashio::config 'require_species_confirmation')"
 export XENO_CANTO_API_KEY="$(bashio::config 'xeno_canto_api_key')"
+export CLIP_PAD_SECONDS="$(bashio::config 'clip_pad_seconds')"
 export LOG_LEVEL="$(bashio::config 'log_level')"
 # --- External identification (aviary-id on the GPU host) ----------------------
 export IDENTIFY_URL="$(bashio::config 'identify_url')"

@@ -81,10 +81,19 @@
       {% if absolute_time %}<span>{{ d.start_time | fmt_time }}</span>
       {% else %}<span title="{{ d.start_time | fmt_time }}">{{ d.start_time | fmt_rel }}</span>{% endif %}
       {% if d.source == 'frigate' and d.has_clip %}
+      {# The padded window plays the camera's own RECORDINGS (±clip_pad_seconds) instead
+         of the bare event clip — birds arrive before tracking starts and linger after.
+         The event clip stays as the JS fallback for when those recordings have expired.
+         Only offered while the event has a finished window. #}
       <button type="button" class="clip-open"
-              title="Open the full player: scrub the clip and save a still at full resolution"
+              title="Open the full player (±{{ window_pad | int }}s of recordings): scrub and save a still at full resolution"
               data-event="{{ d.source_ref }}" data-name="{{ d.common_name }}"
-              data-time="{{ d.start_time }}">⤢ scrub / still</button>
+              data-time="{{ d.start_time }}"
+              {%- if d.end_time and d.location %}
+              data-camera="{{ d.location | lower }}"
+              data-start="{{ [0, d.start_time - window_pad] | max }}"
+              data-end="{{ d.end_time + window_pad }}"
+              {%- endif %}>⤢ scrub / still</button>
       <a class="dl-link" title="Download video — remuxed so the duration shows correctly when shared"
          href="{{ u('frigate_download', event_id=d.source_ref) }}">⬇ video</a>
       <button type="button" class="retain-toggle{{ ' retained' if d.retained_at }}"
