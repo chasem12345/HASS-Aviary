@@ -95,11 +95,9 @@ def _ingress_context(request: Request) -> dict:
     # view's context dict and forgetting one.
     settings = getattr(request.app.state, "settings", None)
     active = bool(settings and settings.identify_active)
-    # Camera pairs for the cards' "view on the other camera" button. Reuses the zoom
-    # map's detect→ptz pairs, made BIDIRECTIONAL: an event on either camera offers the
-    # other one's recordings for the same window.
-    zoom_map = dict(getattr(settings, "identify_zoom_map", {}) or {})
-    camera_pairs = {**zoom_map, **{v: k for k, v in zoom_map.items()}}
+    # Camera pairs for the cards' "view on the other camera" button — the retain flow
+    # shares the same property for the kept-footage export.
+    camera_pairs = settings.camera_pairs if settings else {}
     return {
         "ingress_path": prefix,
         "u": u,

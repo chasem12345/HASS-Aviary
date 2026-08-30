@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.24.0
+
+- **Your thresholds are final: frame consensus no longer vetoes a passing answer.**
+  Diagnosed from live logs: three Northern Cardinal events scored 0.53–0.60 with margin
+  ≥0.088 — clearing `identify_min_score` 0.45 / `identify_min_margin` 0.04 — yet landed in
+  Unidentified with "frames disagreed (1/2)". A hummingbird was at the feeder in the same
+  view, so one frame voted for it; with only two frames eligible to vote, a single
+  legitimate dissent read as disagreement and demoted a correct answer. Consensus now does
+  one job: **rescuing** a modest-but-unanimous answer below the thresholds. It never
+  overrides a score and margin you already accepted. No sidecar update needed. Drain the
+  queue with Unidentified → Select → Re-identify selected.
+
+## 0.23.0
+
+- **📌 keep now preserves the zoomed footage too.** On a paired two-camera setup, the
+  retain flag only ever protected the event's wide clip — the zoomed view is the PTZ
+  camera's continuous recordings, which expire with Frigate's `record.retain.days` no
+  matter what. Pinning a paired-camera event now also creates a **Frigate export** of
+  the partner camera's window (named "Aviary · <species> · <time>", visible in
+  Frigate's Export UI, retention-exempt, no add-on disk use); unpinning deletes it.
+  Cards gain **▶ zoomed (kept)** to play the export — it appears a few seconds after
+  pinning (exports process asynchronously). Requires Frigate 0.18+. A one-time startup
+  task retro-exports the zoomed window for events kept before this release, where the
+  recordings still exist. Export failures never block the pin itself.
+
 ## 0.22.0
 
 Two review-queue fixes, diagnosed from live logs. Pairs with **aviary-id 0.9.0** — update

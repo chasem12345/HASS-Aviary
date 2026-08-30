@@ -395,7 +395,12 @@ async def _process(row: dict[str, Any]) -> None:
         result["species_code"] = blended.get("code") or result.get("species_code")
         shortlist = _encode_candidates(blended["candidates"]) or shortlist
 
-    # Frame agreement, computed by the service. Only meaningful while the final answer
+    # Frame agreement, computed by the service. It plays ONE role here: rescuing a
+    # modest answer that every frame independently backed (below). It never demotes an
+    # answer that already cleared the user's thresholds — the thresholds are final.
+    # Frames legitimately disagree when a second bird shares the view (a hummingbird at
+    # the feeder next to a cardinal split the vote 1/2 and sent a passing 0.53 to review),
+    # and that is not evidence against the winner. Only meaningful while the final answer
     # is still the service's own winner: if the probe reranked to a different species,
     # votes about the old winner say nothing about the new one — and the probe's example
     # evidence is playing the corroboration role instead. None means "no data" (too few
@@ -408,16 +413,6 @@ async def _process(row: dict[str, Any]) -> None:
     passes = (bool(name)
               and score >= _settings.identify_min_score
               and margin >= _settings.identify_min_margin)
-    if passes and agreed is False:
-        # The fused score cleared the bar but the frames actively voted for different
-        # species — a good-looking average emerging from conflicting votes is exactly
-        # the failure mode consensus exists to catch. A human gets the final say.
-        log.info(
-            "Identification for %s scored %.3f but frames disagreed (%d/%d for %s) "
-            "— queued for review.",
-            ref, score, consensus.get("supporting", 0), consensus.get("votes", 0), name,
-        )
-        passes = False
     rescued = (not passes and bool(name) and agreed is True
                and score >= _CONSENSUS_RESCUE * _settings.identify_min_score
                and margin >= _CONSENSUS_RESCUE * _settings.identify_min_margin)

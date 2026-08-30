@@ -250,6 +250,12 @@ def init_db(db_path: str) -> None:
             # (retain_indefinitely). NULL = not retained. Deliberately absent from
             # upsert_detection so a later Frigate message can't clobber the flag.
             ("retained_at", "REAL"),
+            # Frigate export of the PAIRED camera's window for a kept event — the zoomed
+            # footage, which plain retain_indefinitely cannot protect (it is continuous
+            # recordings, not part of the event). `kept_export_file` is the served
+            # basename, resolved lazily once the async export finishes. User state,
+            # like retained_at: never touched by upsert_detection.
+            ("kept_export_id", "TEXT"), ("kept_export_file", "TEXT"),
         ):
             if name not in cols:
                 conn.execute(f"ALTER TABLE detections ADD COLUMN {name} {decl}")
@@ -1460,6 +1466,43 @@ def set_retained(detection_id: int, retained: bool) -> None:
             "UPDATE detections SET retained_at = ? WHERE id = ?",
             (time.time() if retained else None, detection_id),
         )
+
+
+def set_kept_export(detection_id: int, export_id: Optional[str],
+                    file: Optional[str] = None) -> None:
+    """Record (or clear, with both None) the Frigate export of the zoomed window."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE detections SET kept_export_id = ?, kept_export_file = ? WHERE id = ?",
+            (export_id, file, detection_id),
+        )
+
+
+def set_kept_export_file(detection_id: int, file: str) -> None:
+    """Fill in the export's served filename once the async export has finished."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE detections SET kept_export_file = ? WHERE id = ?",
+            (file, detection_id),
+        )
+
+
+def retained_missing_export() -> list[dict]:
+    """Kept Frigate rows with no zoomed export yet — the one-time backfill's worklist.
+
+    The pair check (does this camera have a partner?) is the caller's: camera pairing
+    is configuration, not data.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM detections
+            WHERE retained_at IS NOT NULL AND source = 'frigate'
+              AND kept_export_id IS NULL
+              AND start_time IS NOT NULL AND end_time IS NOT NULL
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def tombstoned_refs() -> list[tuple[str, str]]:

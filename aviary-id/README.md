@@ -252,8 +252,9 @@ more means it escalated. `timings` breaks the elapsed time down by stage.
 top-1, clip frames closer than 250 ms collapse into one vote, and `agreed` requires at
 least 2 supporting votes covering ≥60% of all votes. `null` when fewer than two frames
 could vote — "no data" is deliberately distinct from "frames disagreed". Aviary uses this
-to accept a modest-but-unanimous answer and to hold back a high-scoring one the frames
-actively disagreed about.
+to accept a modest-but-unanimous answer that would otherwise miss its thresholds; it does
+not hold back an answer that already cleared them (frames legitimately disagree when a
+second bird shares the view). Read `per_frame` to see who voted for what.
 
 ## Tuning
 

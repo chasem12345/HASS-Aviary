@@ -735,6 +735,22 @@
     openPlayer({ event: btn.dataset.event, name: btn.dataset.name, time: btn.dataset.time });
   });
 
+  // The kept zoomed footage: a Frigate export made when the event was pinned. Already
+  // a seekable MP4, so src and fallback are the same URL; while the export is still
+  // processing the route answers with an error and the player reports it in the title.
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".export-open");
+    if (!btn) return;
+    e.preventDefault();
+    const url = BASE + "/media/frigate/export/" + encodeURIComponent(btn.dataset.det) + "/video.mp4";
+    openPlayer({
+      name: (btn.dataset.name || "Clip") + " · zoomed (kept)",
+      time: btn.dataset.time,
+      src: url,
+      fallback: url,
+    });
+  });
+
   // "View on the other camera": the same time window, from the paired camera's
   // continuous recordings. Same player, different source URLs.
   document.addEventListener("click", (e) => {

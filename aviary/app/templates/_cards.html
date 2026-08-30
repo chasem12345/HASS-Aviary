@@ -133,7 +133,7 @@
        in-progress event has no window yet. #}
     {% set other_cam = camera_pairs.get((d.location or '') | lower)
                        if d.source == 'frigate' and d.end_time else none %}
-    {% if (identify_active and d.source == 'frigate') or other_cam %}
+    {% if (identify_active and d.source == 'frigate') or other_cam or d.kept_export_id %}
     <div class="meta sub id-actions">
       {% if identify_active and d.source == 'frigate' %}
       <button type="button" class="reidentify"
@@ -153,6 +153,14 @@
               data-camera="{{ other_cam }}" data-start="{{ d.start_time }}"
               data-end="{{ d.end_time }}" data-name="{{ d.common_name }}">
         ⇄ view on {{ other_cam }}</button>
+      {% endif %}
+      {% if d.kept_export_id %}
+      {# The permanent copy of the zoomed footage — a Frigate export, alive after the
+         paired camera's recordings (the ⇄ button's source) have expired. #}
+      <button type="button" class="export-open"
+              title="Play the kept zoomed footage (a Frigate export — survives retention)"
+              data-det="{{ d.id }}" data-name="{{ d.common_name }}"
+              data-time="{{ d.start_time }}">▶ zoomed (kept)</button>
       {% endif %}
     </div>
     {% endif %}

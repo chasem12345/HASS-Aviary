@@ -133,6 +133,22 @@ async def call_upstream(method: str, url: str, json: Optional[dict] = None,
     return resp.status_code, resp.text[:200]
 
 
+async def get_json(url: str) -> tuple[int, Optional[object]]:
+    """GET a JSON API endpoint, whole body. Returns (status, parsed or None).
+
+    call_upstream deliberately truncates bodies to 200 chars (they only feed error
+    messages); this is for endpoints whose full response is the point, e.g. Frigate's
+    exports list. Raises httpx.HTTPError on transport failure like call_upstream.
+    """
+    if _client is None:
+        raise httpx.TransportError("proxy client not initialized")
+    resp = await _client.get(url)
+    try:
+        return resp.status_code, resp.json()
+    except ValueError:
+        return resp.status_code, None
+
+
 # ------------------------------------------------------------------ BirdNET-Go CSRF
 # BirdNET-Go guards state-changing API calls (e.g. DELETE /api/v2/detections/<id>) with
 # Echo's CSRF middleware: it compares an `X-CSRF-Token` header against a `csrf` cookie.
@@ -214,6 +230,30 @@ def frigate_recordings_url(base: str, camera: str, start: float, end: float) -> 
     the cross-camera zoom — see aviary-id's frames.recordings_url.
     """
     return f"{base}/api/{camera}/start/{start:.3f}/end/{end:.3f}/clip.mp4"
+
+
+def frigate_export_url(base: str, camera: str, start: float, end: float) -> str:
+    """POST here creates an export of the window — recordings that survive retention.
+
+    Body: {"source": "recordings", "name": ...}; Frigate 0.18 answers 202 with
+    {"export_id": ...} and processes asynchronously.
+    """
+    return f"{base}/api/export/{camera}/start/{start:.3f}/end/{end:.3f}"
+
+
+def frigate_exports_url(base: str) -> str:
+    """GET lists exports: [{id, camera, name, video_path, in_progress, ...}]."""
+    return f"{base}/api/exports"
+
+
+def frigate_exports_delete_url(base: str) -> str:
+    """POST {"ids": [...]} deletes exports (0.18 dropped the DELETE-verb endpoint)."""
+    return f"{base}/api/exports/delete"
+
+
+def frigate_export_video_url(base: str, filename: str) -> str:
+    """The finished export file, served statically by Frigate's nginx."""
+    return f"{base}/exports/{filename}"
 
 
 def birdnet_audio_urls(base: str, det: dict) -> list[str]:

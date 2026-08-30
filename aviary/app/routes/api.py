@@ -13,7 +13,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from .. import (
-    bootstrap, crops, db, identify, ingest, notify, probe, proxy, species_audio,
+    bootstrap, crops, db, identify, ingest, kept, notify, probe, proxy, species_audio,
     species_info, species_photos, traits,
 )
 from . import ingress_url, set_theme
@@ -340,6 +340,11 @@ async def retain_detection(det_id: int, request: Request,
     Flips Frigate's ``retain_indefinitely`` flag on the event, exempting it from
     Frigate's normal retention expiry, and records the state here so the card shows it
     and Aviary's own unidentified-row purge leaves the row alone.
+
+    On a paired camera (identify_zoom_map), pinning ALSO exports the partner camera's
+    recordings for the event window — the zoomed footage, which the retain flag cannot
+    reach. Export failure never fails the pin: the wide clip is already protected, and
+    ``zoomed_export`` in the response says what happened to the other half.
     """
     det = await run_in_threadpool(db.detection_by_id, det_id)
     if det is None:
@@ -359,7 +364,29 @@ async def retain_detection(det_id: int, request: Request,
         return {"ok": False, "error": f"Frigate returned {status}: {text}"}
 
     await run_in_threadpool(db.set_retained, det_id, bool(keep))
-    return {"ok": True, "retained": bool(keep)}
+
+    zoomed: Optional[str] = None
+    if keep:
+        export_id, zoomed = await kept.create_kept_export(det, settings)
+        if export_id:
+            await run_in_threadpool(db.set_kept_export, det_id, export_id)
+        if zoomed == "not applicable":
+            zoomed = None
+        elif zoomed.startswith("failed"):
+            log.warning("Kept export for detection %s %s", det_id, zoomed)
+    elif det.get("kept_export_id"):
+        # Best-effort: the pin is released regardless. An export already gone must not
+        # block unpinning, and one still processing can be removed from Frigate's own
+        # Export UI later — the response says so instead of wedging the toggle.
+        zoomed = await kept.delete_kept_export(det["kept_export_id"], settings)
+        if zoomed:
+            log.warning("Kept export for detection %s %s", det_id, zoomed)
+        await run_in_threadpool(db.set_kept_export, det_id, None, None)
+
+    result = {"ok": True, "retained": bool(keep)}
+    if zoomed:
+        result["zoomed_export"] = zoomed
+    return result
 
 
 @router.post("/detections/{det_id}/species")

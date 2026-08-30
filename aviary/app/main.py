@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    backfill, bootstrap, crops, db, identify, ingest, notify, probe, proxy,
+    backfill, bootstrap, crops, db, identify, ingest, kept, notify, probe, proxy,
     species_audio, species_info, species_photos,
 )
 from .mqtt_client import MqttIngestor
@@ -90,6 +90,12 @@ async def _identify_maintenance(settings) -> None:
     await asyncio.sleep(15)
     await identify.requeue_pending()
     await identify.purge_old()
+    # Retro-protect the zoomed footage of events pinned before kept-exports existed.
+    # Before the probe wait on purpose: this needs only Frigate, not the GPU service.
+    try:
+        await kept.backfill_exports(settings)
+    except Exception:
+        log.exception("Kept-export backfill failed; will retry next start.")
 
     # Build the few-shot probe from whatever labels already exist. The embedding key has
     # to come from the service, because an embedding is only comparable with others from

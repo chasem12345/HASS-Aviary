@@ -403,6 +403,17 @@ retention expiry, and marks the card **📌 kept** (click again to release). Avi
 housekeeping also leaves kept rows alone, so a pinned-but-unidentified detection never
 loses its card while Frigate still holds the video.
 
+**On a paired two-camera setup** (`identify_zoom_map`), the retain flag only protects
+the event's own — wide — clip; the zoomed view is the partner camera's *continuous
+recordings*, which no retain flag can reach. So pinning a paired-camera event **also
+creates a Frigate export** of the partner camera's recordings for the event window
+(named "Aviary · <species> · <time>", visible in Frigate's own Export UI, exempt from
+retention). The card gains a **▶ zoomed (kept)** button that plays it — exports process
+asynchronously at Frigate, so it may take a few seconds to become playable after
+pinning. Unpinning deletes the export. Requires Frigate 0.18+ (older builds don't
+return the export id). On upgrade, a one-time task retro-exports the zoomed window for
+already-kept events whose recordings still exist.
+
 Requires Aviary to reach Frigate's API (`frigate_url`). If Frigate authentication is
 enabled, the retain endpoint requires an admin credential — the same constraint as the
 delete-at-source actions.

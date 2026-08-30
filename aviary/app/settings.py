@@ -155,6 +155,17 @@ class Settings:
         """
         return self.identify_enabled and bool(self.identify_url)
 
+    @property
+    def camera_pairs(self) -> dict[str, str]:
+        """The zoom map made BIDIRECTIONAL: each camera maps to its partner.
+
+        Backs both the cards' "view on the other camera" button and the kept-footage
+        export of the zoomed window — anything that asks "which camera is the other
+        half of this one's pair", regardless of which side an event landed on.
+        """
+        return {**self.identify_zoom_map,
+                **{v: k for k, v in self.identify_zoom_map.items()}}
+
 
 def load_settings() -> Settings:
     data_dir = os.environ.get("DATA_DIR", "/data")

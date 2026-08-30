@@ -300,6 +300,11 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
   background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit;
 }
 .other-cam-open:hover { color: var(--accent); }
+.export-open {
+  color: var(--muted); font-size: 12px; white-space: nowrap;
+  background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit;
+}
+.export-open:hover { color: var(--accent); }
 .reidentify[disabled] { opacity: .5; cursor: default; }
 .reidentify.reject:hover { color: var(--danger); }
 /* Its own row, and allowed to wrap — .meta is a no-wrap flex row and the cards go down to

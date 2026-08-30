@@ -268,6 +268,49 @@ async def frigate_recording_play(camera: str, start: float, end: float, request:
     )
 
 
+@router.get("/frigate/export/{det_id}/video.mp4", name="frigate_kept_export")
+async def frigate_kept_export(det_id: int, request: Request):
+    """The kept zoomed footage: the Frigate export created when this event was pinned.
+
+    Exports are asynchronous at Frigate and their filename is only known once finished,
+    so it is resolved lazily from the exports list on first play and cached on the row.
+    Frigate's exports are already normal seekable MP4s — streamed as-is, no remux.
+    """
+    base = request.app.state.settings.frigate_url
+    if not base:
+        return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
+    det = await run_in_threadpool(db.detection_by_id, det_id)
+    if not det or not det.get("kept_export_id"):
+        return JSONResponse({"error": "no kept export for detection"}, status_code=404)
+
+    filename = det.get("kept_export_file")
+    if not filename:
+        try:
+            status, data = await proxy.get_json(proxy.frigate_exports_url(base))
+        except Exception:  # httpx transport errors — Frigate down
+            return JSONResponse({"error": "Frigate unreachable"}, status_code=502)
+        if status >= 400 or not isinstance(data, list):
+            return JSONResponse({"error": f"exports list failed ({status})"}, status_code=502)
+        record = next(
+            (e for e in data if str(e.get("id")) == str(det["kept_export_id"])), None)
+        if record is None:
+            # Deleted at Frigate (their Export UI, or a failed job): clear the stored id
+            # so the card stops offering a button that can never play.
+            await run_in_threadpool(db.set_kept_export, det_id, None, None)
+            return JSONResponse(
+                {"error": "export no longer exists at Frigate"}, status_code=404)
+        if record.get("in_progress"):
+            return JSONResponse(
+                {"error": "export still processing — try again shortly"}, status_code=425)
+        filename = os.path.basename(record.get("video_path") or "")
+        if not filename:
+            return JSONResponse({"error": "export has no video file"}, status_code=502)
+        await run_in_threadpool(db.set_kept_export_file, det_id, filename)
+
+    return await proxy.stream_upstream(
+        request, proxy.frigate_export_video_url(base, filename))
+
+
 @router.get("/birdnet/{det_id}/clip")
 async def birdnet_clip(det_id: int, request: Request):
     base = request.app.state.settings.birdnet_url
