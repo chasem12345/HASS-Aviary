@@ -149,9 +149,10 @@
       {% endif %}
       {% if other_cam %}
       <button type="button" class="other-cam-open"
-              title="Play the {{ other_cam }} camera's recordings for this exact time window"
-              data-camera="{{ other_cam }}" data-start="{{ d.start_time }}"
-              data-end="{{ d.end_time }}" data-name="{{ d.common_name }}">
+              title="Play the {{ other_cam }} camera's recordings for this detection, ±{{ window_pad | int }}s"
+              data-camera="{{ other_cam }}"
+              data-start="{{ [0, d.start_time - window_pad] | max }}"
+              data-end="{{ d.end_time + window_pad }}" data-name="{{ d.common_name }}">
         ⇄ view on {{ other_cam }}</button>
       {% endif %}
       {% if d.kept_export_id %}

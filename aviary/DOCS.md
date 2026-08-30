@@ -385,7 +385,10 @@ When `identify_zoom_map` pairs two cameras, every Frigate detection card gains a
 **⇄ view on <camera>** button that plays the *paired* camera's continuous recordings
 for the event's exact time window — both directions, wide→zoomed and zoomed→wide. It
 uses Frigate's recordings API, so the paired camera must be recording continuously
-(which the cross-camera zoom setup already requires). Windows are capped at 10 minutes.
+(which the cross-camera zoom setup already requires). The window is the event padded
+by 30 seconds on each side — the PTZ is still travelling at the start and the bird
+often lingers after tracking drops — and the kept export uses the same padded window.
+Windows are capped at 10 minutes.
 
 ## The Kept catalogue
 

@@ -23,19 +23,32 @@ from . import db, proxy
 
 log = logging.getLogger("aviary.kept")
 
+# Seconds added on each side of the event window when viewing or exporting the paired
+# camera's footage. Frigate's event bounds are when the WIDE camera tracked the object;
+# the PTZ is still travelling at the start and the bird often lingers after tracking
+# drops. One constant so what you preview (⇄) and what gets kept (export) are the same
+# window. Also applied to the card's data attributes via the template context.
+WINDOW_PAD_S = 30.0
+
+
+def padded_window(start: float, end: float) -> tuple[float, float]:
+    """The event window widened by WINDOW_PAD_S on both sides (never before epoch 0)."""
+    return max(0.0, float(start) - WINDOW_PAD_S), float(end) + WINDOW_PAD_S
+
 
 def kept_export_window(det: dict, settings) -> Optional[tuple[str, float, float]]:
     """(paired_camera, start, end) for a kept event's zoomed export, or None.
 
     None when the event's camera has no partner in the zoom map, or the event has no
-    finished time window.
+    finished time window. The window is padded (see WINDOW_PAD_S).
     """
     camera = (det.get("location") or "").strip().lower()
     other = settings.camera_pairs.get(camera)
     start, end = det.get("start_time"), det.get("end_time")
     if not other or not start or not end or end <= start:
         return None
-    return other, float(start), float(end)
+    p_start, p_end = padded_window(start, end)
+    return other, p_start, p_end
 
 
 async def create_kept_export(det: dict, settings) -> tuple[Optional[str], str]:

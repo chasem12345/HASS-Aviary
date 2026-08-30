@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.24.1
+
+- **Other-camera footage is padded by 30 s on each side** — both the ⇄ view button and
+  the kept export of the zoomed window. Frigate's event bounds are when the wide camera
+  tracked the object; the PTZ is still travelling at the start and the bird often
+  lingers after tracking drops. One shared constant, so what you preview is exactly
+  what gets kept. Exports created before this release keep their original tighter
+  window; unpin and re-pin to regenerate one with padding.
+
 ## 0.24.0
 
 - **Your thresholds are final: frame consensus no longer vetoes a passing answer.**
