@@ -302,6 +302,26 @@ def unidentified(request: Request, before: Optional[float] = Query(None)):
     return render("unidentified.html", ctx)
 
 
+@router.get("/detection/{det_id}", response_class=HTMLResponse, name="detection_detail")
+def detection_detail(request: Request, det_id: int):
+    """A single detection: its media (clip/snapshot or audio/spectrogram) plus metadata.
+
+    The drill-down behind a notification tap — HA's panel hands the route tail after
+    /<addon_slug> to the iframe, which base.html turns into a real navigation to here.
+    A missing id (deleted detection, stale notification, hand-edited URL) redirects to
+    Recent rather than 404ing, matching species_detail's "degrade, don't error" stance.
+    """
+    det = db.detection_by_id(det_id)
+    if det is None:
+        return RedirectResponse(ingress_url(request, "recent"), status_code=302)
+    return render("detection.html", {
+        "request": request,
+        # Recent is the closest nav home for a single detection, so the tab highlights there.
+        "page": "recent",
+        "d": det,
+    })
+
+
 @router.get("/species", response_class=HTMLResponse)
 def species_index(
     request: Request,

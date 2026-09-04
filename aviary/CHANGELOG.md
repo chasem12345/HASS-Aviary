@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.26.0
+
+- **Every detection now has its own page, and notification taps open it.** A new
+  `/detection/<id>` page shows a single detection — its clip or audio, plus the full
+  timestamps, camera/zone and event references. Reach it from the **timestamp** on any
+  card. Tapping a notification (seen *or* heard) now lands on that detection's page
+  instead of the Frigate clip, so you go straight to the bird in Aviary — where the
+  clip, the species link and the identification controls all live. The blueprint's tap
+  action no longer uses the Frigate proxy; that setting now powers only the live
+  seen-bird image. After updating, run *Developer Tools → YAML → Reload Automations* so
+  Home Assistant re-reads the refreshed blueprint.
+
 ## 0.25.0
 
 - **Clip padding is now configurable and applies to BOTH views.** New option

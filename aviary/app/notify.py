@@ -6,7 +6,8 @@ carrying everything a notification automation needs to filter: seen/heard verb,
 ``is_new_species`` (never detected at all) and ``is_first_seen``/``is_first_heard``
 (never recorded by this kind of source before), how long the species had been quiet
 (``seconds_since_species_last_detected``), the Frigate event id (``source_ref``),
-and a deep link to the species' Aviary page for tap actions. First-ever species ALSO
+and a deep link to this detection's Aviary page (``panel_path``, ``/detection/<id>``) for
+tap actions. First-ever species ALSO
 fire the legacy ``aviary_new_species`` event for older automations.
 
 A notification image — the Frigate snapshot, else BirdNET-Go's generic species
@@ -156,10 +157,18 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
     if fetched:
         image_url = _save_image(*fetched, slug=species_slug(common_name))
 
-    # Tap target: this species' Aviary page. HA's app panel hands the path tail after
-    # /<addon_slug> to the ingress iframe, which base.html turns into a real navigation.
+    # Tap target: this detection's own Aviary page (/detection/<id>). HA's app panel hands
+    # the path tail after /<addon_slug> to the ingress iframe, which base.html turns into a
+    # real navigation. Falls back to the species page when the row has no id — the test
+    # notification's synthetic empty-DB row — so a tap still lands somewhere sensible.
     panel_slug = await _panel_slug()
-    panel_path = f"/{panel_slug}/species/{quote(common_name, safe='')}" if panel_slug else None
+    det_id = row.get("id")
+    if not panel_slug:
+        panel_path = None
+    elif det_id:
+        panel_path = f"/{panel_slug}/detection/{int(det_id)}"
+    else:
+        panel_path = f"/{panel_slug}/species/{quote(common_name, safe='')}"
 
     verb = "seen" if source == "frigate" else "heard"
     # The first time a species is recorded by THIS kind of source — the moment a bird you

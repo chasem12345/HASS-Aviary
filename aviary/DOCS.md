@@ -25,6 +25,9 @@ dashboard embedded in the Home Assistant sidebar.
   fallback), and audio cards show the detection's spectrogram when available.
 - The **⤢ scrub / still** button on video cards opens the **full player** — see
   [Scrubbing clips and saving stills](#scrubbing-clips-and-saving-stills).
+- The **timestamp** on any card links to that **detection's own page** — its clip or
+  audio plus the full timestamps, camera/zone and event references. This is the page a
+  notification tap opens.
 - The **⬇ video** link on video cards downloads the clip **remuxed into a standard
   MP4** (ffmpeg `-c copy`, lossless) with a correct duration header — clips saved
   straight from the media player are streaming MP4s that report 00:00 length and can
@@ -303,7 +306,7 @@ deduplicated):
   "seconds_since_species_last_detected": 5400.0,  // any source; null = first ever
   "seconds_since_species_last_seen": 5400.0,      // Frigate only; null = never seen
   "seconds_since_species_last_heard": 120.0,      // BirdNET-Go only; null = never heard
-  "panel_path": "/<addon_slug>/species/Blue%20Jay"  // this species' Aviary page, for tap actions
+  "panel_path": "/<addon_slug>/detection/1234"    // this detection's Aviary page, for tap actions
 }
 ```
 
@@ -351,13 +354,13 @@ update, run *Developer Tools → YAML → Reload Automations* so HA re-reads it)
      has been quiet that long, counting only detections of the same kind (camera
      cooldown ignores audio detections and vice versa); other species are
      unaffected. New species bypass it.
-   - **Frigate notification proxy base** (advanced) — powers the seen-bird tap
-     action; needs the Frigate integration. Clear to disable.
-3. **Tap behavior**: seen-bird notifications open the Frigate clip; heard-bird
-   notifications open that species' Aviary page. The species deep link needs **Home
-   Assistant 2026.2 or newer** — that release moved add-on panels from
-   `/hassio/ingress/<slug>` to `/<addon_slug>` and added the iframe routing Aviary
-   uses to land on the right page.
+   - **Frigate notification proxy base** (advanced) — powers the live seen-bird
+     image; needs the Frigate integration. Clear to use the Aviary staged image.
+3. **Tap behavior**: tapping any notification — seen or heard — opens that
+   **detection's own page** in Aviary, showing its clip or audio alongside the
+   timestamps and metadata. The deep link needs **Home Assistant 2026.2 or newer** —
+   that release moved add-on panels from `/hassio/ingress/<slug>` to `/<addon_slug>`
+   and added the iframe routing Aviary uses to land on the right page.
 4. Press **"Test notification"** on the Aviary dashboard — it fires a test event
    through the full pipeline (image included) and reports errors inline.
 

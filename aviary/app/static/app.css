@@ -144,6 +144,8 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 .det-body .sci { color: var(--muted); font-style: italic; font-size: 12px; margin-bottom: 8px; }
 .det-body .meta { display: flex; gap: 10px; align-items: center; font-size: 13px; }
 .det-body .meta.sub { color: var(--muted); margin-top: 4px; font-size: 12px; }
+.det-time { color: var(--muted); text-decoration: none; }
+.det-time:hover { color: var(--accent); text-decoration: underline; }
 .conf { color: var(--muted); }
 .badge {
   color: #fff; border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 600;
@@ -158,6 +160,19 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 .species-head .back { color: var(--muted); }
 
 .empty { color: var(--muted); padding: 30px; text-align: center; }
+
+/* ------------------------------------------------ single-detection drill-down */
+/* The card here is a lone tile, not a grid item, so cap it at the card width it was
+   designed for instead of letting the flex column stretch across the page. */
+.det-single { max-width: 340px; margin-bottom: 18px; }
+.det-single .det-card:hover { box-shadow: none; transform: none; }
+.detection-meta .meta-grid {
+  display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0;
+  font-size: 13px;
+}
+.detection-meta .meta-grid dt { color: var(--muted); }
+.detection-meta .meta-grid dd { margin: 0; }
+.detection-meta .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
 
 /* ------------------------------------------------------------------ confidence */
 .conf { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }

@@ -6,10 +6,10 @@ blueprint:
     is caught on camera or picked up on audio, and optionally on every seen
     (Frigate) and/or heard (BirdNET-Go) detection, with a species blacklist, a
     per-species cooldown, and an optional list of cameras to notify on.
-    Tapping a seen-bird notification opens the Frigate
-    clip (requires the Frigate integration); a heard-bird notification opens
-    the Aviary panel. Pick a companion-app device, a notify group/action, or
-    both — at least one is required for anything to happen.
+    Tapping any notification opens that detection's own page in the Aviary
+    panel — its clip or audio plus timestamps and metadata. Pick a companion-app
+    device, a notify group/action, or both — at least one is required for
+    anything to happen.
   domain: automation
   homeassistant:
     min_version: "2024.10.0"
@@ -158,9 +158,9 @@ blueprint:
       name: Frigate notification proxy base (advanced)
       description: >
         Base path of the Frigate integration's notification proxy, used for the
-        seen-bird image and clip tap action. Multi-instance setups use
-        /api/frigate/<client_id>/notifications. Clear this to disable both
-        (falls back to the Aviary image / panel).
+        live seen-bird image. Multi-instance setups use
+        /api/frigate/<client_id>/notifications. Clear this to fall back to the
+        Aviary staged image.
       default: "/api/frigate/notifications"
       selector:
         text:
@@ -270,12 +270,10 @@ variables:
           and (frigate_proxy_base | trim) != '' and trigger.event.data.source_ref
     -%}{{ frigate_proxy_base | trim }}/{{ trigger.event.data.source_ref }}/{{ seen_image }}
     {%- else -%}{{ trigger.event.data.image | default('', true) }}{%- endif -%}
-  # Tap action: seen -> the Frigate clip; heard -> the Aviary panel.
+  # Tap action: always the detection's own page in the Aviary panel (/detection/<id>),
+  # for both seen and heard birds. The add-on supplies the deep link in panel_path.
   tap_url: >-
-    {% if verb == 'seen' and (frigate_proxy_base | trim) != '' and
-          trigger.event.data.source_ref %}{{ frigate_proxy_base | trim
-    }}/{{ trigger.event.data.source_ref }}/clip.mp4{% else %}{{
-    trigger.event.data.panel_path | default('', true) }}{% endif %}
+    {{ trigger.event.data.panel_path | default('', true) }}
   # clickAction = Android, url = iOS; each platform ignores the other's key.
   notify_data: >-
     {% if image and tap_url %}{{ {'image': image, 'clickAction': tap_url, 'url': tap_url} }}

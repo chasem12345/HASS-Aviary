@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "_cards.html" import detection_card with context %}
+{% block title %} · {{ d.common_name }} detection{% endblock %}
+{% block content %}
+<div class="species-head">
+  <a class="back" href="{{ u('species_detail', name=d.common_name) }}">← {{ d.common_name }}</a>
+</div>
+
+{# The detection itself, rendered by the same card the lists use — media, controls and
+   the identification badges all come along for free. absolute_time because a page you
+   arrive at from a notification (possibly days later) wants the real timestamp, not
+   "2h ago". #}
+<div class="det-single">
+  {{ detection_card(d, absolute_time=True) }}
+</div>
+
+{# Facts the card doesn't surface: the absolute window bounds and the source references.
+   Kept deliberately thin so it complements the card rather than repeating it. #}
+<section class="card detection-meta">
+  <h2>Details</h2>
+  <dl class="meta-grid">
+    <dt>Source</dt>
+    <dd>{{ 'Frigate (camera)' if d.source == 'frigate' else 'BirdNET-Go (audio)' }}</dd>
+    <dt>Started</dt>
+    <dd>{{ d.start_time | fmt_time }}</dd>
+    {% if d.end_time %}
+    <dt>Ended</dt>
+    <dd>{{ d.end_time | fmt_time }}</dd>
+    {% endif %}
+    {% if d.location %}
+    <dt>Camera</dt>
+    <dd>{{ d.location }}</dd>
+    {% endif %}
+    {% if d.zone %}
+    <dt>Zone</dt>
+    <dd>{{ d.zone | replace('_', ' ') }}</dd>
+    {% endif %}
+    {% if d.source_ref %}
+    <dt>Event reference</dt>
+    <dd class="mono">{{ d.source_ref }}</dd>
+    {% endif %}
+    {% if d.native_id and d.native_id != d.source_ref %}
+    <dt>Native id</dt>
+    <dd class="mono">{{ d.native_id }}</dd>
+    {% endif %}
+  </dl>
+</section>
+{% endblock %}

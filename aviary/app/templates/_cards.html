@@ -78,8 +78,11 @@
     <div class="meta sub">
       {% if d.location %}<span title="camera{% if d.zone %} · zone{% endif %}">{{ d.location }}{% if d.zone %} · {{ d.zone | replace('_', ' ') }}{% endif %}</span>
       {% elif d.zone %}<span title="zone">{{ d.zone | replace('_', ' ') }}</span>{% endif %}
-      {% if absolute_time %}<span>{{ d.start_time | fmt_time }}</span>
-      {% else %}<span title="{{ d.start_time | fmt_time }}">{{ d.start_time | fmt_rel }}</span>{% endif %}
+      {# The timestamp doubles as the drill-down link to this detection's own page — the
+         same page a notification tap opens. A link rather than wrapping the media, so the
+         inline video/audio controls keep working. #}
+      {% if absolute_time %}<a class="det-time" href="{{ u('detection_detail', det_id=d.id) }}">{{ d.start_time | fmt_time }}</a>
+      {% else %}<a class="det-time" href="{{ u('detection_detail', det_id=d.id) }}" title="{{ d.start_time | fmt_time }} · open detection">{{ d.start_time | fmt_rel }}</a>{% endif %}
       {% if d.source == 'frigate' and d.has_clip %}
       {# The padded window plays the camera's own RECORDINGS (±clip_pad_seconds) instead
          of the bare event clip — birds arrive before tracking starts and linger after.
