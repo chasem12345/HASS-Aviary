@@ -3,7 +3,13 @@
 <h2 class="day-head">{{ g.label }}</h2>
 <div class="cards">
   {% for d in g["items"] %}
-    {{ cards.detection_card(d, highlight_after) }}
+    {# A visit (Frigate review item) renders as one card holding its events; anything
+       else — BirdNET rows, Frigate events with no review item — is a plain detection. #}
+    {% if d.kind == 'visit' %}
+      {{ cards.visit_card(d, highlight_after) }}
+    {% else %}
+      {{ cards.detection_card(d, highlight_after) }}
+    {% endif %}
   {% endfor %}
 </div>
 {% else %}

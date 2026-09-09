@@ -38,6 +38,39 @@ If nothing can be localized, the service answers `no_bird`. It deliberately does
 fall back to classifying the whole frame: on a 1080p frame that leaves a feeder-distance
 bird about ten pixels across, and it only ever produced confidently-wrong answers.
 
+### Which bird is this event about
+
+An event is one Frigate tracked object, but its media is not: the snapshot and every
+clip frame show whatever else was in view, and the detector finds all of it. Fusing every
+crop into one answer is right when they are one bird and exactly wrong when they are not
+— a cardinal and a wren at the bath average to a 50/50 that names neither, and the one
+embedding kept for learning is whichever bird won the average, filed under whatever the
+human labels the card.
+
+So before anything is fused, the crops are partitioned into **subjects** — individual
+birds — using, strongest first:
+
+1. **Frigate's own crops.** The thumbnail and the snapshot cropped to Frigate's box are
+   by definition the tracked object. They seed the primary subject.
+2. **The tracked path.** `path_data` says where the tracked bird was at each clip
+   timestamp. A detector box on the path is the primary; a box clearly off it is another
+   bird and may never join the primary — a hard rule, where earlier versions only
+   penalized it in the ranking.
+3. **Embedding similarity.** Everything the first two cannot place — frames outside the
+   path's time range, zoomed footage (which has no path), the off-path boxes themselves —
+   is clustered by BioCLIP image-embedding cosine (`SUBJECT_SIM_MERGE`). Two boxes in
+   the same frame are two birds and never share a subject. A cluster that turns out to
+   look just like the primary is merged back into it (the path estimate was off, or it
+   is a second bird of the same species — harmless either way).
+
+Each subject is then classified on **its own crops only**, with its own consensus, best
+crop and embedding. The response's top-level fields describe the primary; `subjects[]`
+carries all of them. A second bird needs `SUBJECT_MIN_CROPS` crops (or one crop the
+detector was at least `SUBJECT_SINGLE_DET` sure of) to be reported, so a reflection or
+a feeder ornament does not become a bird. Crop selection keeps room for a second bird
+too: when a frame's second-best box sits clearly apart from its best, up to two such
+boxes are classified alongside the primary's rather than after it.
+
 ### Escalation
 
 Effort scales with how hard the bird is. Most events finish on the first rung:
@@ -170,6 +203,11 @@ All configuration is environment variables.
 | `DETECTOR_IMGSZ` | `640` | `yolo` inference resolution. 960/1280 materially helps feeder-distance birds that are tens of pixels across in a full frame. |
 | `DETECTOR_THRESHOLD` | `0.3` | Minimum detector score for a usable bird box. Permissive on purpose: ranking, score-weighted fusion and the consensus vote suppress junk boxes downstream. |
 | `CROP_PADDING` | `0.15` | Context added around the bird before cropping. |
+| `SUBJECT_SIM_MERGE` | `0.75` | Embedding cosine at or above which two crops (or clusters) are the same bird. Same bird seconds apart ≈ 0.8–0.95, different species ≈ 0.3–0.6. Tune with `tools/tune_subjects.py`. |
+| `SUBJECT_SIM_SPLIT` | `0.55` | Below this, Frigate's crop and the boxes on its tracked path disagree so badly that the path is not trusted for the event. |
+| `SUBJECT_MIN_CROPS` | `2` | Crops a second bird needs to be reported — or one crop with detector score ≥ `SUBJECT_SINGLE_DET`. |
+| `SUBJECT_SINGLE_DET` | `0.5` | See above. |
+| `SUBJECT_MAX` | `3` | Primary plus at most this many other birds per event. |
 | `CPU_ONLY` | — | Force CPU. ~5 s/event instead of ~0.3 s; useful for testing without a GPU. |
 | `LABEL_FORMAT` | `common` | How species are described to the model: `common`, `binomial`, `binomial_common`, `taxonomy`. See below. |
 | `NO_PROMPT_ENSEMBLE` | — | Single prompt instead of averaging 80 templates. |
@@ -185,7 +223,7 @@ string would degrade that species' embedding.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /identify` | yes | `{event_id, frigate_url?, priors?, zoom?}` → species |
+| `POST /identify` | yes | `{event_id, frigate_url?, priors?, zoom?, exclude?, min_score?, min_margin?, debug?}` → species (+ every other bird in view) |
 | `POST /identify/image` | yes | multipart upload of a single image |
 | `GET /species` | yes | the active candidate list |
 | `GET /healthz` | no | liveness + device + vocabulary facts |
@@ -214,6 +252,16 @@ The response's `best_crop` is a small base64 JPEG of the crop that best backed t
 winner (the same frame the learning embedding comes from); Aviary stores it and shows it
 on the detection card.
 
+`subjects` (0.10.0+) lists every bird found in the event, primary first — see *Which bird
+is this event about*. Each entry has its own `common_name`, `score`, `margin`,
+`candidates`, `consensus`, `n_frames`, `origins`, `embedding` and `best_crop`;
+`anchored: false` on the primary means Frigate's crop/path could not pin it down and the
+biggest cluster stood in. The top-level fields are exactly `subjects[0]`, so a caller that
+predates the field loses nothing. `debug: true` on the request adds `debug.crops` — every
+crop's geometry, embedding and top-1, plus which subject took it — which is what
+`tools/tune_subjects.py` re-partitions offline to tune `SUBJECT_*` against real
+two-bird events.
+
 ```bash
 curl -s -X POST localhost:8100/identify \
   -H 'Content-Type: application/json' \
@@ -237,6 +285,12 @@ curl -s -X POST localhost:8100/identify \
   ],
   "consensus": {"votes": 3, "supporting": 3, "fraction": 1.0, "agreed": true, "score": 0.74},
   "trained": true,
+  "subjects": [
+    {"idx": 0, "primary": true, "anchored": true, "common_name": "Black-capped Chickadee",
+     "score": 0.71, "margin": 0.44, "n_frames": 3, "origins": ["thumbnail", "snapshot+box", "clip@1.75s"]},
+    {"idx": 1, "primary": false, "anchored": true, "common_name": "Dark-eyed Junco",
+     "score": 0.66, "margin": 0.39, "n_frames": 2, "origins": ["clip@1.75s", "clip@3.50s"]}
+  ],
   "elapsed_ms": 1840
 }
 ```

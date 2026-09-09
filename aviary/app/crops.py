@@ -5,6 +5,10 @@ embedding comes from) as a small JPEG. Stored here, keyed by the Frigate event i
 shown on cards in place of the wide camera's media — which matters most when the footage
 that was classified is not the event's own media at all (a zoomed PTZ recording).
 
+Since aviary-id 0.10.0 an event can carry several birds ("subjects"); each has its own
+crop. Subject 0 (the primary) keeps the historical ``{event_id}.jpg`` name so nothing
+that already exists moves; the others are ``{event_id}-{idx}.jpg``.
+
 Files, not database blobs: they are served as images, a missing file degrades to the
 existing Frigate thumbnail via the template fallback, and deleting one can never corrupt
 anything. Callers that delete detections are responsible for calling ``remove``.
@@ -13,6 +17,7 @@ anything. Callers that delete detections are responsible for calling ``remove``.
 from __future__ import annotations
 
 import base64
+import glob
 import logging
 import os
 from typing import Optional
@@ -32,23 +37,36 @@ def configure(data_dir: str) -> None:
     os.makedirs(_dir, exist_ok=True)
 
 
-def _path(event_id: str) -> Optional[str]:
-    """Filesystem path for an event's crop, or None for an unusable id.
-
-    The event id becomes a filename, so it is whitelisted to the characters Frigate
-    actually uses (digits, dots, dashes, alphanumerics) — never trusted raw.
-    """
-    if _dir is None or not event_id:
+def _safe(event_id: str) -> Optional[str]:
+    """The event id whitelisted to the characters Frigate actually uses (digits, dots,
+    dashes, alphanumerics) — it becomes a filename, so it is never trusted raw."""
+    if not event_id:
         return None
     safe = "".join(c for c in str(event_id) if c.isalnum() or c in "._-")
     if not safe or safe != str(event_id):
         return None
-    return os.path.join(_dir, f"{safe}.jpg")
+    return safe
 
 
-def save(event_id: str, b64: Optional[str]) -> bool:
-    """Store a base64 JPEG for this event. Best-effort: False, never an exception."""
-    path = _path(event_id)
+def basename(event_id: str, idx: int = 0) -> Optional[str]:
+    """The stored filename for an event's crop (subject ``idx``), or None for a bad id."""
+    safe = _safe(event_id)
+    if safe is None:
+        return None
+    return f"{safe}.jpg" if not idx else f"{safe}-{int(idx)}.jpg"
+
+
+def _path(event_id: str, idx: int = 0) -> Optional[str]:
+    """Filesystem path for an event's crop, or None for an unusable id."""
+    name = basename(event_id, idx)
+    if _dir is None or name is None:
+        return None
+    return os.path.join(_dir, name)
+
+
+def save(event_id: str, b64: Optional[str], idx: int = 0) -> bool:
+    """Store a base64 JPEG for this event (and subject). Best-effort: False, never an exception."""
+    path = _path(event_id, idx)
     if not path or not b64:
         return False
     try:
@@ -70,25 +88,39 @@ def save(event_id: str, b64: Optional[str]) -> bool:
         return False
 
 
-def exists(event_id: str) -> bool:
+def exists(event_id: str, idx: int = 0) -> bool:
     """Template helper: whether a card has a stored crop to show."""
-    path = _path(event_id)
+    path = _path(event_id, idx)
     return bool(path) and os.path.isfile(path)
 
 
-def path_if_exists(event_id: str) -> Optional[str]:
-    path = _path(event_id)
+def path_if_exists(event_id: str, idx: int = 0) -> Optional[str]:
+    path = _path(event_id, idx)
     return path if path and os.path.isfile(path) else None
 
 
 def remove(event_id: str) -> None:
-    """Delete an event's crop. Best-effort — a leftover file only costs disk."""
-    path = _path(event_id)
-    if not path:
+    """Delete an event's crops — the primary's and every subject's. Best-effort."""
+    safe = _safe(event_id)
+    if _dir is None or safe is None:
         return
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        log.debug("Could not remove the crop for %s: %s", event_id, exc)
+    paths = [os.path.join(_dir, f"{safe}.jpg")] + glob.glob(os.path.join(_dir, f"{safe}-*.jpg"))
+    for path in paths:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log.debug("Could not remove the crop %s: %s", path, exc)
+
+
+def remove_subjects(event_id: str) -> None:
+    """Delete only the OTHER birds' crops (before a re-identify replaces them)."""
+    safe = _safe(event_id)
+    if _dir is None or safe is None:
+        return
+    for path in glob.glob(os.path.join(_dir, f"{safe}-*.jpg")):
+        try:
+            os.remove(path)
+        except OSError:
+            pass

@@ -10,7 +10,9 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .. import db
+from .. import db, visits
+# The helper, not the module: this file's /kept route is itself named `kept`.
+from ..kept import view_pad
 from . import THEMES, get_theme, ingress_url, render
 
 router = APIRouter()
@@ -62,22 +64,53 @@ def _day_groups(detections: list[dict]) -> list[dict]:
     return groups
 
 
-def _paged(
+def _hydrate(request: Request, items: list[dict]) -> list[dict]:
+    """Turn the feed's raw visit rows into card view-models; detections pass through.
+
+    Each visit member is annotated with every species present in its event — the tracked
+    bird plus any other bird the identifier found and named — so the visit's species
+    strip lists a cardinal AND the wren beside it even when the wren never had a Frigate
+    event of its own. One query for the whole page.
+    """
+    pad = view_pad(request.app.state.settings)
+    now = time.time()
+    members = [m for it in items if it.get("kind") == "visit" for m in it.get("members") or []]
+    present = db.species_present([m["id"] for m in members]) if members else {}
+    for m in members:
+        m["present"] = present.get(m["id"], [])
+    return [visits.card_model(it, pad, now) if it.get("kind") == "visit" else it
+            for it in items]
+
+
+def _newest_in(items: list[dict]) -> float:
+    """The newest detection start among feed items — inside visits too, because the
+    live-refresh marker compares against detections, not visit starts."""
+    newest = 0.0
+    for it in items:
+        newest = max(newest, float(it.get("start_time") or 0.0))
+        for m in it.get("members") or []:
+            newest = max(newest, float(m.get("start_time") or 0.0))
+    return newest
+
+
+def _feed_page(
+    request: Request,
     source: Optional[str],
     species: Optional[str],
     before: Optional[float],
     since: Optional[float],
     zone: Optional[str] = None,
 ) -> tuple[list[dict], Optional[float]]:
-    """One page of detections plus the next ``before`` cursor (None = no more)."""
-    rows = db.recent_detections(
+    """One page of feed items (visits + ungrouped detections) plus the next ``before``
+    cursor (None = no more). Visits arrive as card view-models."""
+    items = db.feed_page(
         limit=PAGE_SIZE + 1, source=source, species=species, before=before, since=since,
         zone=zone,
     )
-    has_more = len(rows) > PAGE_SIZE
-    rows = rows[:PAGE_SIZE]
-    next_before = rows[-1]["start_time"] if has_more and rows else None
-    return rows, next_before
+    has_more = len(items) > PAGE_SIZE
+    items = items[:PAGE_SIZE]
+    next_before = items[-1]["start_time"] if has_more and items else None
+    return _hydrate(request, items), next_before
 
 
 # ------------------------------------------------------------------------------- pages
@@ -94,7 +127,7 @@ def dashboard(
     gated = request.app.state.settings.require_species_confirmation
 
     leaders = db.top_species(limit=10, source=src, since=since, only_confirmed=gated)
-    latest = db.recent_detections(limit=1, source=src)
+    latest = _hydrate(request, db.feed_page(limit=1, source=src))
     ingestor = getattr(request.app.state, "ingestor", None)
 
     ctx = {
@@ -130,7 +163,7 @@ def _recent_ctx(
     src = _norm_source(source)
     range_key = _norm_range(range_key, default="all")
     since = _since(range_key)
-    detections, next_before = _paged(src, species, before, since, zone)
+    detections, next_before = _feed_page(request, src, species, before, since, zone)
     older_url = None
     if next_before is not None:
         q: dict = {"before": f"{next_before:.6f}"}
@@ -157,54 +190,160 @@ def _recent_ctx(
         "species_options": db.distinct_species(),
         # Only offered when zones actually exist — a zoneless setup keeps a clean bar.
         "zone_options": db.distinct_zones(),
-        "newest": detections[0]["start_time"] if detections else 0,
+        "newest": _newest_in(detections),
     }
 
 
-@router.get("/recap", response_class=HTMLResponse)
-def recap(request: Request, day: Optional[str] = Query(None)):
-    """Daily recap: every species active on one local day, with seen/heard counts.
+_RECAP_RANGES = ("day", "week", "month", "year", "custom")
 
-    ``day`` is YYYY-MM-DD; anything unparseable (or in the future) falls back to today
-    rather than erroring — a hand-edited URL should degrade, not 400.
+
+def _midnight(d: date) -> float:
+    """Local midnight, the same boundary as the dashboard's "today" stats (_since)."""
+    return time.mktime((d.year, d.month, d.day, 0, 0, 0, 0, 0, -1))
+
+
+def _parse_date(value: Optional[str], default: date) -> date:
+    """YYYY-MM-DD or the default — a hand-edited URL should degrade, not 400."""
+    try:
+        return date.fromisoformat(value) if value else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _month_day(d: date) -> str:
+    return f"{d:%b} {d.day}"
+
+
+def _recap_window(rng: str, anchor: date, from_: Optional[str], to: Optional[str],
+                  today: date) -> dict:
+    """The [start, end) date window for a recap range, plus its prev/next anchors.
+
+    A window that reaches today is cut off at tomorrow's midnight, which is what makes
+    "month" read as month-to-date and "year" as year-to-date while they are current;
+    past months and years are whole. ``next`` is None once it would start after today.
+    """
+    tomorrow = today + timedelta(days=1)
+    if rng == "week":
+        start = anchor - timedelta(days=anchor.weekday())  # Monday
+        full_end = start + timedelta(days=7)
+        prev, nxt = start - timedelta(days=7), full_end
+    elif rng == "month":
+        start = anchor.replace(day=1)
+        full_end = (start + timedelta(days=32)).replace(day=1)
+        prev, nxt = (start - timedelta(days=1)).replace(day=1), full_end
+    elif rng == "year":
+        start = date(anchor.year, 1, 1)
+        full_end = date(anchor.year + 1, 1, 1)
+        prev, nxt = date(anchor.year - 1, 1, 1), full_end
+    elif rng == "custom":
+        f = min(_parse_date(from_, anchor), today)
+        t = min(_parse_date(to, f), today)
+        if t < f:
+            f, t = t, f
+        start, full_end = f, t + timedelta(days=1)
+        span = (full_end - start).days
+        prev, nxt = start - timedelta(days=span), full_end
+    else:  # day
+        start, full_end = anchor, anchor + timedelta(days=1)
+        prev, nxt = start - timedelta(days=1), full_end
+    end = min(full_end, tomorrow)
+    to_date = full_end > tomorrow and rng != "day"
+    return {
+        "start": start, "end": end, "to_date": to_date,
+        "prev": prev, "next": nxt if nxt <= today else None,
+        "days": (end - start).days,
+    }
+
+
+def _recap_label(rng: str, w: dict, today: date) -> str:
+    start, end_incl = w["start"], w["end"] - timedelta(days=1)
+    suffix = " (to date)" if w["to_date"] else ""
+    if rng == "day":
+        if start == today:
+            return "Today"
+        if start == today - timedelta(days=1):
+            return "Yesterday"
+        return start.strftime("%A, %B %d, %Y").replace(" 0", " ")
+    if rng == "week":
+        return f"Week of {_month_day(start)}, {start.year}{suffix}"
+    if rng == "month":
+        return f"{start:%B} {start.year}{suffix}"
+    if rng == "year":
+        return f"{start.year}{suffix}"
+    if start.year != end_incl.year:
+        return f"{_month_day(start)}, {start.year} – {_month_day(end_incl)}, {end_incl.year}"
+    if start == end_incl:
+        return start.strftime("%A, %B %d, %Y").replace(" 0", " ")
+    return f"{_month_day(start)} – {_month_day(end_incl)}, {start.year}"
+
+
+@router.get("/recap", response_class=HTMLResponse)
+def recap(
+    request: Request,
+    day: Optional[str] = Query(None),
+    range_key: str = Query("day", alias="range"),
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = Query(None),
+):
+    """Recap: every species active in a window, with seen/heard counts.
+
+    ``range`` is day (default) | week | month | year | custom; ``day`` is the anchor date
+    the window is built around (YYYY-MM-DD, default today) — kept as the parameter name
+    so pre-0.27 ``/recap?day=`` links still land on the same day. ``from``/``to`` bound a
+    custom window. Anything unparseable or in the future degrades to a sane default
+    rather than erroring. The month and year windows are month-/year-to-date while they
+    contain today, which is the "how is this month going" view; past ones are whole.
     """
     today = date.today()
-    try:
-        chosen = date.fromisoformat(day) if day else today
-    except (TypeError, ValueError):
-        chosen = today
-    if chosen > today:
-        chosen = today
-
-    # Local-midnight bounds, same boundary as the dashboard's "today" stats (_since).
-    def _midnight(d: date) -> float:
-        return time.mktime((d.year, d.month, d.day, 0, 0, 0, 0, 0, -1))
-
-    day_start = _midnight(chosen)
-    day_end = _midnight(chosen + timedelta(days=1))
+    rng = range_key if range_key in _RECAP_RANGES else "day"
+    anchor = min(_parse_date(day, today), today)
+    w = _recap_window(rng, anchor, from_, to, today)
+    multi = w["days"] > 1
 
     gated = request.app.state.settings.require_species_confirmation
-    rows = db.daily_recap(day_start, day_end, only_confirmed=gated)
+    rows = db.daily_recap(_midnight(w["start"]), _midnight(w["end"]), only_confirmed=gated)
     for r in rows:
-        r["first_hm"] = time.strftime("%H:%M", time.localtime(r["first_time"]))
-        r["last_hm"] = time.strftime("%H:%M", time.localtime(r["last_time"]))
+        if multi:
+            # Dates, not clock times: across a month "07:12 – 18:40" says nothing.
+            first = date.fromtimestamp(r["first_time"])
+            last = date.fromtimestamp(r["last_time"])
+            r["first_label"] = _month_day(first)
+            r["last_label"] = _month_day(last)
+        else:
+            r["first_label"] = time.strftime("%H:%M", time.localtime(r["first_time"]))
+            r["last_label"] = time.strftime("%H:%M", time.localtime(r["last_time"]))
 
-    if chosen == today:
-        label = "Today"
-    elif chosen == today - timedelta(days=1):
-        label = "Yesterday"
-    else:
-        label = chosen.strftime("%A, %B %d, %Y").replace(" 0", " ")
+    def _nav(anchor_date: Optional[date]) -> Optional[str]:
+        """Query string for a prev/next link: same range, moved anchor (custom: shifted
+        from/to of the same length)."""
+        if anchor_date is None:
+            return None
+        if rng == "custom":
+            span = w["days"]
+            f = anchor_date
+            t = min(f + timedelta(days=span - 1), today)
+            q = {"range": rng, "from": f.isoformat(), "to": t.isoformat()}
+        else:
+            q = {"range": rng, "day": anchor_date.isoformat()}
+        return f"{ingress_url(request, 'recap')}?{urlencode(q)}"
 
     return render("recap.html", {
         "request": request,
         "page": "recap",
-        "day": chosen.isoformat(),
+        "range": rng,
+        "ranges": _RECAP_RANGES,
+        "day": anchor.isoformat(),
         "today": today.isoformat(),
-        "day_label": label,
-        "prev_day": (chosen - timedelta(days=1)).isoformat(),
-        "next_day": (chosen + timedelta(days=1)).isoformat() if chosen < today else None,
+        "from": w["start"].isoformat(),
+        "to": (w["end"] - timedelta(days=1)).isoformat(),
+        "multi": multi,
+        "days": w["days"],
+        "day_label": _recap_label(rng, w, today),
+        "prev_url": _nav(w["prev"]),
+        "next_url": _nav(w["next"]),
         "rows": rows,
+        # For a year in review the headline is what turned up for the first time.
+        "new_rows": [r for r in rows if r.get("is_first_ever")] if multi else [],
         "totals": {
             "species": len(rows),
             "detections": sum(r["count"] for r in rows),
@@ -270,7 +409,8 @@ def recent_partial(
 
 
 @router.get("/unidentified", response_class=HTMLResponse)
-def unidentified(request: Request, before: Optional[float] = Query(None)):
+def unidentified(request: Request, before: Optional[float] = Query(None),
+                 scope: Optional[str] = Query(None)):
     """Detections Aviary could not put a name to.
 
     Its own page rather than a filter on Recent, and deliberately separate from the species
@@ -278,20 +418,29 @@ def unidentified(request: Request, before: Optional[float] = Query(None)):
     a species, and the action you take is different (re-identify, not confirm/reject).
 
     No source/species/range filters — every row here is a Frigate detection with no species,
-    so those controls would match either everything or nothing.
+    so those controls would match either everything or nothing. ``scope=subjects`` swaps in
+    the other queue: detections whose tracked bird HAS a name but some other bird in view
+    does not — the same cards, with the unnamed bird's shortlist on its chip.
     """
-    rows = db.unidentified_detections(limit=PAGE_SIZE + 1, before=before)
+    subjects_scope = scope == "subjects"
+    if subjects_scope:
+        rows = db.detections_with_unidentified_subjects(limit=PAGE_SIZE + 1, before=before)
+    else:
+        rows = db.unidentified_detections(limit=PAGE_SIZE + 1, before=before)
     has_more = len(rows) > PAGE_SIZE
     rows = rows[:PAGE_SIZE]
     next_before = rows[-1]["start_time"] if has_more and rows else None
     older_url = None
     if next_before is not None:
-        older_url = (f"{ingress_url(request, 'unidentified')}"
-                     f"?{urlencode({'before': f'{next_before:.6f}'})}")
+        q = {"before": f"{next_before:.6f}"}
+        if subjects_scope:
+            q["scope"] = "subjects"
+        older_url = f"{ingress_url(request, 'unidentified')}?{urlencode(q)}"
     counts = db.unidentified_counts()
     ctx = {
         "request": request,
         "page": "unidentified",
+        "scope": "subjects" if subjects_scope else "detections",
         "groups": _day_groups(rows),
         "counts": counts,
         "next_before": next_before,
@@ -314,11 +463,41 @@ def detection_detail(request: Request, det_id: int):
     det = db.detection_by_id(det_id)
     if det is None:
         return RedirectResponse(ingress_url(request, "recent"), status_code=302)
+    visit = None
+    if det.get("visit_id"):
+        raw = db.visit_by_id(int(det["visit_id"]))
+        if raw is not None:
+            raw["members"] = db.visit_members(raw["id"])
+            visit = _hydrate(request, [{**raw, "kind": "visit"}])[0]
     return render("detection.html", {
         "request": request,
         # Recent is the closest nav home for a single detection, so the tab highlights there.
         "page": "recent",
         "d": det,
+        "visit": visit,
+        "present": db.species_present([det_id]).get(det_id, []),
+    })
+
+
+@router.get("/visit/{visit_id}", response_class=HTMLResponse, name="visit_detail")
+def visit_detail(request: Request, visit_id: int):
+    """One visit — a Frigate review item — with every event inside it.
+
+    The drill-down behind a visit card's timestamp and the ``visit_path`` a notification
+    carries. Missing (deleted members, stale link) redirects to Recent, like
+    detection_detail.
+    """
+    raw = db.visit_by_id(visit_id)
+    if raw is None:
+        return RedirectResponse(ingress_url(request, "recent"), status_code=302)
+    raw["members"] = db.visit_members(visit_id)
+    if not raw["members"]:
+        return RedirectResponse(ingress_url(request, "recent"), status_code=302)
+    visit = _hydrate(request, [{**raw, "kind": "visit"}])[0]
+    return render("visit.html", {
+        "request": request,
+        "page": "recent",
+        "v": visit,
     })
 
 
@@ -387,7 +566,7 @@ def species_detail(
         sel = raw or "frigate"
     src = _norm_source(sel)  # 'all' -> None (both streams)
 
-    detections, next_before = _paged(src, name, before, None)
+    detections, next_before = _feed_page(request, src, name, before, None)
     older_url = None
     if next_before is not None:
         base = ingress_url(request, "species_detail", name=name)

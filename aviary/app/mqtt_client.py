@@ -62,8 +62,13 @@ class MqttIngestor:
             return
         self.connected = True
         s = self._settings
-        client.subscribe([(s.frigate_topic, 0), (s.birdnet_topic, 0)])
-        log.info("Subscribed to '%s' and '%s'", s.frigate_topic, s.birdnet_topic)
+        topics = [(s.frigate_topic, 0), (s.birdnet_topic, 0)]
+        # Review items are optional: a blank topic means the user turned visits off (or
+        # runs a Frigate older than 0.14, which has no review items to publish).
+        if s.frigate_review_topic:
+            topics.append((s.frigate_review_topic, 0))
+        client.subscribe(topics)
+        log.info("Subscribed to %s", ", ".join(f"'{t}'" for t, _ in topics))
 
     def _on_connect_fail(self, client: mqtt.Client, userdata) -> None:
         # paho retries with backoff; throttle so a dead broker doesn't flood the log.
@@ -91,6 +96,8 @@ class MqttIngestor:
         try:
             if _topic_matches(topic, s.frigate_topic):
                 ingest.handle_frigate(message.payload)
+            elif s.frigate_review_topic and _topic_matches(topic, s.frigate_review_topic):
+                ingest.handle_frigate_review(message.payload)
             elif _topic_matches(topic, s.birdnet_topic):
                 ingest.handle_birdnet(message.payload)
         except Exception:  # noqa: BLE001 - never let a bad message kill the loop

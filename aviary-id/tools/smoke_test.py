@@ -104,6 +104,8 @@ def main() -> int:
                     help='JSON file of {"event id": "Common Name"} ground truth; '
                          "adds top-1/top-5 accuracy and a correctness column to the sweep")
     ap.add_argument("--verbose", action="store_true", help="show the per-frame breakdown")
+    ap.add_argument("--subjects", action="store_true",
+                    help="show every bird the service found in the event, not only the primary")
     args = ap.parse_args()
 
     labels: dict[str, str] = {}
@@ -190,6 +192,11 @@ def main() -> int:
               f"{ours[:23]:<24} {pct(res.get('score')):>7} {pct(res.get('margin')):>7} "
               f"{res.get('frames_used', 0):>3} {elapsed:>6}   {when}")
 
+        if args.subjects and len(res.get("subjects") or []) > 1:
+            for sub in res["subjects"][1:]:
+                print(f"    also in view: {sub['common_name']} {pct(sub.get('score'))} "
+                      f"(margin {pct(sub.get('margin'))}, {sub.get('n_frames', 0)} crop(s): "
+                      f"{', '.join(sub.get('origins') or [])})")
         if args.verbose:
             for frame in res.get("per_frame", []):
                 trained = ""

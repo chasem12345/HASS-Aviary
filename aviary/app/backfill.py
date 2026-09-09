@@ -12,7 +12,7 @@ import logging
 
 import httpx
 
-from . import ingest
+from . import db, ingest
 from .settings import Settings
 
 log = logging.getLogger("aviary.backfill")
@@ -37,6 +37,17 @@ async def run_backfill(settings: Settings) -> None:
                 log.info("Backfill: imported/updated %d Frigate detections.", n)
             except Exception:  # noqa: BLE001
                 log.exception("Backfill: Frigate import failed (continuing).")
+            if settings.frigate_review_topic:
+                try:
+                    n = await backfill_frigate_reviews(client, settings)
+                    stats = db.visit_stats()
+                    log.info(
+                        "Backfill: imported/updated %d Frigate review items; %d visits now "
+                        "cover %d Frigate events (%d events have no retained review item).",
+                        n, stats["visits"], stats["grouped"], stats["ungrouped"],
+                    )
+                except Exception:  # noqa: BLE001
+                    log.exception("Backfill: Frigate review import failed (continuing).")
         if settings.birdnet_url:
             try:
                 n = await _backfill_birdnet(client, settings)
@@ -104,6 +115,52 @@ async def _backfill_frigate(client: httpx.AsyncClient, settings: Settings) -> in
             break  # no progress; avoid an infinite loop
         before = next_before
 
+    return imported
+
+
+async def backfill_frigate_reviews(client: httpx.AsyncClient, settings: Settings) -> int:
+    """Page backwards through GET /api/review (bird items) and store each as a visit.
+
+    Runs after the events import on every start, so review items that ended while the
+    add-on was down still group their events — and on the first start after upgrading,
+    this is what groups the existing history. Members link by event id, so it does not
+    matter whether an event or its review item was imported first. Idempotent: a review
+    item upserts on its id. Also the body of the rebuild endpoint.
+
+    ``after`` is always sent: Frigate's review endpoint defaults to the last 24 hours
+    when it is omitted, which would silently cap the history this can group.
+    """
+    base = settings.frigate_url
+    imported = 0
+    before: float | None = None
+    for _ in range(_MAX_PAGES):
+        params = {"labels": "bird", "limit": _FRIGATE_PAGE, "after": 1}
+        if before is not None:
+            params["before"] = before
+        resp = await client.get(f"{base}/api/review", params=params)
+        if resp.status_code == 404:
+            log.info("Backfill: this Frigate has no review API (pre-0.14); visits are "
+                     "unavailable until it is upgraded.")
+            return 0
+        resp.raise_for_status()
+        items = resp.json()
+        if not isinstance(items, list) or not items:
+            break
+        min_start = None
+        for item in items:
+            row = ingest.build_review_row(item)
+            if row is not None:
+                db.upsert_visit(row)
+                imported += 1
+            st = item.get("start_time")
+            if st is not None and (min_start is None or st < min_start):
+                min_start = st
+        if len(items) < _FRIGATE_PAGE or min_start is None:
+            break
+        next_before = min_start - 0.0001
+        if before is not None and next_before >= before:
+            break  # no progress; avoid an infinite loop
+        before = next_before
     return imported
 
 

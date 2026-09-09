@@ -179,9 +179,25 @@ def _fmt_conf_class(value) -> str:
     return "high" if v >= 0.8 else "mid" if v >= 0.5 else "low"
 
 
+def _fmt_duration(seconds) -> str:
+    """Compact span: '8s', '1m 30s', '12m', '1h 05m'. For a visit's length."""
+    try:
+        s = max(0, int(round(float(seconds))))
+    except (TypeError, ValueError):
+        return "—"
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m {s:02d}s" if s else f"{m}m"
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m"
+
+
 templates.env.filters["fmt_time"] = _fmt_time
 templates.env.filters["fmt_pct"] = _fmt_pct
 templates.env.filters["fmt_rel"] = _fmt_rel
+templates.env.filters["fmt_duration"] = _fmt_duration
 
 
 def _from_json(value):
@@ -204,6 +220,10 @@ templates.env.filters["from_json"] = _from_json
 # Whether a detection has a stored best-crop image (one os.path stat; page-size bounded).
 # A global rather than per-view context so the card macro works from every page.
 templates.env.globals["has_crop"] = crops.exists
+# The OTHER birds the identification service found in a detection's event (one indexed
+# query per Frigate card, the same cost class as has_crop). Empty for BirdNET rows, for
+# detections predating subjects, and for the common single-bird event.
+templates.env.globals["subjects_for"] = db.secondary_subjects_for
 
 
 def register_routes(app: FastAPI) -> None:

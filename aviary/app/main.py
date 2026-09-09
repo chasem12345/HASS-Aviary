@@ -161,6 +161,13 @@ def create_app() -> FastAPI:
     identify.configure(settings)
     # Seed BEFORE MQTT/backfill start so existing species/refs never fire notifications.
     ingest.seed_notify_state()
+    # Same for visits: species already present in a recent/open visit were announced (or
+    # deliberately not) before this restart — a member arriving now must not re-notify.
+    seeded = db.seed_visit_announcements(time.time() - 3600)
+    vstats = db.visit_stats()
+    log.info("Visits: %d, covering %d Frigate events (%d ungrouped); pre-marked %d "
+             "recent visit/species pairs as announced.",
+             vstats["visits"], vstats["grouped"], vstats["ungrouped"], seeded)
 
     if identify.enabled():
         # Frigate's classifier should be OFF when this is on, so every Frigate event

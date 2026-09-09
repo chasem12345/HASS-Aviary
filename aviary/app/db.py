@@ -182,6 +182,100 @@ CREATE TABLE IF NOT EXISTS identification_rejections (
     PRIMARY KEY (detection_id, species)
 );
 
+-- Visits: one row per Frigate REVIEW ITEM that involved a bird. Frigate's tracker splits
+-- a single bird's stay into many short tracked objects (a bird hopping around a bath for
+-- 90 s is routinely 10-25 event ids), and its Review page is what re-joins them into one
+-- stretch of activity per camera. Aviary mirrors that grouping exactly — same ids, same
+-- boundaries (Frigate's review cutoff_time) — so "one visit" means the same thing in both
+-- UIs and the window is tuned in one place. Members are detections.visit_id.
+--
+-- start/end are widened to cover the members: Frigate closes a review item on its own
+-- clock and the last tracked object can outlive it by a few seconds.
+CREATE TABLE IF NOT EXISTS visits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_id   TEXT NOT NULL UNIQUE,   -- Frigate review item id
+    camera      TEXT NOT NULL,          -- lowercased camera name
+    start_time  REAL NOT NULL,          -- MIN(review start, members' start)
+    end_time    REAL,                   -- MAX(review end, members' end); NULL while open
+    review_start REAL NOT NULL,         -- Frigate's own bounds, unmodified
+    review_end  REAL,
+    severity    TEXT,                   -- 'detection' | 'alert'
+    zones       TEXT,                   -- comma-joined, like detections.zone
+    raw_json    TEXT,
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_visits_camera_start ON visits (camera, start_time);
+CREATE INDEX IF NOT EXISTS idx_visits_start ON visits (start_time);
+
+-- Event ids Frigate listed under a review item. The review message and the event
+-- messages race on MQTT (both fire when the object appears), and a review item's member
+-- list grows over its lifetime — so the link is made from whichever side arrives second:
+-- upsert_visit stamps members that already exist, upsert_detection looks itself up here.
+-- One event belongs to at most one visit.
+CREATE TABLE IF NOT EXISTS visit_refs (
+    source_ref TEXT PRIMARY KEY,
+    visit_id   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_visit_refs_visit ON visit_refs (visit_id);
+
+-- (visit, species) pairs already announced as an aviary_detection event. Notifications
+-- fire once per species per visit rather than once per Frigate event; persisted (not an
+-- in-memory set) because identification results land seconds after the event ends and
+-- may straddle an add-on restart.
+CREATE TABLE IF NOT EXISTS visit_announced (
+    visit_id     INTEGER NOT NULL,
+    common_name  TEXT NOT NULL COLLATE NOCASE,
+    detection_id INTEGER,
+    announced_at REAL NOT NULL,
+    PRIMARY KEY (visit_id, common_name)
+);
+
+-- Subjects: every BIRD the identification service found in one event, classified on its
+-- own crops (aviary-id 0.10.0+). idx 0 is the primary — the tracked object the event is
+-- about, which the detections row itself mirrors — and the rest are birds that shared the
+-- view. Each has its own crop file and embedding, so labelling one can never file a
+-- picture of the other under that name. Rows are replaced wholesale on re-identify; a
+-- human label (manual_name) is carried across by matching embeddings.
+--
+-- The primary's row exists only so labelling logic is uniform: detections.* and
+-- identification_embeddings stay the source of truth for it, and every existing query is
+-- untouched. A detection with no subject rows simply IS its one subject.
+CREATE TABLE IF NOT EXISTS detection_subjects (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    detection_id    INTEGER NOT NULL REFERENCES detections(id) ON DELETE CASCADE,
+    idx             INTEGER NOT NULL,             -- 0 = primary, as the service numbered them
+    is_primary      INTEGER NOT NULL DEFAULT 0,
+    common_name     TEXT,                         -- service answer after the probe; NULL below threshold
+    scientific_name TEXT,
+    species_code    TEXT,
+    score           REAL,
+    margin          REAL,
+    candidates      TEXT,                         -- JSON top-5, same slim shape as detections.id_candidates
+    id_status       TEXT NOT NULL,                -- ok | low_confidence | manual | rejected
+    manual_name     TEXT,                         -- a person's label; outranks common_name
+    manual_sci      TEXT,
+    embedding_model TEXT,
+    embedding       TEXT,
+    crop_file       TEXT,                         -- basename under /data/crops
+    anchored        INTEGER NOT NULL DEFAULT 1,
+    n_frames        INTEGER,
+    created_at      REAL NOT NULL,
+    UNIQUE (detection_id, idx)
+);
+CREATE INDEX IF NOT EXISTS idx_subjects_detection ON detection_subjects (detection_id);
+
+-- "Not a Blue Jay" said about one OTHER bird in an event (the primary's rejections live
+-- in identification_rejections). Enforced add-on side when the service's answers come
+-- back; the service's own exclude list is per call, not per subject.
+CREATE TABLE IF NOT EXISTS detection_subject_rejections (
+    detection_id INTEGER NOT NULL,
+    idx          INTEGER NOT NULL,
+    species      TEXT NOT NULL COLLATE NOCASE,
+    rejected_at  REAL NOT NULL,
+    PRIMARY KEY (detection_id, idx, species)
+);
+
 """
 
 # Split out of _SCHEMA so the kind-column migration below can recreate just this table.
@@ -256,9 +350,19 @@ def init_db(db_path: str) -> None:
             # basename, resolved lazily once the async export finishes. User state,
             # like retained_at: never touched by upsert_detection.
             ("kept_export_id", "TEXT"), ("kept_export_file", "TEXT"),
+            # The Frigate review item (visits.id) this event belongs to. NULL for BirdNET
+            # rows, for events whose review item Frigate no longer retains, and for
+            # history from before review items existed — those render and count as
+            # standalone events, exactly as they always did.
+            ("visit_id", "INTEGER"),
         ):
             if name not in cols:
                 conn.execute(f"ALTER TABLE detections ADD COLUMN {name} {decl}")
+        # Same reasoning as idx_detections_id_status below: the column is added by the
+        # loop above, so the index cannot live in _SCHEMA.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_detections_visit ON detections (visit_id)"
+        )
         # One-time, best-effort zone backfill for rows that predate the zone column.
         # raw_json stores the Frigate `after` object (size-capped, largest values
         # dropped first — entered_zones is small and usually survives; some rows have
@@ -449,10 +553,15 @@ def upsert_detection(row: dict[str, Any]) -> None:
     Frigate sends multiple messages per event (new/update/end); the latest wins so the
     final species and confidence are kept. COALESCE preserves any media flags/refs that
     were already captured but are absent from a later message.
+
+    Side effect on the caller's dict: ``row["id"]`` is filled in, and for a Frigate event
+    that a review item has claimed, ``row["visit_id"]`` too — the notification path keys
+    its once-per-visit dedupe on it, and the tap-action deep link needs the id.
     """
     # Only Frigate rows carry a zone; default it so BirdNET's row shape (and any older
     # caller) satisfies the named parameters without every builder growing the key.
-    row = {"zone": None, **row}
+    defaults = {"zone": None}
+    params = {**defaults, **row}
     with _connect() as conn:
         conn.execute(
             """
@@ -496,8 +605,613 @@ def upsert_detection(row: dict[str, Any]) -> None:
                 native_id       = COALESCE(excluded.native_id, detections.native_id),
                 raw_json        = excluded.raw_json
             """,
-            row,
+            params,
         )
+        stored = conn.execute(
+            "SELECT id, visit_id FROM detections WHERE source = ? AND source_ref = ?",
+            (params["source"], params["source_ref"]),
+        ).fetchone()
+        if stored is None:  # cannot happen after a successful upsert; be defensive
+            return
+        row["id"] = stored["id"]
+        visit_id = stored["visit_id"]
+        if params["source"] == "frigate":
+            if visit_id is None:
+                # The review message may have listed this event before its own first
+                # message arrived (or before Aviary stored it) — pick the link up now.
+                ref = conn.execute(
+                    "SELECT visit_id FROM visit_refs WHERE source_ref = ?",
+                    (params["source_ref"],),
+                ).fetchone()
+                if ref is not None:
+                    visit_id = ref["visit_id"]
+                    conn.execute("UPDATE detections SET visit_id = ? WHERE id = ?",
+                                 (visit_id, stored["id"]))
+            if visit_id is not None:
+                # A later message can extend the event's end_time past the review item's.
+                _refresh_visit(conn, visit_id)
+        row["visit_id"] = visit_id
+
+
+# ---------------------------------------------------------------------------- visits
+
+def _refresh_visit(conn: sqlite3.Connection, visit_id: int) -> None:
+    """Recompute a visit's bounds from Frigate's review bounds and its members.
+
+    The start is the earliest of the two, the end the latest — Frigate closes a review
+    item on its own clock and the last tracked object can outlive it by seconds. A visit
+    Frigate still has open (no review end) stays open regardless of member ends, so the
+    card reads "in progress" for exactly as long as Frigate's Review page does.
+    """
+    conn.execute(
+        """
+        UPDATE visits SET
+            start_time = MIN(review_start, COALESCE(
+                (SELECT MIN(start_time) FROM detections WHERE visit_id = visits.id),
+                review_start)),
+            end_time = CASE WHEN review_end IS NULL THEN NULL ELSE MAX(review_end, COALESCE(
+                (SELECT MAX(COALESCE(end_time, start_time)) FROM detections
+                 WHERE visit_id = visits.id),
+                review_end)) END
+        WHERE id = ?
+        """,
+        (visit_id,),
+    )
+
+
+def upsert_visit(row: dict[str, Any]) -> int:
+    """Store or update a Frigate review item and link its listed events. Returns visits.id.
+
+    ``row`` is ``ingest.build_review_row``'s shape; ``refs`` is the review item's
+    ``data.detections`` list, which grows over the item's lifetime — every message
+    re-stamps the full list, so a member missed on one message is caught on the next.
+    Members that already exist as detections are linked here; members that arrive later
+    link themselves from ``visit_refs`` in ``upsert_detection``.
+    """
+    refs = [str(r) for r in (row.get("refs") or []) if r]
+    now = time.time()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO visits (
+                review_id, camera, start_time, end_time, review_start, review_end,
+                severity, zones, raw_json, created_at, updated_at
+            ) VALUES (
+                :review_id, :camera, :start_time, :end_time, :start_time, :end_time,
+                :severity, :zones, :raw_json, :now, :now
+            )
+            ON CONFLICT(review_id) DO UPDATE SET
+                camera       = excluded.camera,
+                review_start = MIN(visits.review_start, excluded.review_start),
+                -- A later message never un-ends a visit; an `update` after `end` does
+                -- not happen in practice, but a replayed/backfilled item must not reopen.
+                review_end   = COALESCE(excluded.review_end, visits.review_end),
+                severity     = COALESCE(excluded.severity, visits.severity),
+                zones        = COALESCE(excluded.zones, visits.zones),
+                raw_json     = COALESCE(excluded.raw_json, visits.raw_json),
+                updated_at   = excluded.updated_at
+            """,
+            {
+                "review_id": row["review_id"],
+                "camera": (row.get("camera") or "").lower(),
+                "start_time": float(row["start_time"]),
+                "end_time": row.get("end_time"),
+                "severity": row.get("severity"),
+                "zones": row.get("zones"),
+                "raw_json": row.get("raw_json"),
+                "now": now,
+            },
+        )
+        visit_id = conn.execute(
+            "SELECT id FROM visits WHERE review_id = ?", (row["review_id"],)
+        ).fetchone()["id"]
+        if refs:
+            conn.executemany(
+                "INSERT OR REPLACE INTO visit_refs (source_ref, visit_id) VALUES (?, ?)",
+                [(ref, visit_id) for ref in refs],
+            )
+            marks = ",".join("?" for _ in refs)
+            conn.execute(
+                f"""
+                UPDATE detections SET visit_id = ?
+                WHERE source = 'frigate' AND source_ref IN ({marks})
+                  AND (visit_id IS NULL OR visit_id != ?)
+                """,
+                [visit_id, *refs, visit_id],
+            )
+            # A member that already HAD a species when it got linked was announced on
+            # its own (per-event) before the review item listed it — or was labelled by
+            # hand, or backfilled, none of which should notify again. Record those
+            # species as announced for the visit so a later sibling stays silent.
+            conn.execute(
+                f"""
+                INSERT OR IGNORE INTO visit_announced
+                    (visit_id, common_name, detection_id, announced_at)
+                SELECT visit_id, common_name, id, ?
+                FROM detections
+                WHERE visit_id = ? AND source_ref IN ({marks})
+                  {_named_clause()}
+                """,
+                [now, visit_id, *refs],
+            )
+        _refresh_visit(conn, visit_id)
+    return visit_id
+
+
+def _visit_ids_of(conn: sqlite3.Connection, det_ids: list[int]) -> list[int]:
+    """Visits the given detections belong to. Read BEFORE deleting them (the members
+    must still exist to be looked up); pair with ``_settle_visits`` afterwards."""
+    if not det_ids:
+        return []
+    marks = ",".join("?" for _ in det_ids)
+    rows = conn.execute(
+        f"SELECT DISTINCT visit_id FROM detections WHERE id IN ({marks}) "
+        f"AND visit_id IS NOT NULL",
+        det_ids,
+    ).fetchall()
+    return [r["visit_id"] for r in rows]
+
+
+def _settle_visits(conn: sqlite3.Connection, visit_ids: list[int]) -> None:
+    """After members were deleted: shrink bounds, forget announcements for species that
+    no longer have a member, and drop visits left with no members at all.
+
+    The announcement cleanup mirrors ``_forget_if_gone`` for species: a deleted
+    misclassification must not leave "already announced" behind, or the real bird that
+    turns up in the same visit a minute later would be silent.
+    """
+    for vid in visit_ids:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS c FROM detections WHERE visit_id = ?", (vid,)
+        ).fetchone()["c"]
+        if not remaining:
+            conn.execute("DELETE FROM visits WHERE id = ?", (vid,))
+            conn.execute("DELETE FROM visit_refs WHERE visit_id = ?", (vid,))
+            conn.execute("DELETE FROM visit_announced WHERE visit_id = ?", (vid,))
+            continue
+        conn.execute(
+            """
+            DELETE FROM visit_announced
+            WHERE visit_id = ? AND NOT EXISTS (
+                SELECT 1 FROM detections d
+                WHERE d.visit_id = visit_announced.visit_id
+                  AND d.common_name = visit_announced.common_name COLLATE NOCASE
+            )
+            """,
+            (vid,),
+        )
+        _refresh_visit(conn, vid)
+
+
+def claim_visit_announcement(visit_id: int, common_name: str,
+                             detection_id: Optional[int]) -> bool:
+    """Atomically mark (visit, species) announced. True only for the first claimant."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO visit_announced
+                (visit_id, common_name, detection_id, announced_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (visit_id, common_name, detection_id, time.time()),
+        )
+        return cur.rowcount == 1
+
+
+def seed_visit_announcements(since: float) -> int:
+    """Pre-mark every named species of recent/open visits as announced.
+
+    Startup only — the persisted twin of ``ingest.seed_notify_state``'s recent-refs
+    pre-marking, so upgrading (or restarting) mid-visit doesn't re-notify for birds that
+    were announced before the restart. Returns the number of rows added.
+    """
+    with _connect() as conn:
+        cur = conn.execute(
+            f"""
+            INSERT OR IGNORE INTO visit_announced
+                (visit_id, common_name, detection_id, announced_at)
+            SELECT d.visit_id, d.common_name, MIN(d.id), ?
+            FROM detections d JOIN visits v ON v.id = d.visit_id
+            WHERE (v.end_time IS NULL OR v.end_time >= ?)
+              {_named_clause('d')}
+            GROUP BY d.visit_id, d.common_name
+            """,
+            (time.time(), since),
+        )
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+
+def visit_by_id(visit_id: int) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM visits WHERE id = ?", (visit_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def visit_by_review_id(review_id: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM visits WHERE review_id = ?", (review_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def visit_members(visit_id: int) -> list[dict]:
+    """A visit's detections, oldest first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM detections WHERE visit_id = ? ORDER BY start_time",
+            (visit_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def visits_with_members(visit_ids: list[int]) -> dict[int, list[dict]]:
+    """Members for many visits in one query, keyed by visit id, oldest first."""
+    if not visit_ids:
+        return {}
+    marks = ",".join("?" for _ in visit_ids)
+    out: dict[int, list[dict]] = {vid: [] for vid in visit_ids}
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM detections WHERE visit_id IN ({marks}) ORDER BY start_time",
+            visit_ids,
+        ).fetchall()
+    for r in rows:
+        out.setdefault(r["visit_id"], []).append(dict(r))
+    return out
+
+
+def _zone_like(column: str, params: list, zone: str) -> str:
+    """Delimiter-safe match of one zone inside a comma-joined list column."""
+    params.append(zone.replace(" ", ""))
+    return f" ',' || REPLACE(COALESCE({column}, ''), ' ', '') || ',' LIKE '%,' || ? || ',%'"
+
+
+def feed_page(
+    limit: int = 60,
+    source: Optional[str] = None,
+    species: Optional[str] = None,
+    before: Optional[float] = None,
+    since: Optional[float] = None,
+    zone: Optional[str] = None,
+) -> list[dict]:
+    """Newest-first feed items: visits (with members) plus ungrouped detections.
+
+    The Recent page's unit of display. A Frigate event that belongs to a visit is shown
+    only inside that visit; BirdNET rows and Frigate events with no review item (older
+    than Frigate's review retention, or from before review items existed) appear as their
+    own cards, exactly as before. ``before``/``since`` are start_time cursors, valid for
+    both kinds because a visit's start_time is a real timestamp too.
+
+    Visit dicts carry ``kind="visit"`` and ``members``; detection dicts are unchanged.
+    """
+    v_params: list = []
+    v_where = "WHERE 1=1"
+    d_params: list = []
+    d_where = "WHERE 1=1"
+    include_visits = source in (None, "frigate")
+    if source == "frigate":
+        d_where += " AND source = 'frigate' AND visit_id IS NULL"
+    elif source == "birdnet":
+        d_where += " AND source = 'birdnet'"
+    else:
+        d_where += " AND (source != 'frigate' OR visit_id IS NULL)"
+    if species:
+        v_where += (" AND EXISTS (SELECT 1 FROM detections m WHERE m.visit_id = v.id"
+                    " AND m.common_name = ? COLLATE NOCASE)")
+        v_params.append(species)
+        d_where += " AND common_name = ? COLLATE NOCASE"
+        d_params.append(species)
+    if zone:
+        v_where += (" AND (" + _zone_like("v.zones", v_params, zone)
+                    + " OR EXISTS (SELECT 1 FROM detections m WHERE m.visit_id = v.id AND"
+                    + _zone_like("m.zone", v_params, zone) + "))")
+        d_where += " AND" + _zone_like("zone", d_params, zone)
+    if before is not None:
+        v_where += " AND v.start_time < ?"
+        v_params.append(before)
+        d_where += " AND start_time < ?"
+        d_params.append(before)
+    if since is not None:
+        v_where += " AND v.start_time >= ?"
+        v_params.append(since)
+        d_where += " AND start_time >= ?"
+        d_params.append(since)
+
+    with _connect() as conn:
+        dets = [dict(r) for r in conn.execute(
+            f"SELECT * FROM detections {d_where} ORDER BY start_time DESC LIMIT ?",
+            [*d_params, limit],
+        ).fetchall()]
+        visits: list[dict] = []
+        if include_visits:
+            visits = [dict(r) for r in conn.execute(
+                f"SELECT v.* FROM visits v {v_where} ORDER BY v.start_time DESC LIMIT ?",
+                [*v_params, limit],
+            ).fetchall()]
+    for v in visits:
+        v["kind"] = "visit"
+    members = visits_with_members([v["id"] for v in visits])
+    for v in visits:
+        v["members"] = members.get(v["id"], [])
+    # A visit with no members (all deleted, or its events never imported) has nothing to
+    # show; hide rather than render an empty shell. _settle_visits removes these on the
+    # deletion paths, so this is belt-and-braces for import ordering.
+    visits = [v for v in visits if v["members"]]
+    items = sorted(visits + dets, key=lambda x: x["start_time"], reverse=True)
+    return items[:limit]
+
+
+def reset_visits() -> None:
+    """Forget every visit (for a full re-import from Frigate's review API)."""
+    with _connect() as conn:
+        conn.execute("UPDATE detections SET visit_id = NULL WHERE visit_id IS NOT NULL")
+        conn.execute("DELETE FROM visits")
+        conn.execute("DELETE FROM visit_refs")
+        conn.execute("DELETE FROM visit_announced")
+
+
+def visit_stats() -> dict:
+    """Counts for the startup log: visits, grouped and ungrouped Frigate events."""
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT (SELECT COUNT(*) FROM visits) AS visits,
+                   SUM(visit_id IS NOT NULL) AS grouped,
+                   SUM(visit_id IS NULL) AS ungrouped
+            FROM detections WHERE source = 'frigate'
+            """
+        ).fetchone()
+    return {"visits": row["visits"] or 0, "grouped": row["grouped"] or 0,
+            "ungrouped": row["ungrouped"] or 0}
+
+
+# -------------------------------------------------------------------------- subjects
+
+_SUBJECT_COLS = (
+    "detection_id", "idx", "is_primary", "common_name", "scientific_name", "species_code",
+    "score", "margin", "candidates", "id_status", "manual_name", "manual_sci",
+    "embedding_model", "embedding", "crop_file", "anchored", "n_frames", "created_at",
+)
+
+
+def replace_subjects(detection_id: int, rows: list[dict[str, Any]]) -> None:
+    """Replace a detection's subjects wholesale (one transaction).
+
+    Rejections are keyed by idx and survive on purpose: the caller matches old subjects
+    to new ones by embedding and rewrites the idx on any it carried over, and drops the
+    rest — see identify._carry_forward.
+    """
+    now = time.time()
+    with _connect() as conn:
+        conn.execute("DELETE FROM detection_subjects WHERE detection_id = ?", (detection_id,))
+        for r in rows:
+            values = {c: r.get(c) for c in _SUBJECT_COLS}
+            values["detection_id"] = detection_id
+            values["created_at"] = values.get("created_at") or now
+            values["is_primary"] = 1 if values.get("is_primary") else 0
+            values["anchored"] = 0 if values.get("anchored") is False else 1
+            conn.execute(
+                f"INSERT INTO detection_subjects ({', '.join(_SUBJECT_COLS)}) "
+                f"VALUES ({', '.join(':' + c for c in _SUBJECT_COLS)})",
+                values,
+            )
+
+
+def subjects_for(detection_id: int) -> list[dict]:
+    """All of a detection's subjects, primary first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM detection_subjects WHERE detection_id = ? ORDER BY idx",
+            (detection_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def secondary_subjects_for(detection_id: int) -> list[dict]:
+    """The OTHER birds in a detection's event, for the card's "also in view" strip.
+
+    ``display_name`` is what the card should call it: the human's label if there is
+    one, else the service's answer when it passed the thresholds, else None (show the
+    candidates instead).
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.*, (
+                SELECT GROUP_CONCAT(species, '|') FROM detection_subject_rejections r
+                WHERE r.detection_id = s.detection_id AND r.idx = s.idx
+            ) AS rejected
+            FROM detection_subjects s
+            WHERE s.detection_id = ? AND s.is_primary = 0
+            ORDER BY s.idx
+            """,
+            (detection_id,),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["display_name"] = d.get("manual_name") or (
+            d.get("common_name") if d.get("id_status") == "ok" else None)
+        d["rejected"] = [x for x in (d.get("rejected") or "").split("|") if x]
+        out.append(d)
+    return out
+
+
+def set_subject_species_manually(detection_id: int, idx: int, common_name: str,
+                                 scientific_name: Optional[str]) -> bool:
+    """Name one OTHER bird in an event by hand. False if there is no such subject."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE detection_subjects
+            SET manual_name = ?, manual_sci = ?, id_status = 'manual'
+            WHERE detection_id = ? AND idx = ? AND is_primary = 0
+            """,
+            (common_name, scientific_name, detection_id, idx),
+        )
+        return cur.rowcount > 0
+
+
+def reject_subject(detection_id: int, idx: int, species: str) -> bool:
+    """"That other bird is not a <species>": remember it and clear the subject's name.
+
+    No service call — the subject's own candidates are already stored, so the UI can
+    offer the next one. Returns False if there is no such subject.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM detection_subjects WHERE detection_id = ? AND idx = ? "
+            "AND is_primary = 0",
+            (detection_id, idx),
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO detection_subject_rejections
+                (detection_id, idx, species, rejected_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (detection_id, idx, species, time.time()),
+        )
+        conn.execute(
+            """
+            UPDATE detection_subjects
+            SET common_name = NULL, scientific_name = NULL, species_code = NULL,
+                manual_name = NULL, manual_sci = NULL, id_status = 'rejected'
+            WHERE detection_id = ? AND idx = ?
+            """,
+            (detection_id, idx),
+        )
+        return True
+
+
+def subject_rejections(detection_id: int) -> dict[int, list[str]]:
+    """{idx: [rejected species...]} for one detection's subjects."""
+    out: dict[int, list[str]] = {}
+    with _connect() as conn:
+        for r in conn.execute(
+            "SELECT idx, species FROM detection_subject_rejections WHERE detection_id = ?",
+            (detection_id,),
+        ):
+            out.setdefault(r["idx"], []).append(r["species"])
+    return out
+
+
+def _delete_subjects(conn: sqlite3.Connection, det_ids: list[int]) -> None:
+    if not det_ids:
+        return
+    ids = [(i,) for i in det_ids]
+    conn.executemany("DELETE FROM detection_subjects WHERE detection_id = ?", ids)
+    conn.executemany("DELETE FROM detection_subject_rejections WHERE detection_id = ?", ids)
+
+
+def species_present(detection_ids: list[int]) -> dict[int, list[dict]]:
+    """Every species present in each detection's event: the primary (the detections row
+    itself) plus any OTHER bird that was confidently identified or labelled by hand.
+
+    {detection_id: [{common_name, scientific_name, score, idx, source}]} with the primary
+    first. One query for many detections, because the visit card asks for a whole visit.
+    """
+    if not detection_ids:
+        return {}
+    marks = ",".join("?" for _ in detection_ids)
+    out: dict[int, list[dict]] = {i: [] for i in detection_ids}
+    with _connect() as conn:
+        for r in conn.execute(
+            f"""
+            SELECT id, common_name, scientific_name, id_score AS score
+            FROM detections WHERE id IN ({marks}) {_named_clause()}
+            """,
+            detection_ids,
+        ):
+            out[r["id"]].append({"common_name": r["common_name"],
+                                 "scientific_name": r["scientific_name"],
+                                 "score": r["score"], "idx": 0, "source": "primary"})
+        for r in conn.execute(
+            f"""
+            SELECT detection_id, idx, COALESCE(manual_name, common_name) AS name,
+                   COALESCE(manual_sci, scientific_name) AS sci, score
+            FROM detection_subjects
+            WHERE detection_id IN ({marks}) AND is_primary = 0
+              AND id_status IN ('ok', 'manual')
+              AND COALESCE(manual_name, common_name) IS NOT NULL
+            ORDER BY detection_id, idx
+            """,
+            detection_ids,
+        ):
+            out[r["detection_id"]].append({"common_name": r["name"],
+                                           "scientific_name": r["sci"],
+                                           "score": r["score"], "idx": r["idx"],
+                                           "source": "subject"})
+    return out
+
+
+def detections_with_unidentified_subjects(limit: int = 100,
+                                          before: Optional[float] = None) -> list[dict]:
+    """Detections whose PRIMARY has a name but some other bird in view does not."""
+    params: list = []
+    where = ("WHERE EXISTS (SELECT 1 FROM detection_subjects s WHERE s.detection_id = "
+             "detections.id AND s.is_primary = 0 AND s.id_status IN "
+             "('low_confidence', 'rejected'))")
+    if before is not None:
+        where += " AND start_time < ?"
+        params.append(before)
+    params.append(limit)
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM detections {where} ORDER BY start_time DESC LIMIT ?", params
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def unidentified_subject_count() -> int:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM detection_subjects WHERE is_primary = 0 "
+            "AND id_status IN ('low_confidence', 'rejected')"
+        ).fetchone()
+    return int(row["c"] or 0) if row else 0
+
+
+def confirmed_subject_embeddings(model: str) -> list[tuple[str, str]]:
+    """(species, embedding) for every OTHER-bird subject the probe may learn from.
+
+    Confident answers and human labels only, and only for species already confirmed
+    into the registry — the same bar ``confirmed_embeddings`` holds primaries to.
+    Primaries are never read from this table (they live in identification_embeddings),
+    so the two lists never double count.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(s.manual_name, s.common_name) AS name, s.embedding AS embedding
+            FROM detection_subjects s
+            JOIN species_confirmed sc
+              ON sc.common_name = COALESCE(s.manual_name, s.common_name) COLLATE NOCASE
+            WHERE s.is_primary = 0 AND s.id_status IN ('ok', 'manual')
+              AND s.embedding_model = ? AND s.embedding IS NOT NULL
+              AND COALESCE(s.manual_name, s.common_name) IS NOT NULL
+            """,
+            (model,),
+        ).fetchall()
+    return [(r["name"], r["embedding"]) for r in rows]
+
+
+# A "seen" is one (visit, species) pair, not one Frigate event: a bird that Frigate
+# tracked as fifteen short objects was one bird, once. Events with no visit (no retained
+# review item, or history from before review items) count as their own unit via -id, so
+# old numbers stay exactly what they were. BirdNET rows are never grouped.
+#
+# Two spellings because the species-grouped queries already partition by common_name and
+# need only the visit part, while ungrouped totals must keep species apart themselves.
+_SEEN_UNIT_IN_SPECIES = "CASE WHEN source = 'frigate' THEN COALESCE(visit_id, -id) END"
+_SEEN_UNIT = ("CASE WHEN source = 'frigate' THEN COALESCE(visit_id, -id) || '|' || "
+              "LOWER(common_name) END")
+SEEN_COUNT = f"COUNT(DISTINCT {_SEEN_UNIT})"
+SEEN_COUNT_BY_SPECIES = f"COUNT(DISTINCT {_SEEN_UNIT_IN_SPECIES})"
+HEARD_COUNT = "COALESCE(SUM(source = 'birdnet'), 0)"
 
 
 # --------------------------------------------------------------------------- queries
@@ -597,14 +1311,14 @@ def species_stats(name: str) -> dict:
     """Aggregate stats for one species (all-time)."""
     with _connect() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT
-                COUNT(*)                AS total,
+                {SEEN_COUNT_BY_SPECIES} + {HEARD_COUNT} AS total,
                 MIN(start_time)         AS first_seen,
                 MAX(start_time)         AS last_seen,
                 MAX(confidence)         AS best_confidence,
-                SUM(source = 'frigate') AS frigate_total,
-                SUM(source = 'birdnet') AS birdnet_total,
+                {SEEN_COUNT_BY_SPECIES} AS frigate_total,
+                {HEARD_COUNT}           AS birdnet_total,
                 MIN(CASE WHEN source = 'frigate' THEN start_time END) AS first_frigate,
                 MAX(CASE WHEN source = 'frigate' THEN start_time END) AS last_frigate,
                 MIN(CASE WHEN source = 'birdnet' THEN start_time END) AS first_birdnet,
@@ -737,11 +1451,11 @@ def species_list(
     sql = f"""
         SELECT common_name,
                MAX(scientific_name) AS scientific_name,
-               COUNT(*)             AS count,
+               {SEEN_COUNT_BY_SPECIES} + {HEARD_COUNT} AS count,
                MIN(start_time)      AS first_seen,
                MAX(start_time)      AS last_seen,
-               SUM(source = 'frigate') AS frigate_total,
-               SUM(source = 'birdnet') AS birdnet_total,
+               {SEEN_COUNT_BY_SPECIES} AS frigate_total,
+               {HEARD_COUNT}           AS birdnet_total,
                MIN(CASE WHEN source = 'frigate' THEN start_time END) AS first_frigate,
                MAX(CASE WHEN source = 'frigate' THEN start_time END) AS last_frigate,
                MIN(CASE WHEN source = 'birdnet' THEN start_time END) AS first_birdnet,
@@ -775,11 +1489,14 @@ def daily_recap(day_start: float, day_end: float,
             f"""
             SELECT common_name,
                    MAX(scientific_name) AS scientific_name,
-                   COUNT(*)             AS count,
-                   SUM(source = 'frigate') AS seen,
-                   SUM(source = 'birdnet') AS heard,
+                   {SEEN_COUNT_BY_SPECIES} + {HEARD_COUNT} AS count,
+                   {SEEN_COUNT_BY_SPECIES} AS seen,
+                   {HEARD_COUNT}           AS heard,
                    MIN(start_time)      AS first_time,
                    MAX(start_time)      AS last_time,
+                   -- Distinct local days with activity: the multi-day recap's
+                   -- "how regular a visitor" signal.
+                   COUNT(DISTINCT date(start_time, 'unixepoch', 'localtime')) AS days_active,
                    -- A representative image for the row: the latest snapshot-bearing
                    -- Frigate event of the day (MAX pairs ref with time lexically well
                    -- enough here; refs are same-day event ids).
@@ -956,16 +1673,19 @@ def delete_detection(det_id: int) -> Optional[dict]:
         row = conn.execute("SELECT * FROM detections WHERE id = ?", (det_id,)).fetchone()
         if row is None:
             return None
+        visit_ids = _visit_ids_of(conn, [det_id])
         conn.execute("DELETE FROM detections WHERE id = ?", (det_id,))
         # Explicit rather than relying on ON DELETE CASCADE: SQLite enforces foreign keys
         # only when PRAGMA foreign_keys is on, and it is off by default on every new
         # connection. Orphaned embeddings would otherwise accumulate silently forever.
         conn.execute("DELETE FROM identification_embeddings WHERE detection_id = ?", (det_id,))
         conn.execute("DELETE FROM identification_rejections WHERE detection_id = ?", (det_id,))
+        _delete_subjects(conn, [det_id])
         conn.execute(
             "INSERT OR REPLACE INTO deleted_refs (source, source_ref, deleted_at) VALUES (?, ?, ?)",
             (row["source"], row["source_ref"], time.time()),
         )
+        _settle_visits(conn, visit_ids)
     return dict(row)
 
 
@@ -984,10 +1704,12 @@ def delete_species(common_name: str) -> list[dict]:
         ]
         if rows:
             now = time.time()
+            visit_ids = _visit_ids_of(conn, [r["id"] for r in rows])
             conn.execute(
                 "DELETE FROM detections WHERE common_name = ? COLLATE NOCASE",
                 (common_name,),
             )
+            _settle_visits(conn, visit_ids)
             conn.executemany(
                 "INSERT OR REPLACE INTO deleted_refs (source, source_ref, deleted_at) VALUES (?, ?, ?)",
                 [(r["source"], r["source_ref"], now) for r in rows],
@@ -1002,6 +1724,7 @@ def delete_species(common_name: str) -> list[dict]:
                 "DELETE FROM identification_rejections WHERE detection_id = ?",
                 [(r["id"],) for r in rows],
             )
+            _delete_subjects(conn, [r["id"] for r in rows])
         conn.execute("DELETE FROM species_info WHERE common_name = ? COLLATE NOCASE", (common_name,))
         conn.execute("DELETE FROM species_audio WHERE common_name = ? COLLATE NOCASE", (common_name,))
         conn.execute("DELETE FROM species_photos WHERE common_name = ? COLLATE NOCASE", (common_name,))
@@ -1232,6 +1955,7 @@ def drop_detection(source: str, source_ref: str) -> None:
         ).fetchone()
         if row is None:
             return
+        visit_ids = _visit_ids_of(conn, [row["id"]])
         conn.execute("DELETE FROM detections WHERE id = ?", (row["id"],))
         conn.execute(
             "DELETE FROM identification_embeddings WHERE detection_id = ?", (row["id"],)
@@ -1239,6 +1963,8 @@ def drop_detection(source: str, source_ref: str) -> None:
         conn.execute(
             "DELETE FROM identification_rejections WHERE detection_id = ?", (row["id"],)
         )
+        _delete_subjects(conn, [row["id"]])
+        _settle_visits(conn, visit_ids)
 
 
 def confirmed_embeddings(model: str) -> list[tuple[str, str]]:
@@ -1259,7 +1985,9 @@ def confirmed_embeddings(model: str) -> list[tuple[str, str]]:
             """,
             (model,),
         ).fetchall()
-    return [(r["name"], r["embedding"]) for r in rows]
+    # Plus the other birds found in events, each on its own embedding (see
+    # detection_subjects). Primaries never come from that table, so no double counting.
+    return [(r["name"], r["embedding"]) for r in rows] + confirmed_subject_embeddings(model)
 
 
 def reference_embeddings(model: str) -> list[tuple[str, str]]:
@@ -1397,6 +2125,9 @@ def unidentified_counts() -> dict:
         "pending": int((row["pending"] if row else 0) or 0),
         # What the badge shows: things you can actually do something about.
         "actionable": int((row["actionable"] if row else 0) or 0),
+        # Other birds in view that still need a name — a separate queue, because the
+        # detection itself already has a species and must not re-enter the main one.
+        "subjects": unidentified_subject_count(),
     }
 
 
@@ -1430,6 +2161,7 @@ def purge_unidentified(older_than: float) -> list[str]:
         if not rows:
             return []
         ids = [(r["id"],) for r in rows]
+        visit_ids = _visit_ids_of(conn, [r["id"] for r in rows])
         conn.executemany("DELETE FROM detections WHERE id = ?", ids)
         conn.executemany(
             "DELETE FROM identification_embeddings WHERE detection_id = ?", ids
@@ -1437,6 +2169,8 @@ def purge_unidentified(older_than: float) -> list[str]:
         conn.executemany(
             "DELETE FROM identification_rejections WHERE detection_id = ?", ids
         )
+        _delete_subjects(conn, [r["id"] for r in rows])
+        _settle_visits(conn, visit_ids)
     return [r["source_ref"] for r in rows]
 
 
@@ -1631,13 +2365,16 @@ def canonical_species(name: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def species_last_times(common_name: str, source: str, source_ref: str) -> dict:
+def species_last_times(common_name: str, source: str, source_ref: str,
+                       visit_id: Optional[int] = None) -> dict:
     """The species' most recent detection time — overall and per source — excluding
-    one row (already upserted).
+    one row (already upserted) and, when given, every other member of its visit.
 
     Feeds the notification blueprint's per-species cooldown: 'how long has this
     species been quiet before this detection?', split by source so a camera cooldown
-    isn't fed by audio detections (and vice versa).
+    isn't fed by audio detections (and vice versa). Siblings in the same visit are the
+    same stay, not a previous one — without excluding them, the second tracked object of
+    one visit would report the species as "last seen 4 seconds ago".
     """
     empty = {"any": None, "seen": None, "heard": None}
     with _connect() as conn:
@@ -1649,8 +2386,9 @@ def species_last_times(common_name: str, source: str, source_ref: str) -> dict:
             FROM detections
             WHERE common_name = ? COLLATE NOCASE
               AND NOT (source = ? AND source_ref = ?)
+              AND (? IS NULL OR visit_id IS NULL OR visit_id != ?)
             """,
-            (common_name, source, source_ref),
+            (common_name, source, source_ref, visit_id, visit_id),
         ).fetchone()
     if not row:
         return empty
@@ -1788,14 +2526,14 @@ def summary_stats(source: Optional[str] = None, since: Optional[float] = None,
         row = conn.execute(
             f"""
             SELECT
-                COUNT(*)                     AS total,
+                {SEEN_COUNT} + {HEARD_COUNT} AS total,
                 -- Species count excludes unidentified rows, but `total` deliberately
                 -- does NOT: a bird nobody could name was still a bird that showed up,
                 -- and dropping it would understate the detection count for the day.
                 COUNT(DISTINCT CASE WHEN common_name != 'bird' COLLATE NOCASE
                                     THEN common_name END) AS species,
-                SUM(source = 'frigate')      AS frigate_total,
-                SUM(source = 'birdnet')      AS birdnet_total
+                {SEEN_COUNT}                 AS frigate_total,
+                {HEARD_COUNT}                AS birdnet_total
             FROM detections {where}
             """,
             params,
@@ -1822,9 +2560,10 @@ def top_species(
         rows = conn.execute(
             f"""
             SELECT common_name, scientific_name,
-                   COUNT(*) AS count, MAX(start_time) AS last_seen,
-                   SUM(source = 'birdnet') AS heard,
-                   SUM(source = 'frigate') AS seen,
+                   {SEEN_COUNT_BY_SPECIES} + {HEARD_COUNT} AS count,
+                   MAX(start_time) AS last_seen,
+                   {HEARD_COUNT}           AS heard,
+                   {SEEN_COUNT_BY_SPECIES} AS seen,
                    MAX(CASE WHEN source = 'frigate' THEN start_time END) AS last_frigate,
                    MAX(CASE WHEN source = 'birdnet' THEN start_time END) AS last_birdnet
             FROM detections {where}
@@ -1860,7 +2599,7 @@ def detections_per_day(
         rows = conn.execute(
             f"""
             SELECT date(start_time, 'unixepoch', 'localtime') AS day,
-                   COUNT(*) AS count
+                   {SEEN_COUNT} + {HEARD_COUNT} AS count
             FROM detections {where}
             GROUP BY day
             ORDER BY day
@@ -1889,7 +2628,7 @@ def hourly_activity(
         rows = conn.execute(
             f"""
             SELECT CAST(strftime('%H', start_time, 'unixepoch', 'localtime') AS INTEGER) AS hour,
-                   COUNT(*) AS count
+                   {SEEN_COUNT} + {HEARD_COUNT} AS count
             FROM detections {where}
             GROUP BY hour
             ORDER BY hour

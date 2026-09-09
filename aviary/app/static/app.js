@@ -942,8 +942,11 @@
     return speciesListPromise;
   }
 
-  async function setSpecies(id, species, sci) {
-    let url = API + "/detections/" + encodeURIComponent(id) + "/species" +
+  // `subject` (when present and non-zero) names one of the OTHER birds the identifier
+  // found in the event — its own row, crop and embedding — rather than the detection.
+  async function setSpecies(id, species, sci, subject) {
+    let url = API + "/detections/" + encodeURIComponent(id) +
+      (subject ? "/subjects/" + encodeURIComponent(subject) : "") + "/species" +
       "?species=" + encodeURIComponent(species);
     if (sci) url += "&scientific=" + encodeURIComponent(sci);
     const res = await fetch(url, { method: "POST" });
@@ -955,9 +958,25 @@
     return true;
   }
 
+  // "That other bird is not a X": recorded for that bird only, no GPU call.
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".subject-reject");
+    if (!btn) return;
+    e.preventDefault();
+    btn.disabled = true;
+    try {
+      const res = await fetch(API + "/detections/" + encodeURIComponent(btn.dataset.id) +
+        "/subjects/" + encodeURIComponent(btn.dataset.subject) + "/reject?species=" +
+        encodeURIComponent(btn.dataset.name), { method: "POST" });
+      const data = await res.json();
+      if (!data.ok) { alert("Couldn't reject: " + (data.error || res.status)); btn.disabled = false; return; }
+      window.location.reload();
+    } catch (err) { alert("Couldn't reject: " + err); btn.disabled = false; }
+  });
+
   document.addEventListener("click", async (e) => {
     const btn = e.target.closest(".guess");
-    if (!btn) return;
+    if (!btn || btn.classList.contains("subject-reject")) return;
     e.preventDefault();
 
     let species = btn.dataset.species;
@@ -984,7 +1003,7 @@
       sci = "";
     }
     btn.disabled = true;
-    if (await setSpecies(btn.dataset.id, species, sci)) window.location.reload();
+    if (await setSpecies(btn.dataset.id, species, sci, btn.dataset.subject)) window.location.reload();
     else btn.disabled = false;
   });
 

@@ -428,6 +428,10 @@ async def _process(row: dict[str, Any]) -> None:
     # what the model actually looked at matters MOST — especially when the classified
     # footage (a zoomed PTZ recording) is not the event's own media.
     await asyncio.to_thread(crops.save, ref, result.get("best_crop"))
+    # And every OTHER bird the service found in the event, each on its own crop and
+    # embedding. Done on both branches below: a second bird can be perfectly clear while
+    # the tracked one is not.
+    await _store_subjects(row, result, embed_key)
 
     if not passes and not rescued:
         log.info(
@@ -480,6 +484,182 @@ async def _process(row: dict[str, Any]) -> None:
         f", probe:{probe_examples}" if probe_examples else "",
         result.get("elapsed_ms", "?"),
     )
+
+
+# Old and new "other bird" subjects whose embeddings are at least this alike are the same
+# bird re-found on a re-identify, so a human label or rejection on the old one carries
+# over. BioCLIP puts the same crop set at ~0.9+; two different birds well below.
+_CARRY_SIMILARITY = 0.85
+
+
+async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str) -> None:
+    """Persist the service's ``subjects[]`` for a detection (aviary-id 0.10.0+).
+
+    The primary (idx 0) gets a row for uniform labelling but the detection row remains
+    its source of truth. Each OTHER bird is put through the probe and the user's
+    thresholds exactly like a primary — no consensus rescue, to keep the rule simple —
+    and stored with its own crop and embedding. Labels and rejections the user already
+    gave to other birds in this event are carried to whichever new subject matches them.
+    Any failure here is logged and swallowed: subjects are a bonus on top of the answer.
+    """
+    try:
+        det_id = row.get("id")
+        if not det_id:
+            det = await asyncio.to_thread(db.detection_by_ref, row["source"], row["source_ref"])
+            det_id = det["id"] if det else None
+        if not det_id:
+            return
+        ref = row["source_ref"]
+        subjects = result.get("subjects") or []
+        if not subjects:
+            # An older service: the whole event is one subject, and the detection row is it.
+            subjects = [{
+                "idx": 0, "primary": True, "anchored": True,
+                "common_name": result.get("common_name"),
+                "scientific_name": result.get("scientific_name"),
+                "species_code": result.get("species_code"),
+                "score": result.get("score"), "margin": result.get("margin"),
+                "candidates": result.get("candidates"), "embedding": result.get("embedding"),
+                "n_frames": result.get("frames_used"),
+            }]
+        old = await asyncio.to_thread(db.subjects_for, det_id)
+        old_rejections = await asyncio.to_thread(db.subject_rejections, det_id)
+        blacklist = set(await asyncio.to_thread(_blacklist_names)) if _settings.identify_exclude_blacklisted else set()
+        await asyncio.to_thread(crops.remove_subjects, ref)
+
+        rows: list[dict] = []
+        carried: list[tuple[int, int]] = []   # (old idx, new idx)
+        for sub in subjects:
+            idx = int(sub.get("idx") or 0)
+            primary = bool(sub.get("primary")) or idx == 0
+            embedding = sub.get("embedding")
+            slim = [
+                {"name": c.get("common_name") or c.get("name"),
+                 "sci": c.get("scientific_name") or c.get("sci"),
+                 "code": c.get("species_code") or c.get("code"),
+                 "score": float(c.get("score") or 0.0)}
+                for c in (sub.get("candidates") or [])
+                if isinstance(c, dict) and (c.get("common_name") or c.get("name"))
+            ]
+            name = sub.get("common_name")
+            sci = sub.get("scientific_name")
+            code = sub.get("species_code")
+            score = float(sub.get("score") or 0.0)
+            margin = float(sub.get("margin") or 0.0)
+            shortlist = _encode_candidates(sub.get("candidates"))
+            status = "ok"
+            manual_name = manual_sci = None
+            if primary:
+                # Mirror of the detection row; the row itself is what the UI reads.
+                status = "ok"
+            else:
+                # Match this bird to the old subjects the user has touched, by embedding.
+                match = _match_old_subject(embedding, old, carried)
+                rejected = set(n.lower() for n in old_rejections.get(match["idx"], [])) if match else set()
+                exclude = rejected | {b.lower() for b in blacklist}
+                blended = probe.blend(embedding or "", slim, embed_key, exclude=exclude)
+                if blended:
+                    name, score, margin = blended["name"], blended["score"], blended["margin"]
+                    sci = blended.get("sci") or sci
+                    code = blended.get("code") or code
+                    shortlist = _encode_candidates(blended["candidates"]) or shortlist
+                if name and name.lower() in exclude:
+                    # The service's own top answer is one the user ruled out for this bird
+                    # (rejections are add-on side; the service's exclude is per call).
+                    ranked = [c for c in slim if c["name"].lower() not in exclude]
+                    if ranked:
+                        name, sci, code = ranked[0]["name"], ranked[0]["sci"], ranked[0]["code"]
+                        score = ranked[0]["score"]
+                        margin = score - (ranked[1]["score"] if len(ranked) > 1 else 0.0)
+                    else:
+                        name = None
+                passes = bool(name) and score >= _settings.identify_min_score \
+                    and margin >= _settings.identify_min_margin
+                status = "ok" if passes else "low_confidence"
+                if not passes:
+                    name = sci = code = None
+                if match:
+                    carried.append((match["idx"], idx))
+                    if match.get("manual_name"):
+                        manual_name, manual_sci = match["manual_name"], match.get("manual_sci")
+                        status = "manual"
+                    elif match.get("id_status") == "rejected" and not passes:
+                        status = "rejected"
+                await asyncio.to_thread(crops.save, ref, sub.get("best_crop"), idx)
+            rows.append({
+                "idx": idx, "is_primary": primary, "common_name": name,
+                "scientific_name": sci, "species_code": code, "score": score,
+                "margin": margin, "candidates": shortlist, "id_status": status,
+                "manual_name": manual_name, "manual_sci": manual_sci,
+                "embedding_model": embed_key if embedding else None,
+                "embedding": embedding,
+                "crop_file": crops.basename(ref, idx) if not primary else crops.basename(ref),
+                "anchored": sub.get("anchored", True), "n_frames": sub.get("n_frames"),
+            })
+        dropped = [o for o in old if not o.get("is_primary") and (o.get("manual_name")
+                   or old_rejections.get(o["idx"])) and o["idx"] not in {c[0] for c in carried}]
+        for o in dropped:
+            log.info("Re-identify of %s: the other bird labelled %r no longer matches any "
+                     "subject; its label was not carried over.", ref,
+                     o.get("manual_name") or "(rejections)")
+        await asyncio.to_thread(db.replace_subjects, det_id, rows)
+        # Rewrite carried rejections onto their new idx, drop the rest.
+        await asyncio.to_thread(_remap_rejections, det_id, carried)
+        others = [r for r in rows if not r["is_primary"]]
+        if others:
+            log.info("Event %s: %d other bird(s) in view: %s", ref, len(others),
+                     ", ".join(f"{r['manual_name'] or r['common_name'] or 'unidentified'}"
+                               f" ({r['id_status']}, {r['score']:.2f})" for r in others))
+    except Exception:  # noqa: BLE001 — never let the bonus break the answer
+        log.exception("Storing subjects for %s failed.", row.get("source_ref"))
+
+
+def _match_old_subject(embedding: Optional[str], old: list[dict],
+                       carried: list[tuple[int, int]]) -> Optional[dict]:
+    """The old OTHER-bird subject this embedding is the same bird as, if any."""
+    if not embedding:
+        return None
+    vec = probe.decode(embedding)
+    if vec is None:
+        return None
+    taken = {c[0] for c in carried}
+    best, best_sim = None, _CARRY_SIMILARITY
+    for o in old:
+        if o.get("is_primary") or o["idx"] in taken or not o.get("embedding"):
+            continue
+        if not (o.get("manual_name") or o.get("id_status") == "rejected"):
+            continue  # nothing to carry
+        ov = probe.decode(o["embedding"])
+        if ov is None:
+            continue
+        sim = float(vec @ ov)
+        if sim >= best_sim:
+            best, best_sim = o, sim
+    return best
+
+
+def _remap_rejections(det_id: int, carried: list[tuple[int, int]]) -> None:
+    """Move rejections from old subject idx to new; delete rejections nothing carried."""
+    with db._connect() as conn:  # noqa: SLF001 — one transaction across the remap
+        rows = conn.execute(
+            "SELECT idx, species, rejected_at FROM detection_subject_rejections "
+            "WHERE detection_id = ?", (det_id,)
+        ).fetchall()
+        conn.execute("DELETE FROM detection_subject_rejections WHERE detection_id = ?", (det_id,))
+        mapping = dict(carried)
+        for r in rows:
+            new_idx = mapping.get(r["idx"])
+            if new_idx is None:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO detection_subject_rejections "
+                "(detection_id, idx, species, rejected_at) VALUES (?, ?, ?, ?)",
+                (det_id, new_idx, r["species"], r["rejected_at"]),
+            )
+
+
+def _blacklist_names() -> list[str]:
+    return [n for n, _ in db.blacklist_names()]
 
 
 def _encode_candidates(candidates: Any) -> Optional[str]:
@@ -688,6 +868,10 @@ async def backfill_embedding(row: dict[str, Any]) -> bool:
     if not embedding or not key:
         return False
     await asyncio.to_thread(db.put_detection_embedding, row["id"], key, embedding)
+    # The same run also found every other bird in the event; keep those too, if this
+    # detection has none yet (its label/status are untouched — see above).
+    if not await asyncio.to_thread(db.subjects_for, row["id"]):
+        await _store_subjects(dict(row), result, key)
     log.info("Backfilled an embedding for %s so its manual label can teach the probe.", ref)
     return True
 

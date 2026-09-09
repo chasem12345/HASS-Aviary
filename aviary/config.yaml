@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.26.0"
+version: "0.27.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -32,6 +32,7 @@ options:
   frigate_url: "http://ccab4aaf-frigate:5000"
   birdnet_url: "http://a0d7b954-birdnet-go:8080"
   frigate_topic: "frigate/events"
+  frigate_review_topic: "frigate/reviews"
   birdnet_topic: "birdnet"
   backfill_on_start: true
   ignore_unclassified: true
@@ -62,6 +63,13 @@ schema:
   frigate_url: "url"
   birdnet_url: "url"
   frigate_topic: "str"
+  # Frigate's review-item topic. A review item is Frigate's own grouping of every tracked
+  # object on one camera into a single stretch of activity (what its Review page shows);
+  # Aviary mirrors each bird review item as one "visit", so a bird that Frigate tracked
+  # as a dozen short objects reads as one continuous sighting here, with one notification
+  # per species. Must share Frigate's topic_prefix with frigate_topic. Blank disables
+  # visits (every Frigate event stays its own card).
+  frigate_review_topic: "str?"
   birdnet_topic: "str"
   backfill_on_start: "bool"
   ignore_unclassified: "bool"

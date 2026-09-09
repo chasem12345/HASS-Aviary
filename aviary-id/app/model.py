@@ -19,7 +19,7 @@ import hashlib
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -27,6 +27,7 @@ import open_clip
 import torch
 from PIL import Image
 
+from . import subjects as subjects_mod
 from .prompts import OPENAI_IMAGENET_TEMPLATES
 from .settings import Settings
 from .species import Species
@@ -103,10 +104,30 @@ class ClassifyResult:
     consensus: Optional[dict] = None
     # Whether the supervised (trained) classifier contributed to this answer.
     trained: bool = False
-    # Index (into the classified crops, = per_frame order) of the frame that best backed
-    # the winner — the same frame the embedding comes from. Lets the caller hand back the
-    # winning crop itself (Aviary shows it as the card thumbnail).
+    # Index into the FULL classified-crop list of the frame that best backed the winner —
+    # the same frame the embedding comes from. Lets the caller hand back the winning crop
+    # itself (Aviary shows it as the card thumbnail).
     best_frame: int = 0
+    # Which crops (indices into the full list) this result was fused from: one bird's.
+    indices: list = field(default_factory=list)
+    # The event's tracked bird (True) or another bird that shared the view (False).
+    primary: bool = True
+    # Whether the primary was pinned down by Frigate's evidence (its crop / tracked path)
+    # rather than falling back to the biggest cluster.
+    anchored: bool = True
+    # Other birds in the same event, each classified on its own crops. Primary only.
+    others: list = field(default_factory=list)
+
+
+@dataclass
+class Encoded:
+    """Everything computed once over ALL crops, before fusing per subject."""
+    image_features: torch.Tensor          # [n, d], L2-normalized
+    probs: torch.Tensor                   # [n, species], mixed + priors applied
+    supervised: Optional[torch.Tensor]    # [n, species] raw trained rows, or None
+    trained_frames: Optional[list[tuple[str, float]]]
+    trained_used: bool
+    excluded: int
 
 
 class Classifier:
@@ -316,13 +337,17 @@ class Classifier:
     @torch.inference_mode()
     def classify(
         self,
-        crops: list[Image.Image],
-        det_scores: list[float],
-        origins: list[str],
+        crops: list,
         priors: Optional[dict[str, float]] = None,
         exclude: Optional[list[str]] = None,
     ) -> Optional[ClassifyResult]:
-        """Classify one event's crops and fuse them into a single answer.
+        """Classify one event's crops: one answer per BIRD, the tracked bird's first.
+
+        ``crops`` are pipeline.Crop objects (image + geometry). Every crop is encoded
+        once; the crops are then partitioned into individual birds (subjects.py) and each
+        subject is fused on its own rows, so a second bird in view can no longer dilute
+        the answer — or donate its embedding to the wrong label. The returned result is
+        the primary subject's, with the others attached as ``others``.
 
         ``exclude`` removes species from consideration for this call only — a user
         rejecting a wrong answer, or a species they never want suggested. Masked in logit
@@ -334,6 +359,36 @@ class Classifier:
         if self._text_features is None or not self.species or not crops:
             return None
 
+        enc = self._encode([c.image for c in crops], priors, exclude)
+        meta = [subjects_mod.CropMeta(
+            origin=c.origin, det_score=float(c.score), rank=float(c.rank),
+            pre_cropped=bool(c.pre_cropped), center=c.center,
+            anchor_dist=c.anchor_dist, t=c.t) for c in crops]
+        s = self.settings
+        parts = subjects_mod.partition(
+            meta, enc.image_features.float().cpu().numpy(),
+            sim_merge=s.subject_sim_merge, sim_split=s.subject_sim_split,
+            min_secondary_crops=s.subject_min_crops, single_crop_det=s.subject_single_det,
+            max_subjects=s.subject_max,
+        )
+        if not parts:
+            return None
+        det_scores = [float(c.score) for c in crops]
+        origins = [c.origin for c in crops]
+        results = [self._fuse(enc, sub.indices, det_scores, origins, sub.primary, sub.anchored)
+                   for sub in parts]
+        primary = results[0]
+        primary.others = results[1:]
+        if primary.others:
+            log.debug("Subjects: primary %s on %d crop(s); others: %s",
+                      primary.species.com_name, len(primary.indices),
+                      ", ".join(f"{o.species.com_name} {o.score:.2f} ({len(o.indices)})"
+                                for o in primary.others))
+        return primary
+
+    def _encode(self, crops: list[Image.Image], priors: Optional[dict[str, float]],
+                exclude: Optional[list[str]]) -> Encoded:
+        """One forward pass over every crop: features and per-crop probabilities."""
         batch = torch.stack([self.preprocess(img) for img in crops]).to(self.device)
         image_features = self.model.encode_image(batch)
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
@@ -383,6 +438,23 @@ class Classifier:
         if priors:
             probs = self._apply_priors(probs, priors)
 
+        return Encoded(image_features=image_features, probs=probs, supervised=supervised,
+                       trained_frames=trained_frames, trained_used=trained_used,
+                       excluded=len(excluded))
+
+    def _fuse(self, enc: Encoded, idx: list[int], all_det_scores: list[float],
+              all_origins: list[str], primary: bool, anchored: bool) -> ClassifyResult:
+        """Fuse ONE subject's rows into an answer. ``idx`` indexes the full crop list."""
+        rows = torch.as_tensor(idx, device=enc.probs.device, dtype=torch.long)
+        probs = enc.probs[rows]
+        supervised = enc.supervised[rows] if enc.supervised is not None else None
+        det_scores = [all_det_scores[i] for i in idx]
+        origins = [all_origins[i] for i in idx]
+        trained_frames = ([enc.trained_frames[i] for i in idx]
+                          if enc.trained_frames is not None else None)
+        excluded = enc.excluded
+        trained_used = enc.trained_used
+
         # Fuse frames by detector confidence: a crisp, confidently-detected bird should
         # count for more than a blurry one caught mid-wingbeat.
         weights = torch.tensor(det_scores, device=self.device, dtype=probs.dtype)
@@ -422,8 +494,9 @@ class Classifier:
         second_score = float(top.values[1]) if len(top.values) > 1 else 0.0
 
         # The frame that best backed the winner — shared by the embedding (below) and,
-        # via best_frame, the caller's crop-thumbnail. One argmax, one definition.
-        best_frame = int(torch.argmax(probs[:, best_idx]))
+        # via best_frame, the caller's crop-thumbnail. One argmax, one definition. An
+        # index into the FULL crop list, so the caller's crops[best_frame] still holds.
+        best_frame = idx[int(torch.argmax(probs[:, best_idx]))]
 
         return ClassifyResult(
             species=self.species[best_idx],
@@ -435,12 +508,15 @@ class Classifier:
                 for i, v in zip(top.indices.tolist(), top.values.tolist())
             ],
             per_frame=self._per_frame(probs, det_scores, origins, trained_frames),
-            embedding=self._encode_embedding(image_features, best_frame),
-            excluded=len(excluded),
+            embedding=self._encode_embedding(enc.image_features, best_frame),
+            excluded=excluded,
             consensus=self._consensus(consensus_src, det_scores, origins, best_idx,
                                       consensus_floor),
             trained=trained_used,
             best_frame=best_frame,
+            indices=list(idx),
+            primary=primary,
+            anchored=anchored,
         )
 
     def _apply_priors(self, probs: torch.Tensor, priors: dict[str, float]) -> torch.Tensor:
@@ -579,6 +655,17 @@ class Classifier:
         blends the result with the zero-shot answer — see aviary/app/probe.py.
         """
         vector = image_features[best_frame].to(torch.float16).cpu().numpy()
+        # Remembered for the debug output, which wants every crop's vector, not only the
+        # winners'. Per-call state on a single-request-at-a-time service (the GPU lock).
+        self._last_features = image_features
+        return base64.b64encode(vector.tobytes()).decode("ascii")
+
+    def crop_embedding(self, index: int) -> str:
+        """The most recent call's embedding for crop ``index`` (debug output only)."""
+        feats = getattr(self, "_last_features", None)
+        if feats is None or not (0 <= index < feats.shape[0]):
+            return ""
+        vector = feats[index].to(torch.float16).cpu().numpy()
         return base64.b64encode(vector.tobytes()).decode("ascii")
 
     # ------------------------------------------------------------------ diagnostics

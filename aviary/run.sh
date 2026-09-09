@@ -9,6 +9,13 @@ set -e
 export FRIGATE_URL="$(bashio::config 'frigate_url')"
 export BIRDNET_URL="$(bashio::config 'birdnet_url')"
 export FRIGATE_TOPIC="$(bashio::config 'frigate_topic')"
+# Optional (str?): bashio prints "null" for an unset optional option, and an empty
+# string means the user turned visits off — both must reach the app as blank.
+review_topic="$(bashio::config 'frigate_review_topic')"
+if [ "${review_topic}" = "null" ]; then
+    review_topic=""
+fi
+export FRIGATE_REVIEW_TOPIC="${review_topic}"
 export BIRDNET_TOPIC="$(bashio::config 'birdnet_topic')"
 export BACKFILL_ON_START="$(bashio::config 'backfill_on_start')"
 export IGNORE_UNCLASSIFIED="$(bashio::config 'ignore_unclassified')"

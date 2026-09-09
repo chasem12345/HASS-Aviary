@@ -7,7 +7,27 @@
     {{ counts.actionable }} detection{{ '' if counts.actionable == 1 else 's' }} without a species
     {%- if counts.pending %} · {{ counts.pending }} still being identified{% endif %}
   </span>
+  {# The other queue: the tracked bird has a name but a second bird in the same event
+     does not. Kept apart so a named detection never re-enters the main list. #}
+  {% if counts.subjects or scope == 'subjects' %}
+  <span class="count">
+    {% if scope == 'subjects' %}
+      <a class="filter-chip" href="{{ u('unidentified') }}">← detections without a species</a>
+    {% else %}
+      <a class="filter-chip" href="{{ u('unidentified') }}?scope=subjects">
+        {{ counts.subjects }} other bird{{ '' if counts.subjects == 1 else 's' }} in view need a name →</a>
+    {% endif %}
+  </span>
+  {% endif %}
 </div>
+{% if scope == 'subjects' and groups %}
+<p class="setting-help">
+  These detections have a species, but the identifier found <strong>another bird in the
+  same footage</strong> it could not name. Each shows up under <em>Also in view</em> on the
+  card with its own crop and shortlist — pick a name there, or ✎ to type one. Naming it
+  teaches the identifier from that bird's crop alone.
+</p>
+{% endif %}
 
 {% if not identify_enabled %}
 {# Reachable with the feature off only if rows were left behind by a previous run, or if
@@ -19,12 +39,14 @@
 {% endif %}
 
 {% if groups %}
+{% if scope != 'subjects' %}
 <p class="setting-help">
   Frigate saw a bird here but no species could be confirmed — either the identification
   scored below your thresholds, or it could not be completed. Use <strong>↻ re-identify</strong>
   to try again after changing a threshold or the species list. These are not counted as a
   species and do not appear in the registry.
 </p>
+{% endif %}
 {# Bulk actions over the cards on THIS page (pagination loads more). Re-identify queues
    through the normal identification workers; delete never touches Frigate — both are
    explained in the JS confirms. The bar is why app.js binds bulk mode only here. #}

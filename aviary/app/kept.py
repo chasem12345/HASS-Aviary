@@ -30,6 +30,13 @@ log = logging.getLogger("aviary.kept")
 # you preview is exactly what gets kept.
 _DEFAULT_PAD_S = 10.0
 
+# Longest recordings window any player button or export may request. A malformed
+# request must not make ffmpeg remux an hour of 4K; sized to fit a long event plus
+# clip_pad_seconds at its maximum (300 each side). Shared by the media route (which
+# rejects longer windows) and the visit card (which clamps to it, so a marathon visit
+# plays its first 15 minutes instead of a 400).
+RECORDING_MAX_S = 900.0
+
 
 def view_pad(settings) -> float:
     """The configured clip_pad_seconds, defensively (settings may be a test stub)."""

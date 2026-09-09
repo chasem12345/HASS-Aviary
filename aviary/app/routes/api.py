@@ -13,8 +13,8 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from .. import (
-    bootstrap, crops, db, identify, ingest, kept, notify, probe, proxy, species_audio,
-    species_info, species_photos, traits,
+    backfill, bootstrap, crops, db, identify, ingest, kept, notify, probe, proxy,
+    species_audio, species_info, species_photos, traits,
 )
 from . import ingress_url, set_theme
 
@@ -434,6 +434,61 @@ async def set_species(det_id: int, species: str = Query(..., min_length=1),
     return {"ok": True, "common_name": name, "scientific_name": sci}
 
 
+@router.get("/detections/{det_id}/subjects")
+async def list_subjects(det_id: int):
+    """Every bird the identification service found in this detection's event."""
+    det = await run_in_threadpool(db.detection_by_id, det_id)
+    if det is None:
+        return {"ok": False, "error": "detection not found"}
+    return {"ok": True, "subjects": await run_in_threadpool(db.subjects_for, det_id)}
+
+
+@router.post("/detections/{det_id}/subjects/{idx}/species")
+async def set_subject_species(det_id: int, idx: int, species: str = Query(..., min_length=1),
+                              scientific: Optional[str] = Query(None)):
+    """Name one OTHER bird in an event by hand.
+
+    The primary (idx 0) is the detection itself and goes through ``set_species`` so the
+    two paths cannot drift. A label here is stored on that bird's own row and its own
+    embedding — the whole point of subjects: it can never train the probe on a picture
+    of the tracked bird.
+    """
+    if idx == 0:
+        return await set_species(det_id, species, scientific)
+    det = await run_in_threadpool(db.detection_by_id, det_id)
+    if det is None:
+        return {"ok": False, "error": "detection not found"}
+    name = species.strip()
+    if not name or name.lower() == db.UNNAMED:
+        return {"ok": False, "error": "that is not a species name"}
+    if await run_in_threadpool(db.is_blacklisted_name, name):
+        return {"ok": False, "error": f"{name} is blacklisted; remove it from the "
+                                      f"blacklist first"}
+    sci = (scientific or "").strip() or await run_in_threadpool(db.scientific_name_for, name)
+    ok = await run_in_threadpool(db.set_subject_species_manually, det_id, idx, name, sci)
+    if not ok:
+        return {"ok": False, "error": "no such bird in this detection"}
+    # A person naming it is the strongest signal there is — same reasoning as set_species.
+    await run_in_threadpool(db.confirm_species, name)
+    await _refresh_probe()
+    return {"ok": True, "common_name": name, "scientific_name": sci}
+
+
+@router.post("/detections/{det_id}/subjects/{idx}/reject")
+async def reject_subject_species(det_id: int, idx: int, species: str = Query(..., min_length=1)):
+    """"That other bird is not a <species>." Recorded for this bird only; no GPU call —
+    its own shortlist is already stored, so the card offers the next candidate."""
+    if idx == 0:
+        return {"ok": False, "error": "use ✗ wrong on the detection for the tracked bird"}
+    ok = await run_in_threadpool(db.reject_subject, det_id, idx, species.strip())
+    if not ok:
+        return {"ok": False, "error": "no such bird in this detection"}
+    await _refresh_probe()
+    remaining = [s for s in await run_in_threadpool(db.secondary_subjects_for, det_id)
+                 if s["idx"] == idx]
+    return {"ok": True, "subject": remaining[0] if remaining else None}
+
+
 async def _backfill_then_refresh(det: dict) -> None:
     try:
         if await identify.backfill_embedding(det):
@@ -456,6 +511,27 @@ async def identify_species():
 async def probe_stats():
     """What the few-shot probe has learned so far."""
     return probe.stats()
+
+
+@router.post("/visits/rebuild")
+async def rebuild_visits(request: Request):
+    """Forget every visit and re-import Frigate's review items from scratch.
+
+    Visits are a mirror of Frigate's review items, so there is nothing to "recompute"
+    locally — this re-pulls whatever Frigate currently holds. For recovering from a
+    Frigate-side change (review settings, a restore) or a suspected mismatch. Events
+    whose review item Frigate no longer retains simply end up ungrouped again.
+    """
+    settings = request.app.state.settings
+    if not settings.frigate_url:
+        return {"ok": False, "error": "frigate_url not configured"}
+    if not settings.frigate_review_topic:
+        return {"ok": False, "error": "visits are disabled (frigate_review_topic is blank)"}
+    await run_in_threadpool(db.reset_visits)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+        imported = await backfill.backfill_frigate_reviews(client, settings)
+    stats = await run_in_threadpool(db.visit_stats)
+    return {"ok": True, "review_items": imported, **stats}
 
 
 @router.post("/probe/rebuild")

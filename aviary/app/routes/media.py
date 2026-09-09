@@ -18,7 +18,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 
-from .. import crops, db, proxy, species_audio, species_info, species_photos
+from .. import crops, db, kept, proxy, species_audio, species_info, species_photos
 from ..notify import species_slug
 
 log = logging.getLogger("aviary.media")
@@ -56,6 +56,16 @@ async def frigate_crop(event_id: str):
     path = await run_in_threadpool(crops.path_if_exists, event_id)
     if not path:
         return JSONResponse({"error": "no stored crop for event"}, status_code=404)
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@router.get("/frigate/{event_id}/crop/{idx}.jpg", name="frigate_subject_crop")
+async def frigate_subject_crop(event_id: str, idx: int):
+    """The crop of one OTHER bird the identification service found in this event
+    (``idx`` ≥ 1; 0 is the primary, served by ``frigate_crop``)."""
+    path = await run_in_threadpool(crops.path_if_exists, event_id, idx)
+    if not path:
+        return JSONResponse({"error": "no stored crop for subject"}, status_code=404)
     return FileResponse(path, media_type="image/jpeg")
 
 
@@ -215,9 +225,9 @@ async def frigate_download(event_id: str, request: Request):
 # but from the paired camera's continuous recordings (Frigate's recordings-by-window
 # endpoint works for any recorded camera, event or not).
 
-# A malformed request must not make ffmpeg remux an hour of 4K. Sized to fit a long
-# event plus clip_pad_seconds at its maximum (300 each side).
-_RECORDING_MAX_S = 900.0
+# The cap lives in kept.py so the visit card can clamp to the same number this route
+# enforces.
+_RECORDING_MAX_S = kept.RECORDING_MAX_S
 _CAMERA_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
 
 

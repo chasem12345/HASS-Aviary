@@ -113,7 +113,10 @@
   <div class="card">
     <h2>Latest detection</h2>
     {% if latest %}
-      <div class="hero-card">{{ cards.detection_card(latest) }}</div>
+      <div class="hero-card">
+        {% if latest.kind == 'visit' %}{{ cards.visit_card(latest) }}
+        {% else %}{{ cards.detection_card(latest) }}{% endif %}
+      </div>
     {% else %}
       <p class="empty">Nothing yet.</p>
     {% endif %}

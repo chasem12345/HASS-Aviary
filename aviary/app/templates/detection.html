@@ -35,6 +35,24 @@
     <dt>Zone</dt>
     <dd>{{ d.zone | replace('_', ' ') }}</dd>
     {% endif %}
+    {% if present and present | length > 1 %}
+    <dt>Birds in view</dt>
+    <dd>
+      {% for p in present %}<a href="{{ u('species_detail', name=p.common_name) }}">{{ p.common_name }}</a>{% if p.source == 'primary' %} (tracked){% endif %}{{ ', ' if not loop.last }}{% endfor %}
+    </dd>
+    {% endif %}
+    {% if visit %}
+    <dt>Visit</dt>
+    <dd>
+      <a href="{{ u('visit_detail', visit_id=visit.id) }}">
+        {{ visit.member_count }} tracked object{{ '' if visit.member_count == 1 else 's' }},
+        {{ visit.start_time | fmt_time }}{% if visit.end_time %} – {{ visit.end_time | fmt_time }}{% else %} (in progress){% endif %}
+      </a>
+      {% if visit.species | length > 1 %}
+      <span class="muted">· {{ visit.species | map(attribute='common_name') | join(', ') }}</span>
+      {% endif %}
+    </dd>
+    {% endif %}
     {% if d.source_ref %}
     <dt>Event reference</dt>
     <dd class="mono">{{ d.source_ref }}</dd>

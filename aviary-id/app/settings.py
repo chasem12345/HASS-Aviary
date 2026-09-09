@@ -143,6 +143,22 @@ class Settings:
     fetch_timeout: float = 30.0
     ffmpeg_timeout: float = 60.0
 
+    # --- subjects (which crops are the same bird) ---------------------------------
+    # See subjects.py. Cosine similarity between BioCLIP image embeddings at or above
+    # which two crops (or two clusters) are the same individual seen twice. The same bird
+    # seconds apart on one camera sits around 0.8–0.95; two different species around
+    # 0.3–0.6; two individuals of one species in between — merging those is harmless.
+    subject_sim_merge: float = 0.75
+    # Below this, Frigate's own crop (thumbnail/snapshot) and the boxes on its tracked
+    # path disagree so badly that the path estimate is not trusted for this event.
+    subject_sim_split: float = 0.55
+    # A second bird needs this many crops to be reported — or one crop the detector was
+    # at least SUBJECT_SINGLE_DET sure of. Keeps a stray reflection from becoming a bird.
+    subject_min_crops: int = 2
+    subject_single_det: float = 0.5
+    # Primary plus at most this many others per event.
+    subject_max: int = 3
+
     # --- species vocabulary -------------------------------------------------------
     # Free key from https://ebird.org/api/keygen. Without it the service falls back to
     # the bundled common-North-American-yard-birds list.
@@ -205,6 +221,11 @@ def load_settings() -> Settings:
         crop_padding=_as_float("CROP_PADDING", 0.15),
         fetch_timeout=_as_float("FETCH_TIMEOUT", 30.0),
         ffmpeg_timeout=_as_float("FFMPEG_TIMEOUT", 60.0),
+        subject_sim_merge=min(1.0, max(0.0, _as_float("SUBJECT_SIM_MERGE", 0.75))),
+        subject_sim_split=min(1.0, max(0.0, _as_float("SUBJECT_SIM_SPLIT", 0.55))),
+        subject_min_crops=max(1, _as_int("SUBJECT_MIN_CROPS", 2)),
+        subject_single_det=min(1.0, max(0.0, _as_float("SUBJECT_SINGLE_DET", 0.5))),
+        subject_max=max(1, _as_int("SUBJECT_MAX", 3)),
         ebird_api_key=os.environ.get("EBIRD_API_KEY", "").strip(),
         ebird_region=os.environ.get("EBIRD_REGION", "").strip(),
         ebird_refresh_days=_as_int("EBIRD_REFRESH_DAYS", 30),

@@ -373,14 +373,80 @@ Notes:
 - Set `notify_new_species: false` in the add-on options to turn all detection events
   off.
 
-## Daily recap
+## Visits
 
-The **Recap** page (top navigation) is one local day at a glance: every identified
-species active that day with seen/heard counts, first and last detection times, a
-thumbnail from the day's own footage, and a **new!** badge on species whose first-ever
-detection happened that day. Navigate with the previous/next links or the date picker;
-"today" uses the same local-midnight boundary as the dashboard stats. Species without a
-confirmed identification (review-queue rows) are not counted.
+Frigate's tracker rarely follows one bird for the length of its stay. A bird hopping
+around a bath for ninety seconds is routinely a dozen or more short *tracked objects* —
+each its own event id with a few seconds of clip — because every hop, dip or flutter
+re-identifies it as a new object. Frigate's own Review page hides this by grouping the
+objects on one camera into a single **review item** that lasts until nothing has been
+tracked for `review.detections.cutoff_time` seconds (30 by default).
+
+Aviary mirrors those review items as **visits**: it listens on `frigate/reviews` (and
+imports `GET /api/review` on start), and every review item that involved a `bird`
+becomes one visit holding the events Frigate listed under it. Nothing is inferred or
+timed on Aviary's side — a visit is exactly what Frigate's Review page shows, with the
+same boundaries, so the grouping window is tuned in one place (Frigate's `review`
+config) and the two UIs never disagree about what "one sighting" was. A visit's start and
+end are widened to cover its events, since the last tracked object can outlive Frigate's
+review item by a few seconds.
+
+What changes:
+
+- **One card per visit** on Recent, the species page and the dashboard: the species
+  present (each with the crop of the event that identified it best, and a count), how
+  long it lasted, and **▶ play visit**, which plays the camera's own recordings across
+  the whole span (±`clip_pad_seconds`, capped at 15 minutes) — continuous footage, not
+  a two-second fragment. The individual tracked objects fold away under an expander and
+  keep every per-event control (labels, ✗ wrong, 📌 keep, delete). A visit can hold
+  more than one species: a cardinal and a wren at the bath together are two birds, and
+  the card lists both. Events still waiting for a name show as an *n unidentified* chip
+  that links to the review queue.
+- **One notification per species per visit.** The first event identified as a species
+  fires `aviary_detection`; later events of the same species in the same visit stay
+  silent; a *different* species in the same visit still announces. The payload gains
+  `visit_id`, `visit_path` (a tap target for the whole visit) and `frigate_review_id`,
+  and the quiet-gap fields (`seconds_since_species_last_seen` and friends) are measured
+  against previous visits, not sibling events. The blueprint needs no change; its
+  per-species cooldown now only ever matters *across* visits.
+- **"Seen" counts count visits.** The dashboard tiles, leaderboard, species pages, recap
+  and charts count a species once per visit rather than once per tracked object. Audio
+  detections are unaffected. Frigate events with no review item — history older than
+  Frigate's review retention, or from before review items existed — still count once
+  each and render as their own cards, exactly as before.
+- **Per camera.** Frigate groups review items per camera, so a wide detection camera
+  and a PTZ camera that both track the same bird produce two visits (unless the PTZ is
+  in `ignore_cameras`); the **⇄ view on** button bridges them.
+
+Requirements: Frigate 0.14 or newer, with `review.detections` covering `bird` (the
+default — it covers every tracked label unless you restrict `labels`). Visits arrive on
+the first start after updating, from Frigate's review API; how far back that reaches is
+Frigate's review retention. `POST /api/visits/rebuild` (no UI) forgets every visit and
+re-imports from Frigate — for recovering from a Frigate-side change. Leave
+`frigate_review_topic` blank to turn visits off entirely.
+
+## Recap
+
+The **Recap** page (top navigation) is a window of time at a glance: every identified
+species active in it with seen/heard counts (seen = visits, see above), first and last
+detection, a thumbnail from the window's own footage, and a **new!** badge on species
+whose first-ever detection happened inside it. It opens on today. The chips above the
+title switch the window:
+
+- **Day** — one local day (the original view). Times are shown as clock times.
+- **Week** — Monday to Sunday around the chosen date; week-to-date while it is this week.
+- **Month** — the chosen date's month; month-to-date while it is this month.
+- **Year** — the chosen date's year; year-to-date while it is this year. Together with
+  the *New this period* list this is the year-in-review view.
+- **Custom** — any from/to span.
+
+Multi-day windows show first/last as dates, add a *days active* count per species (how
+many of the window's days the bird turned up), and pull the species that were new in the
+window into a **New this period** list at the top. Step with the previous/next links
+(by one day, week, month, year or span) or pick a date; "today" uses the same
+local-midnight boundary as the dashboard stats. Species without a confirmed
+identification (review-queue rows) are not counted. Old `/recap?day=YYYY-MM-DD` links
+still open that day.
 
 ## Viewing the same moment on the other camera
 
@@ -575,6 +641,31 @@ its correct name instead of being discarded. **If you blacklisted a species that
 visits and you simply don't want it recorded, turn this off** — otherwise every one of its
 visits gets recorded as some other species.
 
+### Other birds in view
+
+Frigate's event is one tracked bird, but the footage is not: the snapshot and every clip
+frame show whatever else was there, and the identifier finds all of it. Before 0.27.0
+every bird in view was averaged into one answer — a cardinal and a wren at the bath came
+back as a 50/50 split that named neither, landed in Unidentified, and picking either name
+stored *one* bird's picture under it, poisoning what the identifier learned.
+
+With **aviary-id 0.10.0+** the identifier first works out which crops are the same bird
+(Frigate's own crop and tracked path first, then image similarity), classifies each bird
+on its own crops, and reports the tracked bird as the answer plus every other bird as
+**Also in view** on the card — each with its own crop, name (or shortlist), and controls:
+
+- Pick a name from the shortlist or **✎** to type one: the label is stored against
+  *that bird's* crop and embedding. It can never teach the identifier from a picture of
+  the tracked bird, and vice versa.
+- **✗** rules a species out for that bird only; the next candidate is offered.
+- A visit's species strip and the detection page's *Birds in view* list both include
+  named other birds, so the wren at the cardinal's bath counts as present.
+
+Other birds that could not be named do not enter the main Unidentified queue (the
+detection itself has a species); the page shows *N other birds in view need a name →*
+for them instead. With an older aviary-id nothing changes: the event is one bird, as
+before.
+
 ### Learning from your own birds
 
 Identification starts out *zero-shot*: the image is compared against the species **name**.
@@ -624,6 +715,7 @@ stay independent.
 | `frigate_url` | Base URL of Frigate, e.g. `http://ccab4aaf-frigate:5000`. Used to proxy clips/snapshots. |
 | `birdnet_url` | Base URL of BirdNET-Go, e.g. `http://a0d7b954-birdnet-go:8080`. Used to proxy audio. |
 | `frigate_topic` | MQTT topic Frigate publishes to (default `frigate/events`). |
+| `frigate_review_topic` | Frigate's review-item topic (default `frigate/reviews`); must share the same `topic_prefix` as `frigate_topic`. Each bird review item becomes one **visit** — see [Visits](#visits). Blank disables visits. Needs Frigate 0.14+. |
 | `birdnet_topic` | MQTT topic BirdNET-Go publishes to (default `birdnet`). |
 | `backfill_on_start` | Import existing detections from Frigate/BirdNET-Go HTTP APIs on startup (default `true`). Idempotent. |
 | `ignore_unclassified` | Skip detections with no species — i.e. Frigate `bird` objects with no `sub_label` (default `true`). Set `false` to also record generic "bird" sightings. |
@@ -662,7 +754,7 @@ export DATA_DIR=./_data
 export MQTT_HOST=localhost MQTT_PORT=1883
 export FRIGATE_URL=http://localhost:5000
 export BIRDNET_URL=http://localhost:8080
-export FRIGATE_TOPIC=frigate/events BIRDNET_TOPIC=birdnet
+export FRIGATE_TOPIC=frigate/events FRIGATE_REVIEW_TOPIC=frigate/reviews BIRDNET_TOPIC=birdnet
 export LOG_LEVEL=debug
 
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8099
@@ -676,3 +768,19 @@ python scripts/publish_samples.py           # from the repo root
 
 Open http://localhost:8099/ — the ingress-path middleware is a no-op when no `X-Ingress-Path`
 header is present, so the UI works directly too.
+
+To replay a real visit — one Frigate review item and every event it lists, in either
+arrival order — against a local broker:
+
+```bash
+python scripts/replay_frigate_review.py --frigate http://<frigate>:5000 \
+    --review <review item id> --host localhost --order events-first \
+    --label "0=Northern Cardinal" --label "3=Carolina Wren"
+```
+
+The tests exercise the same ingest handlers in-process, with no broker:
+
+```bash
+pip install pytest
+python -m pytest tests -q        # from the aviary directory
+```

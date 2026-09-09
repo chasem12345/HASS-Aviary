@@ -1,0 +1,7 @@
+# Test-only dependencies. The subject partition (app/subjects.py) and the crop selection
+# (app/pipeline.py) are deliberately torch-free so they can be tested on any machine:
+#   pip install -r requirements-dev.txt && python -m pytest tests -q
+pytest
+numpy
+pillow
+httpx

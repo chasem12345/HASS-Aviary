@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.27.0
+
+- **Visits: Frigate's fragments are one sighting again.** Frigate's tracker splits a
+  single bird's stay into many short tracked objects — a live check on one birdbath
+  visit found **25 event ids over 187 seconds**, most 1–5 s long — and Aviary showed every
+  one as its own "seen" card with a few-second clip. Frigate's Review page hides this by
+  grouping the objects into one *review item*; Aviary now mirrors those review items as
+  **visits** (new `frigate_review_topic` option, default `frigate/reviews`, plus a
+  `GET /api/review` import on every start). Recent, the species page and the dashboard
+  show one card per visit: the species present (each with its best crop and a count),
+  the duration, **▶ play visit** for the camera's recordings across the whole span, and
+  the individual tracked objects folded under an expander with all their controls. A
+  visit can hold more than one species — a cardinal and a wren together are two birds.
+  New `/visit/<id>` page; detection pages link to their visit. Nothing is timed or
+  inferred on Aviary's side: the grouping window is Frigate's `review.detections.cutoff_time`,
+  so it is tuned in one place. Needs Frigate 0.14+. See *Visits* in the docs.
+- **One notification per species per visit.** The first event identified as a species
+  fires `aviary_detection`; later events of the same species in the same visit stay
+  silent; a different species still announces. Payload gains `visit_id`, `visit_path`
+  and `frigate_review_id`; the quiet-gap fields are measured against previous visits.
+  Live Frigate notifications now always carry the detection deep link (`panel_path`)
+  — the row id was missing before.
+- **"Seen" counts count visits.** Dashboard tiles, leaderboard, species pages, recap and
+  charts count a species once per visit, not once per tracked object. Audio counts are
+  unchanged; Frigate events with no retained review item still count once each.
+- **Two birds in one clip are two birds** (pairs with **aviary-id 0.10.0**). The
+  identifier used to average every crop in an event into one answer, so a cardinal and
+  a wren at the bath came back 50/50, went to Unidentified, and naming either stored one
+  bird's picture under it — poisoning what it learned. The service now partitions the
+  crops into individual birds (Frigate's own crop and tracked path first, then image
+  similarity) and classifies each on its own; the tracked bird is the answer, and the
+  others appear as **Also in view** on the card with their own crop, name or shortlist,
+  ✎ and ✗. Labels and rejections on those birds are stored on their own rows and
+  embeddings, carry across a re-identify by matching embeddings, and feed the learning
+  probe alongside the primaries. Visit cards and detection pages list them as species
+  present. Unidentified gains an *other birds in view need a name* queue. Older
+  services keep working exactly as before. See *Other birds in view* in the docs.
+- **Recap date windows.** The Recap page gains Day · Week · Month · Year · Custom
+  ranges (month-to-date and year-to-date when the window contains today), prev/next
+  stepping by the chosen unit, a *New this period* list for multi-day windows, and the
+  number of active days per species. Existing `/recap?day=` links keep working.
+
 ## 0.26.0
 
 - **Every detection now has its own page, and notification taps open it.** A new

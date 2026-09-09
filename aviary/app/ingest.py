@@ -213,16 +213,31 @@ def _canonicalize(row: dict) -> None:
 
 
 def _announce(row: dict, live: bool) -> None:
-    """Fire an aviary_detection event once per classified detection.
+    """Fire an aviary_detection event once per classified detection — or, for a Frigate
+    event that belongs to a visit, once per species per VISIT.
 
     An unclassified row is skipped here but NOT marked announced, so a Frigate event
     that gains its ``sub_label`` on a later message gets announced at that point —
     exactly when the species becomes known.
+
+    The visit rule is what stops a bird Frigate tracked as a dozen short objects from
+    sending a dozen notifications: the first member identified as a species claims the
+    (visit, species) pair in the database, later members of the same species find it
+    taken and stay silent, and a *different* species in the same visit still announces.
+    Events with no visit (no review item retained, or visits disabled) fall back to the
+    per-event rule.
     """
     if is_unclassified(row):  # generic 'bird' is never a species
         return
     name = row["common_name"].lower()  # known-species set is case-insensitive
     key = f"{row['source']}:{row['source_ref']}"
+    visit_id = row.get("visit_id") if row.get("source") == "frigate" else None
+    if visit_id is not None:
+        # Persisted claim, not the in-memory set: identification results land seconds
+        # after the event and may straddle a restart. Backfilled rows claim too (without
+        # notifying), exactly as they mark themselves announced below.
+        if not db.claim_visit_announcement(int(visit_id), row["common_name"], row.get("id")):
+            return
     with _known_lock:
         if key in _announced_refs:
             return
@@ -350,6 +365,62 @@ def handle_frigate(payload: bytes) -> None:
     # (or is about to have) the finished clip for the notification's tap action.
     if store_row(row, announce=ended):
         log.debug("Frigate detection upserted: %s (%s)", row["common_name"], row["source_ref"])
+
+
+def build_review_row(obj: dict) -> Optional[dict]:
+    """Build a visits row from a Frigate review item — the MQTT ``after`` object or an
+    item from ``GET /api/review`` (same shape). None unless a bird was involved and the
+    camera is not ignored.
+
+    ``refs`` is the item's ``data.detections`` — the tracked-object ids Frigate grouped
+    under it, which is the whole point: those are the events that become one visit.
+    """
+    if not isinstance(obj, dict):
+        return None
+    review_id = obj.get("id")
+    camera = obj.get("camera")
+    start = _as_float(obj.get("start_time"))
+    if not review_id or not camera or start is None:
+        return None
+    data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
+    objects = {str(o).strip().lower() for o in (data.get("objects") or []) if o}
+    if "bird" not in objects:
+        return None
+    if str(camera).strip().lower() in _ignore_cameras:
+        return None
+    zones = ", ".join(str(z) for z in (data.get("zones") or []) if z) or None
+    return {
+        "review_id": str(review_id),
+        "camera": str(camera).strip().lower(),
+        "start_time": start,
+        "end_time": _as_float(obj.get("end_time")),
+        "severity": obj.get("severity"),
+        "zones": zones,
+        "raw_json": _raw_json(obj),
+        "refs": [str(d) for d in (data.get("detections") or []) if d],
+    }
+
+
+def handle_frigate_review(payload: bytes) -> None:
+    """Handle a ``frigate/reviews`` message: ``{"type": new|update|end, "before", "after"}``.
+
+    Every message re-stamps the item's full member list (Frigate appends to it as more
+    objects join the activity), and ``end`` carries the final bounds. Nothing here is
+    timed or inferred: the visit is exactly Frigate's review item.
+    """
+    try:
+        msg = json.loads(payload)
+    except (ValueError, TypeError):
+        log.warning("Frigate reviews: could not decode payload")
+        return
+    after = msg.get("after") or msg.get("before") or {}
+    row = build_review_row(after)
+    if row is None:
+        return
+    visit_id = db.upsert_visit(row)
+    log.debug("Visit %s (%s) %s: review %s, %d member(s)%s", visit_id, row["camera"],
+              msg.get("type"), row["review_id"], len(row["refs"]),
+              "" if row["end_time"] is None else ", ended")
 
 
 def _dispatch_for_identification(row: dict) -> None:

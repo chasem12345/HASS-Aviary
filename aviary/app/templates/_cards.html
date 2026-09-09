@@ -108,6 +108,45 @@
       </button>
       {% endif %}
     </div>
+    {# Other birds the identification service found in this event, each on its own crop,
+       with its own name (or shortlist) and its own controls. Labelling one of these
+       writes ITS embedding under the name — never the tracked bird's. #}
+    {% set others = subjects_for(d.id) if d.source == 'frigate' and d.id_status else [] %}
+    {% if others %}
+    <div class="subjects">
+      <span class="subjects-label">Also in view:</span>
+      {% for s in others %}
+      <div class="subject-chip{{ ' subject-unnamed' if not s.display_name }}" data-id="{{ d.id }}" data-subject="{{ s.idx }}">
+        {% if has_crop(d.source_ref, s.idx) %}
+        <img loading="lazy" alt="" src="{{ u('frigate_subject_crop', event_id=d.source_ref, idx=s.idx) }}">
+        {% endif %}
+        <div class="subject-body">
+          {% if s.display_name %}
+          <a class="subject-name" href="{{ u('species_detail', name=s.display_name) }}">{{ s.display_name }}</a>
+          {% if s.id_status == 'manual' %}<span class="subject-how" title="named by you">✎</span>
+          {% elif s.score is not none %}<span class="subject-how">{{ s.score | fmt_pct }}</span>{% endif %}
+          {% if identify_active %}
+          <button type="button" class="guess guess-other subject-reject" data-id="{{ d.id }}"
+                  data-subject="{{ s.idx }}" data-name="{{ s.display_name }}"
+                  title="Not a {{ s.display_name }} — rule it out for this bird">✗</button>
+          {% endif %}
+          {% else %}
+          <span class="subject-name muted">unidentified</span>
+          {% for g in s.candidates | from_json %}
+            {% if g.name not in s.rejected %}
+            <button type="button" class="guess" data-id="{{ d.id }}" data-subject="{{ s.idx }}"
+                    data-species="{{ g.name }}" data-sci="{{ g.sci or '' }}"
+                    title="Name this bird {{ g.name }}">{{ g.name }} <span class="guess-score">{{ g.score | fmt_pct }}</span></button>
+            {% endif %}
+          {% endfor %}
+          <button type="button" class="guess guess-other" data-id="{{ d.id }}" data-subject="{{ s.idx }}"
+                  title="Name this bird yourself">✎</button>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
     {# Identification actions get their own row. The row above is already at four items on
        a 260px card, and .meta has no flex-wrap by design — crowding these in would squash
        the scrub/download controls that were there first.
@@ -177,6 +216,105 @@
       {% endif %}
     </div>
     {% endif %}
+  </div>
+</article>
+{% endmacro %}
+
+{# One VISIT: a Frigate review item — every tracked object Frigate grouped into one
+   stretch of activity on one camera. The card leads with the species present (each with
+   the crop of the member that identified it best), plays the camera's recordings across
+   the whole span, and folds the individual events away under an expander. Members render
+   with detection_card, so every per-event control (label, ✗, 📌, delete) is still there. #}
+{% macro visit_card(v, highlight_after=None, absolute_time=False) %}
+{% set newest = (v.members | map(attribute='start_time') | max) if v.members else v.start_time %}
+<article class="det-card visit-card{{ ' new' if highlight_after and newest > highlight_after }}{{ ' in-progress' if v.in_progress }}">
+  <div class="visit-media">
+    {% if v.species %}
+      {% set lead = v.species[0].rep %}
+      {% set lead_crop = u('frigate_crop', event_id=lead.source_ref) if has_crop(lead.source_ref) else None %}
+      <img loading="lazy" alt="{{ v.species[0].common_name }}"
+           src="{{ lead_crop or u('frigate_snapshot', event_id=lead.source_ref) ~ '?thumbnail=true' }}"
+           onerror="this.remove()">
+    {% elif v.fallback %}
+      <img loading="lazy" alt="bird"
+           src="{{ u('frigate_snapshot', event_id=v.fallback.source_ref) }}?thumbnail=true"
+           onerror="this.remove()">
+    {% else %}
+      <div class="nomedia"><span class="bird-mark">🐦</span><span>no media</span></div>
+    {% endif %}
+    <div class="visit-tag">
+      <span class="badge badge-frigate">Visit</span>
+      <span class="visit-camera">{{ v.camera }}</span>
+      {% if v.in_progress %}<span class="visit-live" title="Frigate still has this review item open">● live</span>
+      {% else %}<span class="visit-duration" title="{{ v.start_time | fmt_time }} – {{ v.end_time | fmt_time }}">{{ v.duration | fmt_duration }}</span>{% endif %}
+    </div>
+  </div>
+  <div class="det-body">
+    {# Species strip: everything identified in this visit, first-seen order. A visit with
+       a cardinal AND a wren lists both — each is its own bird, with its own crop. #}
+    <div class="visit-species">
+      {% for s in v.species %}
+      <a class="visit-sp" href="{{ u('species_detail', name=s.common_name) }}"
+         title="{{ s.common_name }}{% if s.scientific_name %} ({{ s.scientific_name }}){% endif %} · {{ s.count }} event{{ '' if s.count == 1 else 's' }}">
+        {# The crop of the bird itself — a second bird found in another bird's event has
+           its own crop file, keyed by its subject index. #}
+        {% set sidx = s.rep.subject_idx or 0 %}
+        {% set crop = (u('frigate_subject_crop', event_id=s.rep.source_ref, idx=sidx) if sidx else u('frigate_crop', event_id=s.rep.source_ref)) if has_crop(s.rep.source_ref, sidx) else None %}
+        <img loading="lazy" alt="" src="{{ crop or u('frigate_snapshot', event_id=s.rep.source_ref) ~ '?thumbnail=true' }}" onerror="this.remove()">
+        <span class="visit-sp-name">{{ s.common_name }}</span>
+        {% if s.rep.id_score is not none %}<span class="visit-sp-score">{{ s.rep.id_score | fmt_pct }}</span>{% endif %}
+        {% if s.count > 1 %}<span class="visit-sp-count">×{{ s.count }}</span>{% endif %}
+      </a>
+      {% else %}
+      <span class="visit-sp visit-sp-none">No species identified yet</span>
+      {% endfor %}
+      {% if v.unidentified %}
+      <a class="visit-sp visit-unid" href="{{ u('unidentified') }}"
+         title="Events in this visit that still need a name">
+        {{ v.unidentified | length }} unidentified
+      </a>
+      {% endif %}
+    </div>
+    <div class="meta">
+      {% if v.zones_list %}<span title="zones">{{ v.zones_list | join(', ') | replace('_', ' ') }}</span>{% endif %}
+      {% if absolute_time %}<a class="det-time" href="{{ u('visit_detail', visit_id=v.id) }}">{{ v.start_time | fmt_time }}</a>
+      {% else %}<a class="det-time" href="{{ u('visit_detail', visit_id=v.id) }}" title="{{ v.start_time | fmt_time }} · open visit">{{ v.start_time | fmt_rel }}</a>{% endif %}
+    </div>
+    <div class="meta sub id-actions">
+      {% if v.fallback and v.fallback.has_clip %}
+      {# The whole visit from the camera's own recordings (±clip_pad_seconds). Same player
+         and JS as a detection's ⤢ button; the lead event's clip is the fallback once the
+         recordings have expired. Offered only once Frigate has closed the review item. #}
+      <button type="button" class="clip-open"
+              title="Play the whole visit from {{ v.camera }}'s recordings{% if v.window and v.window.clamped %} (first 15 minutes){% endif %}"
+              data-event="{{ v.fallback.source_ref }}"
+              data-name="{{ (v.species[0].common_name if v.species else 'Visit') }} · {{ v.camera }}"
+              data-time="{{ v.start_time }}"
+              {%- if v.window %}
+              data-camera="{{ v.camera }}"
+              data-start="{{ v.window.start }}"
+              data-end="{{ v.window.end }}"
+              {%- endif %}>▶ play visit{% if v.window and v.window.clamped %} (first 15 min){% endif %}</button>
+      {% endif %}
+      {% set other_cam = camera_pairs.get(v.camera) if v.window else none %}
+      {% if other_cam %}
+      <button type="button" class="other-cam-open"
+              title="Play the {{ other_cam }} camera's recordings for this visit"
+              data-camera="{{ other_cam }}"
+              data-start="{{ v.window.start }}"
+              data-end="{{ v.window.end }}"
+              data-name="{{ (v.species[0].common_name if v.species else 'Visit') }}">
+        ⇄ view on {{ other_cam }}</button>
+      {% endif %}
+    </div>
+    <details class="visit-members">
+      <summary>{{ v.member_count }} tracked object{{ '' if v.member_count == 1 else 's' }}</summary>
+      <div class="cards">
+        {% for m in v.members | reverse %}
+          {{ detection_card(m, highlight_after, absolute_time) }}
+        {% endfor %}
+      </div>
+    </details>
   </div>
 </article>
 {% endmacro %}

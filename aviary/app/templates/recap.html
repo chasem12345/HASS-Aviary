@@ -1,15 +1,36 @@
 {% extends "base.html" %}
 {% block title %} · Recap{% endblock %}
 {% block content %}
+{# Range selector: the same anchor date viewed as a day, its week, its month (to date
+   while current), its year (to date while current), or a custom span. #}
+<div class="controls recap-ranges">
+  {% for r in ranges %}
+  <a class="filter-chip{{ ' active' if r == range }}"
+     href="{{ u('recap') }}?range={{ r }}&day={{ day }}{% if r == 'custom' %}&from={{ from }}&to={{ to }}{% endif %}">
+    {{ {'day': 'Day', 'week': 'Week', 'month': 'Month', 'year': 'Year', 'custom': 'Custom'}[r] }}
+  </a>
+  {% endfor %}
+</div>
+
 <div class="controls recap-nav">
-  <a class="filter-chip" href="{{ u('recap') }}?day={{ prev_day }}" title="{{ prev_day }}">‹ previous day</a>
+  {% if prev_url %}
+  <a class="filter-chip" href="{{ prev_url }}">‹ previous {{ 'span' if range == 'custom' else range }}</a>
+  {% endif %}
   <h1 class="recap-title">{{ day_label }}</h1>
-  {% if next_day %}
-  <a class="filter-chip" href="{{ u('recap') }}?day={{ next_day }}" title="{{ next_day }}">next day ›</a>
+  {% if next_url %}
+  <a class="filter-chip" href="{{ next_url }}">next {{ 'span' if range == 'custom' else range }} ›</a>
   {% endif %}
   <form method="get" action="{{ u('recap') }}" class="recap-jump">
-    <input type="date" name="day" value="{{ day }}" max="{{ today }}"
-           onchange="this.form.submit()" title="Jump to a date">
+    <input type="hidden" name="range" value="{{ range }}">
+    {% if range == 'custom' %}
+      <label>from <input type="date" name="from" value="{{ from }}" max="{{ today }}"
+             onchange="this.form.submit()" title="Window start"></label>
+      <label>to <input type="date" name="to" value="{{ to }}" max="{{ today }}"
+             onchange="this.form.submit()" title="Window end"></label>
+    {% else %}
+      <input type="date" name="day" value="{{ day }}" max="{{ today }}"
+             onchange="this.form.submit()" title="Jump to a date">
+    {% endif %}
   </form>
 </div>
 
@@ -17,14 +38,40 @@
 <p class="recap-summary">
   <strong>{{ totals.species }}</strong> species ·
   <strong>{{ totals.detections }}</strong> identified detection{{ '' if totals.detections == 1 else 's' }}
-  ({{ totals.seen }} seen / {{ totals.heard }} heard)
+  ({{ totals.seen }} seen / {{ totals.heard }} heard){% if multi %} · {{ days }} day{{ '' if days == 1 else 's' }}{% endif %}
 </p>
+
+{% if new_rows %}
+{# Multi-day windows only: the species whose first-ever detection fell inside the
+   window — for a year in review, the headline. #}
+<h2 class="recap-subhead">New this period</h2>
+<div class="recap-list recap-new-list">
+  {% for r in new_rows %}
+  <div class="recap-row">
+    {% if r.snapshot_ref %}
+    <img class="recap-thumb" loading="lazy" alt=""
+         src="{{ u('frigate_snapshot', event_id=r.snapshot_ref) }}?thumbnail=true" onerror="this.remove()">
+    {% else %}
+    <img class="recap-thumb" loading="lazy" alt=""
+         src="{{ u('species_image', name=r.common_name) }}" onerror="this.remove()">
+    {% endif %}
+    <div class="recap-name">
+      <a href="{{ u('species_detail', name=r.common_name) }}">{{ r.common_name }}</a>
+      <span class="recap-new">new!</span>
+      {% if r.scientific_name %}<div class="sci">{{ r.scientific_name }}</div>{% endif %}
+    </div>
+    <div class="recap-times" title="first detected">{{ r.first_label }}</div>
+  </div>
+  {% endfor %}
+</div>
+<h2 class="recap-subhead">Everything</h2>
+{% endif %}
 
 <div class="recap-list">
   {% for r in rows %}
   <div class="recap-row">
     {% if r.snapshot_ref %}
-    {# The day's own footage where we have it; the generic species photo otherwise
+    {# The window's own footage where we have it; the generic species photo otherwise
        (audio-only species), vanishing quietly when neither exists. #}
     <img class="recap-thumb" loading="lazy" alt=""
          src="{{ u('frigate_snapshot', event_id=r.snapshot_ref) }}?thumbnail=true"
@@ -39,16 +86,17 @@
       {% if r.scientific_name %}<div class="sci">{{ r.scientific_name }}</div>{% endif %}
     </div>
     <div class="recap-counts">
-      {% if r.seen %}<span class="badge badge-frigate">seen ×{{ r.seen }}</span>{% endif %}
+      {% if r.seen %}<span class="badge badge-frigate" title="visits on camera">seen ×{{ r.seen }}</span>{% endif %}
       {% if r.heard %}<span class="badge badge-birdnet">heard ×{{ r.heard }}</span>{% endif %}
+      {% if multi and r.days_active %}<span class="recap-days" title="days with at least one detection">{{ r.days_active }}/{{ days }} days</span>{% endif %}
     </div>
     <div class="recap-times" title="first – last detection">
-      {{ r.first_hm }}{% if r.last_hm != r.first_hm %} – {{ r.last_hm }}{% endif %}
+      {{ r.first_label }}{% if r.last_label != r.first_label %} – {{ r.last_label }}{% endif %}
     </div>
   </div>
   {% endfor %}
 </div>
 {% else %}
-<p class="recap-summary">No identified detections on this day.</p>
+<p class="recap-summary">No identified detections {{ 'on this day' if not multi else 'in this window' }}.</p>
 {% endif %}
 {% endblock %}

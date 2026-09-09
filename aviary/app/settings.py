@@ -38,6 +38,20 @@ def _pick(env_key: str, opts: dict, opt_key: str, default: str = "") -> str:
     return default
 
 
+def _pick_optional(env_key: str, opts: dict, opt_key: str, default: str) -> str:
+    """Like ``_pick`` but an explicitly EMPTY value means "off", not "use the default".
+
+    For options where blank is a meaningful choice (disable a topic). Only a value that
+    is absent everywhere falls back to the default.
+    """
+    val = os.environ.get(env_key)
+    if val is not None:
+        return val.strip()
+    if opt_key in opts and opts.get(opt_key) is not None:
+        return str(opts[opt_key]).strip()
+    return default
+
+
 def _pick_float(env_key: str, opts: dict, opt_key: str, default: float) -> float:
     try:
         return float(_pick(env_key, opts, opt_key, str(default)))
@@ -95,6 +109,10 @@ class Settings:
     birdnet_url: str
     frigate_topic: str
     birdnet_topic: str
+    # Frigate's review-item topic (``frigate/reviews``). A review item is Frigate's own
+    # grouping of the tracked objects on one camera into a single stretch of activity —
+    # Aviary mirrors each bird review item as a "visit". Blank disables visits.
+    frigate_review_topic: str
 
     backfill_on_start: bool
     ignore_unclassified: bool
@@ -192,6 +210,10 @@ def load_settings() -> Settings:
         birdnet_url=_pick("BIRDNET_URL", opts, "birdnet_url", "").rstrip("/"),
         frigate_topic=_pick("FRIGATE_TOPIC", opts, "frigate_topic", "frigate/events"),
         birdnet_topic=_pick("BIRDNET_TOPIC", opts, "birdnet_topic", "birdnet"),
+        # _pick treats "" as unset and falls back to the default, so an explicitly empty
+        # option would silently re-enable the topic. Read the raw values to honour blank.
+        frigate_review_topic=_pick_optional(
+            "FRIGATE_REVIEW_TOPIC", opts, "frigate_review_topic", "frigate/reviews"),
         backfill_on_start=_as_bool(_pick("BACKFILL_ON_START", opts, "backfill_on_start", "true")),
         ignore_unclassified=_as_bool(_pick("IGNORE_UNCLASSIFIED", opts, "ignore_unclassified", "true")),
         ignore_cameras=_pick_list("IGNORE_CAMERAS", opts, "ignore_cameras"),

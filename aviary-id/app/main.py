@@ -90,6 +90,9 @@ class IdentifyRequest(BaseModel):
     # when the GPU works harder, with no redeploy here.
     min_score: float = 0.35
     min_margin: float = 0.08
+    # Return per-crop diagnostics (geometry, embedding, top-1) under ``debug`` so the
+    # subject partition can be re-run and tuned offline (tools/tune_subjects.py).
+    debug: bool = False
 
 
 class SpeciesGuess(BaseModel):
@@ -110,6 +113,51 @@ class FrameOut(BaseModel):
     # means it saw essentially nothing it recognized (background-heavy output).
     trained_top1: str = ""
     trained_score: float = 0.0
+
+
+class SubjectOut(BaseModel):
+    """One bird in the event, classified on its own crops.
+
+    ``idx`` 0 is the primary — the tracked object this event is about, which is also what
+    every top-level field of the response describes. Others are birds that shared the
+    view: they have their own species, crop and embedding so a label on one of them can
+    never train the model on a picture of the other.
+    """
+    idx: int
+    primary: bool
+    # False when Frigate's crop/path could not pin the primary down and the service fell
+    # back to the biggest cluster (zoomed footage without a path, a boxless snapshot).
+    anchored: bool
+    common_name: str
+    scientific_name: Optional[str] = None
+    species_code: Optional[str] = None
+    score: float
+    margin: float
+    runner_up: Optional[str] = None
+    candidates: list[SpeciesGuess] = Field(default_factory=list)
+    consensus: Optional[dict] = None
+    trained: bool = False
+    n_frames: int = 0
+    origins: list[str] = Field(default_factory=list)
+    embedding: Optional[str] = None
+    best_crop: Optional[str] = None
+    per_frame: list[FrameOut] = Field(default_factory=list)
+
+
+class DebugCrop(BaseModel):
+    """Per-crop facts for offline tuning of the subject partition."""
+    origin: str
+    det_score: float
+    rank: float
+    pre_cropped: bool
+    center: Optional[tuple[float, float]] = None
+    anchor_dist: Optional[float] = None
+    t: Optional[float] = None
+    subject: Optional[int] = None   # which subjects[] entry took it; None = dropped
+    note: str = ""
+    top1: str = ""
+    top1_score: float = 0.0
+    embedding: str = ""             # base64 float16, same encoding as the response's
 
 
 class IdentifyResponse(BaseModel):
@@ -155,6 +203,11 @@ class IdentifyResponse(BaseModel):
     # matters most when the classified footage (e.g. a zoomed PTZ recording) is not the
     # event's own media.
     best_crop: Optional[str] = None
+    # Every bird in the event, primary first. The top-level fields above are exactly
+    # subjects[0]; older callers can ignore this list entirely.
+    subjects: list[SubjectOut] = Field(default_factory=list)
+    # Only with ``debug: true`` on the request.
+    debug: Optional[dict] = None
     elapsed_ms: int = 0
 
 
@@ -256,7 +309,7 @@ async def lifespan(_: FastAPI):
             await _client.aclose()
 
 
-app = FastAPI(title="aviary-id", version="0.9.0", lifespan=lifespan)
+app = FastAPI(title="aviary-id", version="0.10.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -335,13 +388,18 @@ async def identify(req: IdentifyRequest) -> IdentifyResponse:
         best = max(response.per_frame, key=lambda f: f.trained_score, default=None)
         trained_note = (f"{best.trained_top1} {best.trained_score:.2f}"
                         if best and best.trained_score >= 0.05 else "saw nothing")
+    others = ""
+    if len(response.subjects) > 1:
+        others = " +" + ", ".join(
+            f"{s.common_name} {s.score:.2f} ({s.n_frames} crop{'s' if s.n_frames != 1 else ''})"
+            for s in response.subjects[1:]) + " also in view"
     log.info(
         "identify %s -> %s %s (score=%s margin=%s, %d/%d frames, %d round(s), "
-        "localized=%s, trained[%s], %dms) [%s]",
+        "localized=%s, trained[%s], %dms)%s [%s]",
         req.event_id, response.status, response.common_name or "-",
         response.score, response.margin, response.frames_used, response.images,
         response.rounds, response.localized, trained_note, response.elapsed_ms,
-        timings.summary(),
+        others, timings.summary(),
     )
     return response
 
@@ -411,11 +469,67 @@ async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
         embedding=result.embedding,
         model_version=_classifier.model_version,
         embedding_key=_classifier.embedding_key,
-        best_crop=(_encode_crop(crops[result.best_frame][1])
+        best_crop=(_encode_crop(crops[result.best_frame].image)
                    if 0 <= result.best_frame < len(crops) else None),
+        subjects=[_subject_out(i, r, crops) for i, r in enumerate([result, *result.others])],
+        debug=_debug_out(result, crops) if req.debug else None,
         elapsed_ms=_ms(started),
         timings=timings.stages,
     )
+
+
+def _subject_out(idx: int, r, crops) -> SubjectOut:
+    return SubjectOut(
+        idx=idx,
+        primary=r.primary,
+        anchored=r.anchored,
+        common_name=r.species.com_name,
+        scientific_name=r.species.sci_name,
+        species_code=r.species.species_code,
+        score=round(r.score, 4),
+        margin=round(r.margin, 4),
+        runner_up=r.runner_up.com_name if r.runner_up else None,
+        candidates=[
+            SpeciesGuess(common_name=sp.com_name, scientific_name=sp.sci_name,
+                         species_code=sp.species_code, score=round(score, 4))
+            for sp, score in r.candidates
+        ],
+        consensus=r.consensus,
+        trained=r.trained,
+        n_frames=len(r.indices),
+        origins=[crops[i].origin for i in r.indices if 0 <= i < len(crops)],
+        embedding=r.embedding,
+        best_crop=(_encode_crop(crops[r.best_frame].image)
+                   if 0 <= r.best_frame < len(crops) else None),
+        per_frame=[FrameOut(**vars(f)) for f in r.per_frame],
+    )
+
+
+def _debug_out(result, crops) -> dict:
+    """Per-crop geometry + embeddings, so tools/tune_subjects.py can re-partition offline."""
+    owner: dict[int, int] = {}
+    for s_idx, r in enumerate([result, *result.others]):
+        for i in r.indices:
+            owner[i] = s_idx
+    per_frame = {}
+    for r in [result, *result.others]:
+        for i, f in zip(r.indices, r.per_frame):
+            per_frame[i] = f
+    out = []
+    for i, c in enumerate(crops):
+        f = per_frame.get(i)
+        out.append(DebugCrop(
+            origin=c.origin, det_score=float(c.score), rank=float(c.rank),
+            pre_cropped=bool(c.pre_cropped), center=c.center, anchor_dist=c.anchor_dist,
+            t=c.t, subject=owner.get(i),
+            top1=f.top1 if f else "", top1_score=f.top1_score if f else 0.0,
+            embedding=_classifier.crop_embedding(i) if _classifier else "",
+        ).model_dump())
+    return {"crops": out, "settings": {
+        "sim_merge": settings.subject_sim_merge, "sim_split": settings.subject_sim_split,
+        "min_crops": settings.subject_min_crops, "single_det": settings.subject_single_det,
+        "max_subjects": settings.subject_max,
+    }}
 
 
 @app.post("/identify/image", response_model=IdentifyResponse,

@@ -143,7 +143,12 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
     source_ref = str(row.get("source_ref") or "")
 
     # Per-species quiet gaps (overall and per source), for the blueprint's cooldown.
-    last_times = await asyncio.to_thread(db.species_last_times, common_name, source, source_ref)
+    # Measured against previous VISITS: sibling events of the same stay are excluded, or
+    # the second tracked object of one visit would report "last seen 4 seconds ago".
+    visit_id = row.get("visit_id") if source == "frigate" else None
+    last_times = await asyncio.to_thread(
+        db.species_last_times, common_name, source, source_ref, visit_id)
+    visit = await asyncio.to_thread(db.visit_by_id, int(visit_id)) if visit_id else None
     start_time = row.get("start_time")
 
     def _gap(key: str) -> Optional[float]:
@@ -169,6 +174,7 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
         panel_path = f"/{panel_slug}/detection/{int(det_id)}"
     else:
         panel_path = f"/{panel_slug}/species/{quote(common_name, safe='')}"
+    visit_path = f"/{panel_slug}/visit/{int(visit_id)}" if panel_slug and visit_id else None
 
     verb = "seen" if source == "frigate" else "heard"
     # The first time a species is recorded by THIS kind of source — the moment a bird you
@@ -201,6 +207,13 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
         "seconds_since_species_last_seen": _gap("seen"),
         "seconds_since_species_last_heard": _gap("heard"),
         "panel_path": panel_path,
+        # The visit (Frigate review item) this sighting belongs to. Notifications fire
+        # once per species per visit, so an automation can treat visit_id as "one bird
+        # stay" and visit_path as a tap target for the whole stay. None for audio rows
+        # and for events Frigate has no review item for.
+        "visit_id": int(visit_id) if visit_id else None,
+        "visit_path": visit_path,
+        "frigate_review_id": visit.get("review_id") if visit else None,
     }
     if test:
         payload["test"] = True
