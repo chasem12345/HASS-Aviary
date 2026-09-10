@@ -79,7 +79,57 @@
     } catch (e) { console.error(e); chartError("perDay"); }
   }
 
-  async function hourlyChart(params) {
+  // Sunrise/sunset on the hourly bar charts. A per-chart plugin rather than the Chart.js
+  // annotation plugin (not vendored; this is thirty lines). `sun` is the server's
+  // {sunrise, sunset, *_label} in fractional local hours, or null when the location is
+  // unknown — then nothing is drawn and the chart is exactly what it was.
+  function sunPlugin(sun) {
+    if (!sun) return [];
+    // The category scale centres bar i on getPixelForValue(i), so fractional hour h sits
+    // half a step left of bar 0 plus h steps.
+    function px(x, h) {
+      const step = x.getPixelForValue(1) - x.getPixelForValue(0);
+      return x.getPixelForValue(0) - step / 2 + h * step;
+    }
+    function clamp(a, v) { return Math.min(a.right, Math.max(a.left, v)); }
+    return [{
+      id: "aviarySun",
+      beforeDatasetsDraw(chart) {
+        const { ctx, chartArea: a, scales: { x } } = chart;
+        if (!a || !x) return;
+        ctx.save();
+        ctx.fillStyle = cssVar("--ribbon-night", "rgba(28,37,48,.09)");
+        if (sun.sunrise != null) {
+          const X = clamp(a, px(x, sun.sunrise));
+          ctx.fillRect(a.left, a.top, X - a.left, a.bottom - a.top);
+        }
+        if (sun.sunset != null) {
+          const X = clamp(a, px(x, sun.sunset));
+          ctx.fillRect(X, a.top, a.right - X, a.bottom - a.top);
+        }
+        ctx.restore();
+      },
+      afterDraw(chart) {
+        const { ctx, chartArea: a, scales: { x } } = chart;
+        if (!a || !x) return;
+        const warn = cssVar("--warn", "#d9a441");
+        ctx.save();
+        ctx.strokeStyle = warn; ctx.fillStyle = warn; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+        ctx.font = "11px " + cssVar("--font-body", "sans-serif"); ctx.textBaseline = "top";
+        [["sunrise", "\u2600 ", "left"], ["sunset", "\u263D ", "right"]].forEach(([k, glyph, align]) => {
+          if (sun[k] == null) return;
+          const X = px(x, sun[k]);
+          if (X < a.left || X > a.right) return;
+          ctx.beginPath(); ctx.moveTo(X, a.top); ctx.lineTo(X, a.bottom); ctx.stroke();
+          ctx.textAlign = align;
+          ctx.fillText(glyph + (sun[k + "_label"] || ""), X + (align === "left" ? 4 : -4), a.top + 2);
+        });
+        ctx.restore();
+      },
+    }];
+  }
+
+  async function hourlyChart(params, sun) {
     try {
       const hourly = await getJson("/hourly", params);
       new Chart(document.getElementById("hourly"), {
@@ -92,13 +142,14 @@
           }],
         },
         options: commonOptions(),
+        plugins: sunPlugin(sun),
       });
     } catch (e) { console.error(e); chartError("hourly"); }
   }
 
   window.aviaryInitDashboard = function (opts) {
     perDayChart({ source: opts.source, days: opts.days, since: opts.since });
-    hourlyChart({ source: opts.source, days: opts.days, since: opts.since });
+    hourlyChart({ source: opts.source, days: opts.days, since: opts.since }, opts.sun);
     bindTestNotify();
   };
 
@@ -328,10 +379,60 @@
 
   window.aviaryInitSpecies = function (opts) {
     perDayChart({ species: opts.species, days: 30 });
-    hourlyChart({ species: opts.species, days: 3650 });
+    hourlyChart({ species: opts.species, days: 3650 }, opts.sun);
     loadSpeciesInfo(opts.species, opts.scientific);
     loadReferencePhotos(opts.species, opts.scientific);
     loadReferenceAudio(opts.species, opts.scientific);
+  };
+
+  // ---------------------------------------------------------- species index
+  // Filter and sort the tiles already on the page. Progressive: with JS off the page is
+  // the server's count-ordered grid, and the dex registry (its own template, no
+  // #speciesFilter) is untouched because we bail before touching anything.
+  window.aviaryInitSpeciesIndex = function () {
+    const input = document.getElementById("speciesFilter");
+    const select = document.getElementById("speciesSort");
+    const grid = document.getElementById("speciesGrid");
+    if (!input || !select || !grid) return;
+    const tiles = Array.prototype.slice.call(grid.querySelectorAll(".species-tile"));
+    const noMatch = document.getElementById("speciesNoMatch");
+    const count = document.getElementById("speciesCount");
+    const KEY = "aviary.speciesSort";
+    try { const saved = sessionStorage.getItem(KEY); if (saved) select.value = saved; } catch (e) { /* private mode */ }
+
+    const num = (t, k) => parseFloat(t.dataset[k]) || 0;
+    const sorters = {
+      count: (a, b) => (num(b, "count") - num(a, "count")) || (num(b, "last") - num(a, "last")),
+      recent: (a, b) => num(b, "last") - num(a, "last"),
+      az: (a, b) => a.dataset.name.localeCompare(b.dataset.name),
+      first: (a, b) => num(a, "first") - num(b, "first"),
+    };
+
+    function apply() {
+      const needle = input.value.trim().toLowerCase();
+      let shown = 0;
+      tiles.forEach((t) => {
+        const hit = !needle || t.dataset.name.indexOf(needle) !== -1 ||
+          (t.dataset.sci || "").indexOf(needle) !== -1;
+        t.hidden = !hit;
+        if (hit) shown++;
+      });
+      // appendChild on an existing child moves it: one pass reorders the grid in place.
+      tiles.slice().sort(sorters[select.value] || sorters.count).forEach((t) => grid.appendChild(t));
+      if (noMatch) noMatch.hidden = shown > 0 || !tiles.length;
+      if (count) count.textContent = String(shown);
+    }
+
+    let timer = null;
+    input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(apply, 80); });
+    // The input sits inside the filter form; Enter must not reload the page.
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") e.preventDefault(); });
+    select.addEventListener("change", () => {
+      try { sessionStorage.setItem(KEY, select.value); } catch (e) { /* ignore */ }
+      apply();
+    });
+    // The server already ordered by count; only reorder on load for a remembered sort.
+    if (select.value !== "count") apply();
   };
 
   // ------------------------------------------------------------------ dex mode

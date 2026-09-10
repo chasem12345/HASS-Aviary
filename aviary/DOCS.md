@@ -448,6 +448,67 @@ local-midnight boundary as the dashboard stats. Species without a confirmed
 identification (review-queue rows) are not counted. Old `/recap?day=YYYY-MM-DD` links
 still open that day.
 
+### The day as a timeline
+
+A single day is drawn against the clock:
+
+- **Highlights** — *Busiest*, *First bird*, *Last bird* and *Rarest visitor* (the
+  established species that visits least; a first-timer is *new!* instead). Longer windows
+  show *Busiest*, *Most regular* (days present out of the window's days), *New species*
+  and *Rarest*.
+- **Dawn chorus** — every species with a detection from **30 minutes before sunrise to 60
+  minutes after**, in the order they started, with their heard/seen counts inside that
+  window and the time of their first call. A quiet dawn says so.
+- **Activity by hour** — the whole day's detections per hour (camera blue, audio amber),
+  with sunrise and sunset marked.
+- **Ribbons** — each species row carries a 24-hour strip with one tick per visit (blue) or
+  heard detection (amber); hover a tick for its time. Night, the dawn window and dusk are
+  shaded on the same scale, so the sunrise line in the strip above lands on the same
+  pixel as the shading edge in every row. Sort the list by **first appearance** (default
+  for a day) or **most active** (default for longer windows). A row with more than 150
+  detections collapses to 15-minute density bins.
+
+Week, month, year and custom windows keep the ribbon as an **hour-of-day histogram**
+across all their days; the sun times shown are the window's middle day's, labelled with
+that date.
+
+### Where sunrise comes from
+
+Aviary reads your latitude and longitude from Home Assistant's Core API at start-up (the
+add-on already holds `homeassistant_api` for notifications — nothing to configure) and
+computes sunrise, sunset and civil twilight locally for any date, in the add-on's local
+time zone (the Supervisor's, i.e. Home Assistant's). If Home Assistant's `time_zone` and
+the container's differ, the log says so once. Without a location — running outside the
+Supervisor, or the request failed — the dawn window is a fixed **05:00–07:30** and the
+dawn card is tagged *location unknown*; the same fallback covers polar days and nights.
+For local development set `AVIARY_LAT` and `AVIARY_LON`.
+
+### Attendance tiers and rare visitors
+
+Once a species has **14 days of history**, the share of days it has been detected since
+its first detection places it in a tier: **daily** (70 % or more), **regular** (30 %),
+**occasional** (10 %) or **rare** (below). The badge appears on recap rows and on Species
+tiles; hover it for the numbers. A species detected after a silence of **14 or more
+days** is marked **back after N days** on the recap. Both are all-time measures, not
+window ones, so a regular does not read as rare on a quiet week.
+
+## Species page: filter, sort and sparklines
+
+The **Species** page has a live filter box (matches common and scientific names) and a
+sort control — *most detections*, *most recent*, *A–Z*, *first seen* — that reorder the
+tiles on the page without a reload; the sort is remembered for the browser session. Each
+tile shows its attendance tier and a seven-day sparkline of daily counts. The Dex
+registry keeps its own numbered layout and keyboard navigation.
+
+## Sunrise on the hourly charts
+
+The *Activity by hour* charts on the dashboard and on every species page shade the hours
+before sunrise and after sunset and draw dashed lines at both, using today's sun. The
+species hero adds a **typical hours** line — for example *Dawn singer · peaks 05–07* —
+from the run of hours around the species' all-time peak that hold at least half its
+count, named for where that run falls relative to today's sunrise and sunset. Species
+with under ten detections show no line yet.
+
 ## Viewing the same moment on the other camera
 
 When `identify_zoom_map` pairs two cameras, every Frigate detection card gains a

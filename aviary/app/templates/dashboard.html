@@ -130,6 +130,7 @@
     source: {{ (none if source == 'all' else source) | tojson }},
     since: {{ (chart_since or none) | tojson }},
     days: {{ chart_days | tojson }},
+    sun: {{ sun_js | tojson }},
   });
 </script>
 {% endblock %}

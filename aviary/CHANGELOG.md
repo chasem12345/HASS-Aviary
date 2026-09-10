@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.28.0
+
+- **The recap is a timeline now.** A single day opens with a **Dawn chorus** card — the
+  species active from half an hour before sunrise to an hour after it, in the order they
+  started — then an *Activity by hour* strip for the whole day and one 24-hour **ribbon per
+  species** with a tick for every visit (blue) and every heard detection (amber) over
+  night/dawn/dusk shading and dashed sunrise/sunset lines. Rows sort by **first
+  appearance** (default) or **most active**; hover a tick for its time. Week, month, year
+  and custom windows keep the ribbon as an hour-of-day histogram (sun times taken from the
+  window's middle day, and labelled so). A row with more than 150 ticks collapses to
+  15-minute density bins so a BirdNET-heavy day stays legible. Ticks count what the seen/
+  heard badges count — visits, not tracked objects.
+- **Sunrise comes from Home Assistant.** Aviary reads your latitude/longitude from the Core
+  API (`homeassistant_api` was already granted for notifications, so nothing to configure)
+  and computes sunrise, sunset and civil twilight locally for any date — the `sun.sun`
+  entity only knows the *next* ones. No location (running outside the Supervisor) falls
+  back to a fixed 05:00–07:30 window and the dawn card says *location unknown*. Polar
+  days/nights degrade the same way. Dev override: `AVIARY_LAT`/`AVIARY_LON`.
+- **Highlights.** Stat tiles above the list: *Busiest*, *First bird*, *Last bird* and
+  *Rarest visitor* for a day; *Busiest*, *Most regular*, *New species* and *Rarest* for
+  longer windows. Each links to the species.
+- **Regular-visitor signals, and rare ones flagged.** Every species with two weeks of
+  history gets an attendance tier from the share of days it has turned up since it was
+  first detected: **daily** (≥70 %), **regular** (≥30 %), **occasional** (≥10 %), **rare**.
+  The badge appears on recap rows and Species tiles; a species returning after a silence
+  of 14+ days reads **back after N days**. The *Rarest visitor* tile picks the established
+  bird that visits least — first-timers stay *new!*.
+- **Species page: filter and sort.** A live filter box (common or scientific name) and a
+  sort control (most detections · most recent · A–Z · first seen) reorder the tiles
+  instantly on the page; the choice is remembered for the session. Tiles gain a 7-day
+  sparkline of daily counts. The Dex registry keeps its own numbered layout.
+- **Sunrise and sunset on the hourly charts**, on the dashboard and every species page
+  (night shaded, dashed lines with the times), and a **typical hours** line in the species
+  hero — "Dawn singer · peaks 05–07" — derived from the species' all-time hour histogram
+  against today's sun. See *Recap* in the docs.
+
 ## 0.27.0
 
 - **Visits: Frigate's fragments are one sighting again.** Frigate's tracker splits a

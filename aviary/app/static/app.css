@@ -982,3 +982,138 @@ img.overlay-img {
 .kept-species .count {
   background: var(--line); border-radius: 12px; padding: 1px 9px; font-size: 12px;
 }
+
+/* ------------------------------------------------------ recap timeline (0.28) */
+/* Sun shading on the ribbons. Neutral rgba so the same stops read on the dex palette;
+   the dark scheme deepens night so it still shows against the dark card. */
+:root {
+  --ribbon-night: rgba(28, 37, 48, .09);
+  --ribbon-dawn: rgba(217, 164, 65, .26);
+  --ribbon-dusk: rgba(217, 164, 65, .14);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="dex"]) {
+    --ribbon-night: rgba(0, 0, 0, .38);
+    --ribbon-dawn: rgba(217, 164, 65, .30);
+    --ribbon-dusk: rgba(217, 164, 65, .16);
+  }
+}
+.recap-sun { white-space: nowrap; }
+.recap-sun .approx { font-size: 12px; }
+
+.recap-highlights { margin-top: 4px; }
+.recap-highlights .stat { text-align: left; padding: 14px 16px; }
+.recap-highlights .stat .num { font-size: 22px; line-height: 1.2; }
+.recap-highlights .stat .lbl { text-transform: uppercase; letter-spacing: .05em; font-size: 11px; }
+.recap-highlights .stat .sub {
+  display: block; margin-top: 6px; font-size: 13px; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.dawn-card { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.dawn-card h2 { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.dawn-glyph { font-size: 16px; }
+.dawn-window { color: var(--muted); font-weight: 400; font-size: 13px; font-family: var(--font-mono); }
+.dawn-hint { margin-left: auto; font-size: 11px; color: var(--muted); font-weight: 400; }
+.dawn-unknown { color: var(--warn); border: 1px dashed var(--warn); border-radius: 6px; padding: 0 6px; cursor: help; }
+.dawn-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.dawn-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 8px; border-radius: 10px; background: var(--bg);
+}
+.dawn-order {
+  flex: none; width: 22px; height: 22px; border-radius: 50%; font-size: 11px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--warn); color: #fff;
+}
+.dawn-empty { color: var(--muted); margin: 0; }
+
+.recap-strip h2 { display: flex; align-items: baseline; gap: 10px; }
+.ribbon {
+  position: relative; height: 22px; border-radius: 4px; overflow: hidden;
+  background: var(--ribbon-bg, transparent); border: 1px solid var(--line);
+  flex: 1 1 220px; min-width: 140px;
+}
+.ribbon-strip { height: 72px; flex: none; width: 100%; }
+.tick {
+  position: absolute; top: 3px; bottom: 3px; width: 2px; margin-left: -1px; border-radius: 1px;
+}
+.tick-seen { background: var(--frigate); }
+.tick-heard { background: var(--birdnet); }
+.bin { position: absolute; top: 3px; bottom: 3px; opacity: var(--a, .6); border-radius: 1px; }
+.bin-seen { background: var(--frigate); }
+.bin-heard { background: var(--birdnet); }
+/* Hour bars are a stacked seen/heard column: the lower --seen share in camera blue, the rest
+   in audio amber. */
+.hbar, .strip-bar {
+  position: absolute; bottom: 0; height: var(--h, 0%); min-height: 2px;
+  box-sizing: border-box; border-left: 1px solid var(--card); border-right: 1px solid var(--card);
+  background: linear-gradient(0deg, var(--frigate) 0 var(--seen, 0%), var(--birdnet) var(--seen, 0%) 100%);
+  opacity: .9;
+}
+.sun-mark {
+  position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--warn);
+  pointer-events: none;
+}
+.ribbon-strip .sun-mark::after {
+  content: attr(title); position: absolute; top: 2px; left: 4px;
+  font-size: 10px; color: var(--muted); white-space: nowrap; font-family: var(--font-mono);
+}
+.ribbon-strip .sun-sunset::after { left: auto; right: 4px; }
+.ribbon-axis {
+  display: flex; justify-content: space-between; margin-top: 3px;
+  font-size: 11px; color: var(--muted); font-family: var(--font-mono);
+}
+.ribbon-legend { display: flex; gap: 14px; margin-top: 6px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+.legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.swatch-seen { background: var(--frigate); }
+.swatch-heard { background: var(--birdnet); }
+.swatch-dawn { background: var(--ribbon-dawn); border: 1px solid var(--line); }
+.swatch-night { background: var(--ribbon-night); border: 1px solid var(--line); }
+
+.recap-toolbar { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.recap-toolbar .recap-subhead { margin-right: auto; }
+.sort-toggle { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+.sort-toggle .filter-chip.active { background: var(--accent); color: #fff; }
+
+.recap-row-ribbon .recap-name { flex: 0 1 220px; min-width: 150px; }
+.recap-row-ribbon .recap-counts { flex: none; min-width: 0; }
+.tier-badge {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; vertical-align: 1px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  border: 1px solid var(--line); color: var(--muted); cursor: help;
+}
+.tier-daily { border-color: var(--accent); color: var(--accent); }
+.tier-regular { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); color: var(--accent); }
+.tier-rare { border-color: var(--warn); color: var(--warn); }
+.back-badge {
+  display: inline-block; margin-left: 6px; font-size: 11px; color: var(--warn); font-weight: 600;
+  cursor: help;
+}
+
+/* Species index: tier badge on the tile and a week of daily counts. */
+.tile-name .tier-badge { font-size: 9px; vertical-align: 2px; }
+.spark { display: inline-flex; gap: 1px; height: 14px; align-items: flex-end; margin-left: auto; }
+.spark i { display: block; width: 4px; height: max(1px, var(--h, 0%)); background: var(--accent); opacity: .7; border-radius: 1px; }
+.spark i.empty { opacity: .25; }
+.species-tools { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-left: auto; }
+.species-tools input[type="search"] {
+  padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--card); color: var(--ink); font: inherit; font-size: 13px; min-width: 180px;
+}
+
+/* Species hero: the typical-hours line. */
+.hero-habit { color: var(--muted); font-size: 13px; margin: -8px 0 12px; }
+.hero-habit strong { color: var(--ink); font-weight: 600; }
+
+@media (max-width: 720px) {
+  .recap-highlights { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 560px) {
+  .recap-row-ribbon { flex-wrap: wrap; }
+  .recap-row-ribbon .recap-name { flex: 1 1 auto; }
+  /* The ribbon drops onto its own full-width line under the name and counts. */
+  .recap-row-ribbon .ribbon { flex: 1 1 100%; order: 9; height: 16px; }
+  .dawn-list .first-call { display: none; }
+  .ribbon-strip { height: 56px; }
+}

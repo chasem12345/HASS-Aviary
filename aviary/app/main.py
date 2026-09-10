@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import (
     backfill, bootstrap, crops, db, identify, ingest, kept, notify, probe, proxy,
-    species_audio, species_info, species_photos,
+    solar, species_audio, species_info, species_photos,
 )
 from .mqtt_client import MqttIngestor
 from .routes import ASSET_VER, register_routes
@@ -193,6 +193,7 @@ def create_app() -> FastAPI:
         species_photos.init_client()
         notify.init_client()
         identify.init_client()
+        solar.init_client()
         loop = asyncio.get_running_loop()
         ingest.set_event_loop(loop)
         notify.install_blueprint()
@@ -205,12 +206,15 @@ def create_app() -> FastAPI:
         # Recover work stranded by a restart, then clear out stale unidentifiable rows.
         # Both are background tasks: neither should delay serving the UI.
         identify_maint_task = asyncio.create_task(_identify_maintenance(settings))
+        # Sunrise for the recap's dawn chorus and the chart markers: one Core API call
+        # for the configured location, refreshed occasionally. Nothing waits on it.
+        solar_task = asyncio.create_task(solar.location_loop())
         # Charts and the "today" boundary use OS localtime; make misconfiguration visible.
         log.info("Aviary started (timezone: %s, TZ=%s).", time.strftime("%Z"), os.environ.get("TZ", "unset"))
         try:
             yield
         finally:
-            for task in (backfill_task, identify_maint_task):
+            for task in (backfill_task, identify_maint_task, solar_task):
                 if task is not None:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
@@ -224,6 +228,7 @@ def create_app() -> FastAPI:
             await species_audio.close_client()
             await species_photos.close_client()
             await notify.close_client()
+            await solar.close_client()
             log.info("Aviary stopped.")
 
     app = FastAPI(title="Aviary", lifespan=lifespan)

@@ -10,7 +10,8 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .. import db, visits
+from .. import db, solar, visits
+from .. import recap as recap_vm
 # The helper, not the module: this file's /kept route is itself named `kept`.
 from ..kept import view_pad
 from . import THEMES, get_theme, ingress_url, render
@@ -148,6 +149,8 @@ def dashboard(
         "latest": latest[0] if latest else None,
         "mqtt_enabled": request.app.state.settings.mqtt_enabled,
         "mqtt_connected": bool(ingestor and ingestor.connected),
+        # Sunrise/sunset markers for the hourly chart; None when the location is unknown.
+        "sun_js": solar.chart_payload(solar.sun_times(date.today())),
     }
     return render("dashboard.html", ctx)
 
@@ -199,7 +202,7 @@ _RECAP_RANGES = ("day", "week", "month", "year", "custom")
 
 def _midnight(d: date) -> float:
     """Local midnight, the same boundary as the dashboard's "today" stats (_since)."""
-    return time.mktime((d.year, d.month, d.day, 0, 0, 0, 0, 0, -1))
+    return solar.local_midnight(d)
 
 
 def _parse_date(value: Optional[str], default: date) -> date:
@@ -284,24 +287,48 @@ def recap(
     range_key: str = Query("day", alias="range"),
     from_: Optional[str] = Query(None, alias="from"),
     to: Optional[str] = Query(None),
+    sort: Optional[str] = Query(None),
 ):
-    """Recap: every species active in a window, with seen/heard counts.
+    """Recap: every species active in a window, with seen/heard counts and a timeline.
 
     ``range`` is day (default) | week | month | year | custom; ``day`` is the anchor date
     the window is built around (YYYY-MM-DD, default today) — kept as the parameter name
     so pre-0.27 ``/recap?day=`` links still land on the same day. ``from``/``to`` bound a
-    custom window. Anything unparseable or in the future degrades to a sane default
-    rather than erroring. The month and year windows are month-/year-to-date while they
-    contain today, which is the "how is this month going" view; past ones are whole.
+    custom window. ``sort`` is first (appearance) | active (busiest); the default is by
+    appearance for a day and by activity for longer windows. Anything unparseable or in
+    the future degrades to a sane default rather than erroring. The month and year windows
+    are month-/year-to-date while they contain today, which is the "how is this month
+    going" view; past ones are whole.
+
+    A single day is drawn as a timeline: the dawn-chorus card (species active around
+    sunrise), a day-wide hour strip and one 24 h ribbon per species with a tick per
+    visit/heard detection. Longer windows keep the ribbon as an hour-of-day histogram.
     """
     today = date.today()
     rng = range_key if range_key in _RECAP_RANGES else "day"
     anchor = min(_parse_date(day, today), today)
     w = _recap_window(rng, anchor, from_, to, today)
     multi = w["days"] > 1
+    sort_key = sort if sort in ("first", "active") else ("active" if multi else "first")
 
     gated = request.app.state.settings.require_species_confirmation
-    rows = db.daily_recap(_midnight(w["start"]), _midnight(w["end"]), only_confirmed=gated)
+    start_ts, end_ts = _midnight(w["start"]), _midnight(w["end"])
+    rows = db.daily_recap(start_ts, end_ts, only_confirmed=gated)
+    # Attendance history for the tiers and "back after N days" — one query, cached.
+    reg = db.species_regularity(before=start_ts, only_confirmed=gated) if rows else {}
+    # Sun for the window's shading and markers. A multi-day window takes its middle day;
+    # sunrise drifts across a month, so the page says which day the times are for.
+    sun_day = w["start"] if not multi else w["start"] + timedelta(days=w["days"] // 2)
+    sun = solar.sun_times(sun_day)
+    ticks_by: dict = {}
+    hours_by: dict = {}
+    if rows:
+        if multi:
+            hours_by = db.hourly_by_species(start_ts, end_ts, only_confirmed=gated)
+        else:
+            ticks_by = db.recap_ticks(start_ts, end_ts, only_confirmed=gated)
+    now = time.time()
+    empty_hours = [{"hour": h, "seen": 0, "heard": 0} for h in range(24)]
     for r in rows:
         if multi:
             # Dates, not clock times: across a month "07:12 – 18:40" says nothing.
@@ -312,12 +339,20 @@ def recap(
         else:
             r["first_label"] = time.strftime("%H:%M", time.localtime(r["first_time"]))
             r["last_label"] = time.strftime("%H:%M", time.localtime(r["last_time"]))
+        info = reg.get(r["common_name"].lower(), {})
+        r["tier"] = recap_vm.tier(info.get("first_seen"), info.get("days_active", 0), now)
+        # A first-ever species is "new!", which says more than any gap could.
+        r["back_after"] = (None if r.get("is_first_ever")
+                           else recap_vm.back_after(r["first_time"], info.get("prev_before")))
+        if multi:
+            r["ribbon"] = recap_vm.hour_ribbon(hours_by.get(r["common_name"], empty_hours))
+        else:
+            r["ribbon"] = recap_vm.day_ribbon(ticks_by.get(r["common_name"], []), start_ts, end_ts)
+    rows = recap_vm.sort_rows(rows, sort_key)
+    # For a year in review the headline is what turned up for the first time.
+    new_rows = [r for r in rows if r.get("is_first_ever")] if multi else []
 
-    def _nav(anchor_date: Optional[date]) -> Optional[str]:
-        """Query string for a prev/next link: same range, moved anchor (custom: shifted
-        from/to of the same length)."""
-        if anchor_date is None:
-            return None
+    def _query(anchor_date: date, extra: Optional[dict] = None) -> dict:
         if rng == "custom":
             span = w["days"]
             f = anchor_date
@@ -325,7 +360,33 @@ def recap(
             q = {"range": rng, "from": f.isoformat(), "to": t.isoformat()}
         else:
             q = {"range": rng, "day": anchor_date.isoformat()}
-        return f"{ingress_url(request, 'recap')}?{urlencode(q)}"
+        # Only carry the sort when the user picked one, so each range keeps its default.
+        if sort in ("first", "active"):
+            q["sort"] = sort
+        if extra:
+            q.update(extra)
+        return q
+
+    def _nav(anchor_date: Optional[date]) -> Optional[str]:
+        """Query string for a prev/next link: same range, moved anchor (custom: shifted
+        from/to of the same length)."""
+        if anchor_date is None:
+            return None
+        return f"{ingress_url(request, 'recap')}?{urlencode(_query(anchor_date))}"
+
+    here = w["start"] if rng == "custom" else anchor
+    sort_urls = {
+        key: f"{ingress_url(request, 'recap')}?{urlencode(_query(here, {'sort': key}))}"
+        for key in ("first", "active")
+    }
+
+    if multi:
+        strip = recap_vm.strip_from_hours(hours_by) if rows else []
+        dawn = None
+    else:
+        strip = recap_vm.strip_from_ticks(ticks_by, start_ts, end_ts) if rows else []
+        dawn = (dict(recap_vm.window_labels(sun), rows=recap_vm.dawn_card(rows, ticks_by, sun))
+                if rows else None)
 
     return render("recap.html", {
         "request": request,
@@ -341,15 +402,25 @@ def recap(
         "day_label": _recap_label(rng, w, today),
         "prev_url": _nav(w["prev"]),
         "next_url": _nav(w["next"]),
+        "sort": sort_key,
+        "sort_urls": sort_urls,
         "rows": rows,
-        # For a year in review the headline is what turned up for the first time.
-        "new_rows": [r for r in rows if r.get("is_first_ever")] if multi else [],
+        "new_rows": new_rows,
         "totals": {
             "species": len(rows),
             "detections": sum(r["count"] for r in rows),
             "seen": sum(r["seen"] or 0 for r in rows),
             "heard": sum(r["heard"] or 0 for r in rows),
         },
+        "highlights": recap_vm.highlights(rows, multi, w["days"], len(new_rows)),
+        "dawn": dawn,
+        "strip": strip,
+        "ribbon_bg": recap_vm.shading_gradient(sun),
+        "markers": recap_vm.markers(sun),
+        "axis": recap_vm.AXIS,
+        "sun": recap_vm.window_labels(sun),
+        # Which day the multi-day window's sun times were taken from.
+        "sun_day_label": _month_day(sun_day) if multi else None,
     })
 
 
@@ -527,8 +598,19 @@ def species_index(
     # than reordering here, because the default theme's ordering (count DESC) must not
     # change — the dex template sorts by dex_no itself.
     dex = db.species_dex_numbers(only_confirmed=gated)
+    # Attendance tier and a week of daily counts per tile. Unconfirmed species are not in
+    # the confirmed set, so the review queue reads history without the gate.
+    confirmed_only = gated and not reviewing
+    today = date.today()
+    reg = db.species_regularity(None, only_confirmed=confirmed_only)
+    sparks = db.daily_counts_by_species(_midnight(today - timedelta(days=6)),
+                                        only_confirmed=confirmed_only)
+    now = time.time()
     for s in species:
         s["dex_no"] = dex.get(s["common_name"], 0)
+        info = reg.get(s["common_name"].lower(), {})
+        s["tier"] = recap_vm.tier(info.get("first_seen"), info.get("days_active", 0), now)
+        s["spark"], s["spark_max"] = recap_vm.sparkline(sparks.get(s["common_name"], {}), today)
     ctx = {
         "request": request,
         "page": "species",
@@ -575,11 +657,16 @@ def species_detail(
             q["source"] = sel
         older_url = f"{base}?{urlencode(q)}"
     gated = request.app.state.settings.require_species_confirmation
+    # Today's sun, for the hourly chart's sunrise/sunset markers and to name the species'
+    # typical hours ("Dawn singer · peaks 05–07") from its all-time hour histogram.
+    sun = solar.sun_times(date.today())
     ctx = {
         "request": request,
         "page": "species",
         "species": name,
         "stats": stats,
+        "habit": recap_vm.typical_hours(db.hourly_activity(species=name), sun, stats),
+        "sun_js": solar.chart_payload(sun),
         "source": sel,
         "has_both": has_both,
         # Drives the review banner. With the gate off nothing is pending, so no banner.

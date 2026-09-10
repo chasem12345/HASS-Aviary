@@ -39,12 +39,108 @@
   <strong>{{ totals.species }}</strong> species ·
   <strong>{{ totals.detections }}</strong> identified detection{{ '' if totals.detections == 1 else 's' }}
   ({{ totals.seen }} seen / {{ totals.heard }} heard){% if multi %} · {{ days }} day{{ '' if days == 1 else 's' }}{% endif %}
+  {% if sun.known %}
+  · <span class="recap-sun" title="{{ 'Sun times for ' ~ sun_day_label ~ ', the middle of this window' if multi else 'Sunrise and sunset from your Home Assistant location' }}">☀ {{ sun.sunrise }} · ☾ {{ sun.sunset }}{% if multi %} <span class="approx">({{ sun_day_label }})</span>{% endif %}</span>
+  {% endif %}
 </p>
+
+{# Highlight tiles: the day's (or window's) headline birds. Same tile as the dashboard's
+   stat cards so the two pages read as one app. #}
+{% if highlights %}
+<section class="stats recap-highlights">
+  {% for h in highlights %}
+  {% if h.name %}
+  <a class="stat" href="{{ u('species_detail', name=h.name) }}">
+    <span class="num">{{ h.value }}</span><span class="lbl">{{ h.label }}</span>
+    <span class="sub">{{ h.name }}{% if h.sub %} · {{ h.sub }}{% endif %}</span>
+  </a>
+  {% elif h.anchor %}
+  <a class="stat" href="#{{ h.anchor }}">
+    <span class="num">{{ h.value }}</span><span class="lbl">{{ h.label }}</span>
+    <span class="sub">{{ h.sub }}</span>
+  </a>
+  {% else %}
+  <div class="stat">
+    <span class="num">{{ h.value }}</span><span class="lbl">{{ h.label }}</span>
+    <span class="sub">{{ h.sub }}</span>
+  </div>
+  {% endif %}
+  {% endfor %}
+</section>
+{% endif %}
+
+{# Dawn chorus: who was up around sunrise. Day view only — sunrise moves too much across
+   a longer window for one clock window to mean anything. #}
+{% if dawn %}
+<section class="card dawn-card">
+  <h2>
+    <span class="dawn-glyph" aria-hidden="true">🌅</span> Dawn chorus
+    <span class="dawn-window">{{ dawn.chorus_start }} – {{ dawn.chorus_end }}</span>
+    {% if dawn.known %}
+    <span class="dawn-hint" title="Half an hour before sunrise to an hour after it">sunrise {{ dawn.sunrise }}</span>
+    {% else %}
+    <span class="dawn-hint dawn-unknown"
+          title="Aviary could not read a location from Home Assistant, so the dawn window is a fixed clock window rather than sunrise-based.">location unknown</span>
+    {% endif %}
+  </h2>
+  {% if dawn.rows %}
+  <ol class="dawn-list">
+    {% for d in dawn.rows %}
+    <li class="dawn-row">
+      <span class="dawn-order">{{ loop.index }}</span>
+      {% if d.snapshot_ref %}
+      <img class="recap-thumb" loading="lazy" alt=""
+           src="{{ u('frigate_snapshot', event_id=d.snapshot_ref) }}?thumbnail=true" onerror="this.remove()">
+      {% else %}
+      <img class="recap-thumb" loading="lazy" alt=""
+           src="{{ u('species_image', name=d.common_name) }}" onerror="this.remove()">
+      {% endif %}
+      <div class="recap-name">
+        <a href="{{ u('species_detail', name=d.common_name) }}">{{ d.common_name }}</a>
+        {% if d.scientific_name %}<div class="sci">{{ d.scientific_name }}</div>{% endif %}
+      </div>
+      <div class="recap-counts">
+        {% if d.heard %}<span class="badge badge-birdnet">heard ×{{ d.heard }}</span>{% endif %}
+        {% if d.seen %}<span class="badge badge-frigate" title="visits on camera">seen ×{{ d.seen }}</span>{% endif %}
+      </div>
+      <div class="recap-times first-call" title="first detection in the dawn window">{{ d.first_label }}</div>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="dawn-empty">A quiet dawn — nothing identified between {{ dawn.chorus_start }} and {{ dawn.chorus_end }}.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{# The whole window's activity by hour, on the same 24 h scale as every row's ribbon
+   below, so a bar here and a tick there line up. #}
+<section class="card recap-strip" style="--ribbon-bg: {{ ribbon_bg }}">
+  <h2>Activity by hour{% if multi %} <span class="dawn-window">all {{ days }} days</span>{% endif %}</h2>
+  {% set strip_summary = [] %}
+  {% for b in strip if b.count %}{% set _ = strip_summary.append(b.title) %}{% endfor %}
+  <div class="ribbon ribbon-strip" role="img" aria-label="Activity by hour: {{ strip_summary | join('; ') }}">
+    {% for b in strip if b.count %}
+    <i class="strip-bar" style="left:{{ b.pct }}%;width:{{ b.w }}%;--h:{{ b.h }}%;--seen:{{ b.seen_share }}%"
+       title="{{ b.title }}"></i>
+    {% endfor %}
+    {% for m in markers %}
+    <i class="sun-mark sun-{{ m.kind }}" style="left:{{ m.pct }}%" title="{{ m.kind }} {{ m.label }}"></i>
+    {% endfor %}
+  </div>
+  <div class="ribbon-axis" aria-hidden="true">{% for h in axis %}<span>{{ h }}</span>{% endfor %}</div>
+  <div class="ribbon-legend" aria-hidden="true">
+    <span><i class="legend-swatch swatch-seen"></i>seen</span>
+    <span><i class="legend-swatch swatch-heard"></i>heard</span>
+    <span><i class="legend-swatch swatch-dawn"></i>dawn chorus</span>
+    {% if sun.known %}<span><i class="legend-swatch swatch-night"></i>night</span>{% endif %}
+  </div>
+</section>
 
 {% if new_rows %}
 {# Multi-day windows only: the species whose first-ever detection fell inside the
    window — for a year in review, the headline. #}
-<h2 class="recap-subhead">New this period</h2>
+<h2 class="recap-subhead" id="new">New this period</h2>
 <div class="recap-list recap-new-list">
   {% for r in new_rows %}
   <div class="recap-row">
@@ -64,12 +160,19 @@
   </div>
   {% endfor %}
 </div>
-<h2 class="recap-subhead">Everything</h2>
 {% endif %}
 
-<div class="recap-list">
+<div class="recap-toolbar">
+  <h2 class="recap-subhead">{{ 'Everything' if new_rows else 'Every species' }}</h2>
+  <span class="sort-toggle">sort
+    <a class="filter-chip{{ ' active' if sort == 'first' }}" href="{{ sort_urls.first }}">first appearance</a>
+    <a class="filter-chip{{ ' active' if sort == 'active' }}" href="{{ sort_urls.active }}">most active</a>
+  </span>
+</div>
+
+<div class="recap-list recap-timeline" style="--ribbon-bg: {{ ribbon_bg }}">
   {% for r in rows %}
-  <div class="recap-row">
+  <div class="recap-row recap-row-ribbon">
     {% if r.snapshot_ref %}
     {# The window's own footage where we have it; the generic species photo otherwise
        (audio-only species), vanishing quietly when neither exists. #}
@@ -83,7 +186,21 @@
     <div class="recap-name">
       <a href="{{ u('species_detail', name=r.common_name) }}">{{ r.common_name }}</a>
       {% if r.is_first_ever %}<span class="recap-new">new!</span>{% endif %}
+      {% if r.tier %}<span class="tier-badge tier-{{ r.tier.key }}"
+            title="{{ r.tier.hint }}: detected on {{ r.tier.days_active }} of the {{ r.tier.history_days }} days since first seen">{{ r.tier.label }}</span>{% endif %}
+      {% if r.back_after %}<span class="back-badge" title="No detection for {{ r.back_after }} days before this one">back after {{ r.back_after }} days</span>{% endif %}
       {% if r.scientific_name %}<div class="sci">{{ r.scientific_name }}</div>{% endif %}
+    </div>
+    <div class="ribbon ribbon-row" role="img"
+         aria-label="{{ r.common_name }}: {{ r.seen or 0 }} seen, {{ r.heard or 0 }} heard, {{ r.first_label }}{% if r.last_label != r.first_label %} to {{ r.last_label }}{% endif %}">
+      {% if r.ribbon.mode == 'ticks' %}
+        {% for t in r.ribbon.ticks %}<i class="tick tick-{{ t.cls }}" style="left:{{ t.pct }}%" title="{{ t.title }}"></i>{% endfor %}
+      {% elif r.ribbon.mode == 'bins' %}
+        {% for b in r.ribbon.bins %}<i class="bin bin-{{ b.cls }}" style="left:{{ b.pct }}%;width:{{ b.w }}%;--a:{{ b.a }}" title="{{ b.title }}"></i>{% endfor %}
+      {% else %}
+        {% for b in r.ribbon.bars %}<i class="hbar" style="left:{{ b.pct }}%;width:{{ b.w }}%;--h:{{ b.h }}%;--seen:{{ b.seen_share }}%" title="{{ b.title }}"></i>{% endfor %}
+      {% endif %}
+      {% for m in markers %}<i class="sun-mark sun-{{ m.kind }}" style="left:{{ m.pct }}%"></i>{% endfor %}
     </div>
     <div class="recap-counts">
       {% if r.seen %}<span class="badge badge-frigate" title="visits on camera">seen ×{{ r.seen }}</span>{% endif %}

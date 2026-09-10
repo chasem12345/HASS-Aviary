@@ -35,6 +35,8 @@
   <div class="hero-body">
     <h1>{{ species }}</h1>
     {% if stats.scientific_name %}<div class="sci">{{ stats.scientific_name }}</div>{% endif %}
+    {# When this bird turns up, from its all-time hour histogram against today's sun. #}
+    {% if habit %}<div class="hero-habit" title="Busiest hours: {{ habit.range }}"><strong>{{ habit.label }}</strong> · peaks {{ habit.range }}</div>{% endif %}
     {# "seen" = camera (Frigate), "heard" = audio (BirdNET-Go); pick per timestamp source. #}
     {% set first_verb = 'seen' if stats.first_frigate is not none and (stats.first_birdnet is none or stats.first_frigate <= stats.first_birdnet) else 'heard' %}
     {% set last_verb = 'seen' if (stats.last_frigate or 0) >= (stats.last_birdnet or 0) else 'heard' %}
@@ -116,6 +118,7 @@
   window.aviaryInitSpecies({
     species: {{ species | tojson }},
     scientific: {{ (stats.scientific_name or '') | tojson }},
+    sun: {{ sun_js | tojson }},
   });
 </script>
 {% endblock %}

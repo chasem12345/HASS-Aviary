@@ -171,6 +171,7 @@
   window.aviaryInitSpecies({
     species: {{ species | tojson }},
     scientific: {{ (stats.scientific_name or '') | tojson }},
+    sun: {{ sun_js | tojson }},
   });
   window.aviaryInitDexEntry();
 </script>
