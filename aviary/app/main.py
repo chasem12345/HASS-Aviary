@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import (
     backfill, bootstrap, crops, db, identify, ingest, kept, notify, probe, proxy,
-    solar, species_audio, species_info, species_photos,
+    seasonality, solar, species_audio, species_info, species_photos,
 )
 from .mqtt_client import MqttIngestor
 from .routes import ASSET_VER, register_routes
@@ -194,6 +194,7 @@ def create_app() -> FastAPI:
         notify.init_client()
         identify.init_client()
         solar.init_client()
+        seasonality.init_client()
         loop = asyncio.get_running_loop()
         ingest.set_event_loop(loop)
         notify.install_blueprint()
@@ -229,6 +230,7 @@ def create_app() -> FastAPI:
             await species_photos.close_client()
             await notify.close_client()
             await solar.close_client()
+            await seasonality.close_client()
             log.info("Aviary stopped.")
 
     app = FastAPI(title="Aviary", lifespan=lifespan)

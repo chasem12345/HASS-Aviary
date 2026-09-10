@@ -2,9 +2,10 @@
 
 No SQL here — ``db.feed_page`` hands over the visit row with its members already
 attached, and this module only decides how to present it: which species were present,
-which member's crop represents each, how long it lasted, and what window the play button
-should ask the recordings player for. Kept out of the template so the rules (best
-representative, window clamping) are testable and stated once.
+which member's crop represents each, which of them leads the card on a species-filtered
+feed (the *focus*), how long it lasted, and what window the play button should ask the
+recordings player for. Kept out of the template so the rules (best representative, focus
+ordering, fallback media, window clamping) are testable and stated once.
 """
 
 from __future__ import annotations
@@ -84,10 +85,37 @@ def play_window(visit: dict, pad: float) -> Optional[dict]:
     return {"start": p_start, "end": p_end, "clamped": clamped}
 
 
-def card_model(visit: dict, pad: float, now: Optional[float] = None) -> dict:
-    """Everything the visit card renders, derived from the visit row + its members."""
+def _fallback(species: list[dict], members: list[dict]) -> Optional[dict]:
+    """The member whose media stands in when the recordings window is unavailable.
+
+    The lead species' representative when its event has a clip; else the first member
+    with a clip, so ▶ does not vanish because the lead was best seen in a clip-less event;
+    else the lead's own row (its snapshot still serves as the hero); else any member.
+    """
+    lead = species[0]["rep"] if species else None
+    if lead and lead.get("has_clip"):
+        return lead
+    with_clip = next((m for m in members if m.get("has_clip")), None)
+    return with_clip or lead or (members[0] if members else None)
+
+
+def card_model(visit: dict, pad: float, now: Optional[float] = None,
+               focus: Optional[str] = None) -> dict:
+    """Everything the visit card renders, derived from the visit row + its members.
+
+    ``focus`` is the species a filtered feed is about (the species page, Recent filtered
+    by species): that species leads — hero, headline, play-button label — and the rest
+    are "with …". The partition is stable, so the others keep first-appearance order. A
+    focus the visit does not contain, or None, leaves the symmetric strip as it was.
+    """
     members = list(visit.get("members") or [])
     species = species_present(members)
+    focus_entry = None
+    if focus:
+        key = focus.strip().lower()
+        focus_entry = next((s for s in species if s["common_name"].lower() == key), None)
+        if focus_entry is not None:
+            species = [focus_entry] + [s for s in species if s is not focus_entry]
     unidentified = [m for m in members
                     if (m.get("common_name") or "").strip().lower() in ("", UNNAMED)]
     zones: list[str] = []
@@ -100,23 +128,19 @@ def card_model(visit: dict, pad: float, now: Optional[float] = None) -> dict:
     end = visit.get("end_time")
     in_progress = end is None
     duration = ((now or time.time()) if in_progress else float(end)) - start
-    # The member whose media stands in when the recordings window is unavailable: the
-    # first species' representative, else simply the first member with a clip.
-    fallback = None
-    if species:
-        fallback = species[0]["rep"]
-    else:
-        fallback = next((m for m in members if m.get("has_clip")), members[0] if members else None)
     return {
         **visit,
         "kind": "visit",
         "members": members,
         "species": species,
+        # The promoted species (or None) and everyone else, for the focused card layout.
+        "focus": focus_entry,
+        "others": [s for s in species if s is not focus_entry],
         "unidentified": unidentified,
         "zones_list": zones,
         "duration": max(0.0, duration),
         "in_progress": in_progress,
         "member_count": len(members),
         "window": None if in_progress else play_window(visit, pad),
-        "fallback": fallback,
+        "fallback": _fallback(species, members),
     }

@@ -137,9 +137,25 @@
   <h2>About</h2>
   <p class="about-descriptor"></p>
   <p class="about-extract"></p>
+  {# Expandable article sections (Description, Voice, Diet…) from Wikipedia. #}
+  <div class="about-sections"></div>
   <div class="about-tax"></div>
   <a class="about-link" target="_blank" rel="noopener noreferrer" hidden>Read more on Wikipedia →</a>
   <div class="about-credit">Info from Wikipedia, iNaturalist &amp; AVONET (CC BY 4.0)</div>
+</section>
+
+{# When this species is around: the region's month-by-month presence (iNaturalist) with
+   this yard's own sightings over it, plus AVONET's migration class. Built by
+   loadSeasonality(); hidden until there is something to show. #}
+<section id="season" class="card species-season" hidden>
+  <h2>Seasonality</h2>
+  <p class="season-label"></p>
+  <div class="chart-box"><canvas id="seasonChart"></canvas></div>
+  <div class="season-legend" aria-hidden="true">
+    <span><i class="legend-swatch swatch-region"></i>in the region</span>
+    <span><i class="legend-swatch swatch-yard"></i>at your feeder</span>
+  </div>
+  <div class="season-credit"></div>
 </section>
 
 <section class="grid2">

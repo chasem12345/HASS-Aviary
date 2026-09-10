@@ -35,8 +35,10 @@ SHEET_NAME = "AVONET2_eBird"
 # Columns kept, in output order. AVONET's own values are written through verbatim; the
 # mapping to human-readable food descriptions lives in app/traits.py so the data file
 # stays a faithful subset.
-FIELDS = ("species", "niche", "level", "lifestyle", "habitat")
-SOURCE_COLUMNS = ("Species2", "Trophic.Niche", "Trophic.Level", "Primary.Lifestyle", "Habitat")
+# migration: AVONET's 1 = sedentary, 2 = partially migratory, 3 = migratory. mass: grams.
+FIELDS = ("species", "niche", "level", "lifestyle", "habitat", "migration", "mass")
+SOURCE_COLUMNS = ("Species2", "Trophic.Niche", "Trophic.Level", "Primary.Lifestyle", "Habitat",
+                  "Migration", "Mass")
 
 OUT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

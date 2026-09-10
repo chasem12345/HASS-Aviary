@@ -72,7 +72,9 @@ def seed_notify_state() -> None:
     re-notify after an add-on restart.
     """
     with _known_lock:
-        _known_species.update(name.lower() for name in db.distinct_species())
+        # Tracked-bird (or heard) species only: a bird known solely as an other-bird in
+        # view still announces as new on its first tracked event.
+        _known_species.update(name.lower() for name in db.distinct_species(include_subjects=False))
         for source, ref in db.recent_refs(time.time() - 3600):
             _announced_refs[f"{source}:{ref}"] = None
         _tombstones.update(f"{s}:{r}" for s, r in db.tombstoned_refs())

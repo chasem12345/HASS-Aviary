@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.29.0
+
+- **Species pages lead with their species.** A visit (one Frigate review item) can hold
+  several birds, and its card used to lead with whichever appeared first — so the
+  Baltimore Oriole page opened on a Northern Cardinal hero with a ×7. On a species page,
+  and on Recent filtered by species, the card now leads with *that* species: its own crop
+  (even when it was another bird's tracked event and the oriole was the bird *also in
+  view*), its name, score and ×count, with the other birds present as a quiet *with
+  Northern Cardinal ×7 · Ruby-throated Hummingbird · full visit* line. **▶ play visit**
+  still plays Frigate's whole review-item window. Unfiltered feeds (Recent, the dashboard,
+  the visit page) keep the symmetric species strip. Also fixed: the hero always used the
+  tracked bird's crop even when the lead species' best picture was a second bird's own
+  crop.
+- **Birds named "also in view" now count as sightings.** A bird the identifier (or you)
+  named as another bird in someone else's event appears on its own species page and counts
+  **once per visit** everywhere — dashboard tiles and leaderboard, the species index and
+  its sparklines, species stats and the typical-hours line, the recap's rows, ribbons and
+  ticks, regularity tiers, charts, dex numbering and thumbnails. A visit with a cardinal
+  and an oriole in view is one seen for each; a species that is both the tracked bird and
+  a subject of the same event is still one. Unnamed, low-confidence and rejected other
+  birds never count; audio is unchanged. Implemented as a derived `species_sightings`
+  view over the detections and subjects tables — nothing to migrate or backfill.
+  **Removing a species** from the registry now also rules it out on every other-bird it
+  was named on, so it cannot resurface. Notifications are deliberately unchanged this
+  release: a species first met as an other-bird still announces as new on its first
+  tracked event.
+- **Seasonality card** on every species page: the region's month-by-month presence from
+  iNaturalist research-grade observations within 150 km of your Home Assistant location
+  (no API key; one request per species, cached a month), with your own sightings by month
+  drawn over it and a plain label — *Summer visitor · Apr–Aug*, *Winter visitor ·
+  Nov–Mar*, *Passage migrant · Apr–May & Sep–Oct*, *Year-round resident* — plus AVONET's
+  migration class (sedentary / partially migratory / migratory) and body mass. A dashed
+  line marks the current month. Without a location the card shows your own months and
+  says how to enable the regional view. See *Seasonality* in the docs.
+- **Fuller About.** The Wikipedia lead is often two sentences ("…a small passerine bird in
+  the tit family Paridae. It is largely found in the Southern United States."). The card
+  now adds the article's own sections — Description, Voice, Range & habitat, Diet,
+  Behaviour, Breeding, Migration where they exist — as collapsed, expandable sub-sections,
+  each trimmed to its first few sentences with the *Read more on Wikipedia* link for the
+  rest. Cached alongside the existing summary; existing caches refresh on next view.
+
 ## 0.28.0
 
 - **The recap is a timeline now.** A single day opens with a **Dawn chorus** card — the

@@ -196,6 +196,28 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
   font-size: 12px; color: var(--ink);
 }
 .species-about .about-link { font-size: 14px; }
+/* Article sections, collapsed by default so the card stays a card. */
+.about-sections { margin: 0 0 12px; max-width: 70ch; }
+.about-section { border-top: 1px solid var(--line); }
+.about-section:last-child { border-bottom: 1px solid var(--line); }
+.about-section > summary {
+  cursor: pointer; padding: 7px 0; font-size: 14px; font-weight: 600; color: var(--ink);
+  list-style: none; display: flex; align-items: center; gap: 8px; user-select: none;
+}
+.about-section > summary::-webkit-details-marker { display: none; }
+.about-section > summary::before {
+  content: "›"; display: inline-block; color: var(--muted); transition: transform .15s ease;
+}
+.about-section[open] > summary::before { transform: rotate(90deg); }
+.about-section > summary:hover { color: var(--accent); }
+.about-section > p { margin: 0 0 10px; font-size: 14px; line-height: 1.55; }
+/* Seasonality card */
+.season-label { margin: 0 0 10px; font-weight: 600; }
+.season-label:empty { display: none; }
+.season-legend { display: flex; gap: 14px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.swatch-region { background: color-mix(in srgb, var(--accent) 45%, transparent); border: 1px solid var(--line); }
+.swatch-yard { background: var(--frigate); }
+.season-credit { color: var(--muted); font-size: 11px; margin-top: 8px; opacity: .8; }
 .species-about .about-credit { color: var(--muted); font-size: 11px; margin-top: 10px; opacity: .8; }
 
 /* ----------------------------------------------------------------- day grouping */
@@ -282,6 +304,14 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 .visit-sp-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .visit-sp-score, .visit-sp-count { color: var(--muted); font-size: 11px; }
 .visit-sp-none, .visit-unid { color: var(--muted); padding-left: 10px; border-style: dashed; }
+/* Species-filtered feeds: the page's species leads the card; the rest read as "with …". */
+.visit-focus { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 2px; }
+.visit-focus-name { font-weight: 700; font-size: 15px; color: var(--ink); text-decoration: none; }
+.visit-focus-name:hover { color: var(--accent); text-decoration: none; }
+.visit-focus .sci { color: var(--muted); font-style: italic; font-size: 12px; flex-basis: 100%; }
+.visit-with { color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 8px; }
+.visit-with a { color: var(--muted); text-decoration: underline dotted; }
+.visit-with a:hover { color: var(--accent); }
 .visit-members { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
 .visit-members > summary { cursor: pointer; font-size: 12px; color: var(--muted); user-select: none; }
 .visit-members > summary:hover { color: var(--accent); }

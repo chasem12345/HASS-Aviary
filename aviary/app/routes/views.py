@@ -65,8 +65,10 @@ def _day_groups(detections: list[dict]) -> list[dict]:
     return groups
 
 
-def _hydrate(request: Request, items: list[dict]) -> list[dict]:
+def _hydrate(request: Request, items: list[dict], focus: Optional[str] = None) -> list[dict]:
     """Turn the feed's raw visit rows into card view-models; detections pass through.
+
+    ``focus`` is the species a filtered feed is about; the visit card leads with it.
 
     Each visit member is annotated with every species present in its event — the tracked
     bird plus any other bird the identifier found and named — so the visit's species
@@ -79,7 +81,7 @@ def _hydrate(request: Request, items: list[dict]) -> list[dict]:
     present = db.species_present([m["id"] for m in members]) if members else {}
     for m in members:
         m["present"] = present.get(m["id"], [])
-    return [visits.card_model(it, pad, now) if it.get("kind") == "visit" else it
+    return [visits.card_model(it, pad, now, focus=focus) if it.get("kind") == "visit" else it
             for it in items]
 
 
@@ -111,7 +113,7 @@ def _feed_page(
     has_more = len(items) > PAGE_SIZE
     items = items[:PAGE_SIZE]
     next_before = items[-1]["start_time"] if has_more and items else None
-    return _hydrate(request, items), next_before
+    return _hydrate(request, items, focus=species), next_before
 
 
 # ------------------------------------------------------------------------------- pages

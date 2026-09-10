@@ -51,11 +51,14 @@ _FORAGING = {
     "generalist": "Generalist",
 }
 
-_table: Optional[dict[str, tuple[str, str, str, str]]] = None
+# AVONET's Migration code. 1/2/3 in the source; kept as text in the table.
+_MIGRATION = {"1": "Sedentary", "2": "Partially migratory", "3": "Migratory"}
+
+_table: Optional[dict[str, tuple[str, str, str, str, str, str]]] = None
 _lock = threading.Lock()
 
 
-def _load() -> dict[str, tuple[str, str, str, str]]:
+def _load() -> dict[str, tuple[str, str, str, str, str, str]]:
     """Read the bundled table into memory once, on first lookup.
 
     Loaded lazily so startup stays fast (it runs before the web server binds its port),
@@ -67,7 +70,7 @@ def _load() -> dict[str, tuple[str, str, str, str]]:
     with _lock:
         if _table is not None:
             return _table
-        table: dict[str, tuple[str, str, str, str]] = {}
+        table: dict[str, tuple[str, str, str, str, str, str]] = {}
         try:
             with gzip.open(_DATA_PATH, "rt", encoding="utf-8", newline="") as f:
                 for row in csv.DictReader(f):
@@ -79,6 +82,9 @@ def _load() -> dict[str, tuple[str, str, str, str]]:
                         sys.intern(row.get("level") or ""),
                         sys.intern(row.get("lifestyle") or ""),
                         sys.intern(row.get("habitat") or ""),
+                        # Added in 0.29.0; an older table simply lacks the columns.
+                        sys.intern(row.get("migration") or ""),
+                        row.get("mass") or "",
                     )
         except (OSError, ValueError) as exc:
             # A missing or corrupt table must not break species pages.
@@ -100,13 +106,20 @@ def lookup(scientific_name: Optional[str]) -> Optional[dict]:
     row = _load().get(scientific_name.strip().lower())
     if row is None:
         return None
-    niche, level, lifestyle, habitat = row
+    niche, level, lifestyle, habitat, migration, mass = row
     key = niche.lower()
+    try:
+        mass_g: Optional[float] = round(float(mass), 1) if mass else None
+    except ValueError:
+        mass_g = None
     out = {
         "food": _FOOD.get(key) or (niche or None),
         "niche": niche or None,
         "trophic_level": level or None,
         "foraging": _FORAGING.get(lifestyle.lower()) or (lifestyle or None),
         "habitat": habitat or None,
+        # AVONET's migration class (whole-species, not regional) and body mass in grams.
+        "migration": _MIGRATION.get(migration.strip().rstrip(".0") if migration else "") or None,
+        "mass_g": mass_g,
     }
     return out if any(out.values()) else None

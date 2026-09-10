@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from .. import (
     backfill, bootstrap, crops, db, identify, ingest, kept, notify, probe, proxy,
-    species_audio, species_info, species_photos, traits,
+    seasonality, species_audio, species_info, species_photos, traits,
 )
 from . import ingress_url, set_theme
 
@@ -173,8 +173,11 @@ async def delete_species(name: str, request: Request, source_action: Optional[st
     """Remove every detection of a species (e.g. a misclassification-only species),
     tombstoning each ref, optionally clearing/deleting them at the source too."""
     action = _norm_source_action(source_action)
+    # A species can exist only as a named other-bird in view (no tracked detections of
+    # its own); delete_species rules those out too, so "found" is judged beforehand.
+    existed = bool((await run_in_threadpool(db.species_stats, name)).get("total") or 0)
     rows = await run_in_threadpool(db.delete_species, name)
-    if not rows:
+    if not rows and not existed:
         return {"ok": False, "error": "species not found", "deleted": 0}
     source_errors = []
     for det in rows:
@@ -733,6 +736,29 @@ async def species_info_endpoint(
     # First call decompresses the bundled table; keep that off the event loop.
     info["traits"] = await run_in_threadpool(traits.lookup, scientific)
     return info
+
+
+@router.get("/seasonality")
+async def seasonality_endpoint(
+    name: str = Query(..., min_length=1),
+    sci: Optional[str] = Query(None),
+):
+    """When a species is around: iNaturalist's regional observations by month (within
+    ``seasonality.RADIUS_KM`` of the Home Assistant location; None without a location),
+    this yard's own sightings by month, and AVONET's migration class and body mass.
+    """
+    region = await seasonality.resolve(name, sci)
+    yard = await run_in_threadpool(db.monthly_counts, name)
+    info = await species_info.resolve(name, sci)
+    scientific = info.get("scientific_name") or sci
+    tr = await run_in_threadpool(traits.lookup, scientific) or {}
+    return {
+        "region": region,
+        "yard": yard,
+        "migration": tr.get("migration"),
+        "mass_g": tr.get("mass_g"),
+        "month_now": time.localtime().tm_mon,
+    }
 
 
 @router.get("/reference-photos")

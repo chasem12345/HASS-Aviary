@@ -401,7 +401,10 @@ What changes:
   keep every per-event control (labels, ✗ wrong, 📌 keep, delete). A visit can hold
   more than one species: a cardinal and a wren at the bath together are two birds, and
   the card lists both. Events still waiting for a name show as an *n unidentified* chip
-  that links to the review queue.
+  that links to the review queue. **On a species page** (or Recent filtered by species)
+  the card leads with *that* species — its own crop, name, score and count — and lists
+  the other birds present as *with …* alongside a *full visit* link; ▶ still plays the
+  whole review item. Unfiltered feeds show every species as equals.
 - **One notification per species per visit.** The first event identified as a species
   fires `aviary_detection`; later events of the same species in the same visit stay
   silent; a *different* species in the same visit still announces. The payload gains
@@ -413,7 +416,9 @@ What changes:
   and charts count a species once per visit rather than once per tracked object. Audio
   detections are unaffected. Frigate events with no review item — history older than
   Frigate's review retention, or from before review items existed — still count once
-  each and render as their own cards, exactly as before.
+  each and render as their own cards, exactly as before. A bird named as *also in view*
+  in another bird's event (see *Other birds in view*) counts as a sighting of its own
+  species, once per visit, on the same terms.
 - **Per camera.** Frigate groups review items per camera, so a wide detection camera
   and a PTZ camera that both track the same bird produce two visits (unless the PTZ is
   in `ignore_cameras`); the **⇄ view on** button bridges them.
@@ -508,6 +513,35 @@ species hero adds a **typical hours** line — for example *Dawn singer · peaks
 from the run of hours around the species' all-time peak that hold at least half its
 count, named for where that run falls relative to today's sunrise and sunset. Species
 with under ten detections show no line yet.
+
+## Seasonality
+
+Every species page has a **Seasonality** card: when the bird is around, from two sources.
+
+- **In the region** — iNaturalist research-grade observations of the species within
+  **150 km** of your Home Assistant location, by the month they were observed (twelve
+  bars, scaled to the busiest month). No API key; one request per species, cached for a
+  month and refetched if the location moves. Aviary reads the location from Home
+  Assistant the same way the recap's sunrise does; without one the card shows only your
+  own months and says so.
+- **At your feeder** — your own sightings of the species by month (visits + heard
+  detections, all time), drawn over the regional bars, so you can see whether it turns
+  up at your place when it is in the area. A dashed line marks the current month.
+
+The label above the chart is derived from the regional curve: a month counts as
+*present* when it holds at least 4 % of the peak month's observations (and at least
+three). All (or eleven) months present → **Year-round resident**; one run of months
+including June or July → **Summer visitor · Apr–Aug**; including December or January →
+**Winter visitor · Nov–Mar**; two separate runs → **Passage migrant · Apr–May &
+Sep–Oct**; fewer than 30 regional records → *too few regional records to say*. Beside
+it, where the bundled AVONET table has the species: its **migration class** (sedentary,
+partially migratory, migratory — a whole-species trait, not a local one) and **body
+mass**. Sources: iNaturalist; AVONET (Tobias et al. 2022, CC BY 4.0).
+
+The **About** card's Wikipedia text now includes the article's own sections —
+Description, Voice, Range & habitat, Diet, Behaviour, Breeding, Migration, whichever
+exist — as collapsed sub-sections, each trimmed to its first few sentences; *Read more on
+Wikipedia* has the rest.
 
 ## Viewing the same moment on the other camera
 
@@ -719,8 +753,13 @@ on its own crops, and reports the tracked bird as the answer plus every other bi
   *that bird's* crop and embedding. It can never teach the identifier from a picture of
   the tracked bird, and vice versa.
 - **✗** rules a species out for that bird only; the next candidate is offered.
-- A visit's species strip and the detection page's *Birds in view* list both include
-  named other birds, so the wren at the cardinal's bath counts as present.
+- **Named other birds are sightings.** They appear on their own species page (leading
+  the visit card there), count once per visit in every tile, list, recap and chart, and
+  get a registry number and thumbnail like any other species — the wren at the cardinal's
+  bath is a wren visit. Other birds that could not be named, were rejected, or fell below
+  the thresholds never count. Removing a species from the registry also rules it out on
+  every other-bird it was named on. Notifications still key on tracked detections: a
+  species first met as an other-bird announces as new on its first tracked event.
 
 Other birds that could not be named do not enter the main Unidentified queue (the
 detection itself has a species); the page shows *N other birds in view need a name →*

@@ -220,20 +220,32 @@
 </article>
 {% endmacro %}
 
+{# Image URL for a species' representative: the crop of the bird itself — a second bird
+   found in another bird's event has its own crop file, keyed by its subject index — else
+   the event's thumbnail. #}
+{% macro rep_src(rep) -%}
+{%- set sidx = rep.subject_idx or 0 -%}
+{%- if has_crop(rep.source_ref, sidx) -%}
+{{ u('frigate_subject_crop', event_id=rep.source_ref, idx=sidx) if sidx else u('frigate_crop', event_id=rep.source_ref) }}
+{%- else -%}
+{{ u('frigate_snapshot', event_id=rep.source_ref) }}?thumbnail=true
+{%- endif -%}
+{%- endmacro %}
+
 {# One VISIT: a Frigate review item — every tracked object Frigate grouped into one
    stretch of activity on one camera. The card leads with the species present (each with
    the crop of the member that identified it best), plays the camera's recordings across
    the whole span, and folds the individual events away under an expander. Members render
-   with detection_card, so every per-event control (label, ✗, 📌, delete) is still there. #}
+   with detection_card, so every per-event control (label, ✗, 📌, delete) is still there.
+   On a species-filtered feed v.focus is that species: it leads (hero, headline, ▶ label)
+   and the other birds present read as "with …". #}
 {% macro visit_card(v, highlight_after=None, absolute_time=False) %}
 {% set newest = (v.members | map(attribute='start_time') | max) if v.members else v.start_time %}
-<article class="det-card visit-card{{ ' new' if highlight_after and newest > highlight_after }}{{ ' in-progress' if v.in_progress }}">
+<article class="det-card visit-card{{ ' new' if highlight_after and newest > highlight_after }}{{ ' in-progress' if v.in_progress }}{{ ' focused' if v.focus }}">
   <div class="visit-media">
     {% if v.species %}
-      {% set lead = v.species[0].rep %}
-      {% set lead_crop = u('frigate_crop', event_id=lead.source_ref) if has_crop(lead.source_ref) else None %}
-      <img loading="lazy" alt="{{ v.species[0].common_name }}"
-           src="{{ lead_crop or u('frigate_snapshot', event_id=lead.source_ref) ~ '?thumbnail=true' }}"
+      {% set lead = v.species[0] %}
+      <img loading="lazy" alt="{{ lead.common_name }}" src="{{ rep_src(lead.rep) }}"
            onerror="this.remove()">
     {% elif v.fallback %}
       <img loading="lazy" alt="bird"
@@ -250,17 +262,33 @@
     </div>
   </div>
   <div class="det-body">
+    {% if v.focus %}
+    {# Species-filtered feed: the page's species is the headline; the other birds present
+       are a quiet "with …" line so the oriole page reads as being about orioles. #}
+    <div class="visit-focus">
+      <a class="visit-focus-name" href="{{ u('species_detail', name=v.focus.common_name) }}"
+         title="{{ v.focus.common_name }}{% if v.focus.scientific_name %} ({{ v.focus.scientific_name }}){% endif %} · {{ v.focus.count }} event{{ '' if v.focus.count == 1 else 's' }} in this visit">{{ v.focus.common_name }}</a>
+      {% if v.focus.rep.id_score is not none %}<span class="visit-sp-score">{{ v.focus.rep.id_score | fmt_pct }}</span>{% endif %}
+      {% if v.focus.count > 1 %}<span class="visit-sp-count" title="tracked objects identified as this species">×{{ v.focus.count }}</span>{% endif %}
+      {% if v.focus.scientific_name %}<span class="sci">{{ v.focus.scientific_name }}</span>{% endif %}
+    </div>
+    <div class="visit-with">
+      {%- if v.others %}with
+        {% for s in v.others -%}
+        <a href="{{ u('species_detail', name=s.common_name) }}" title="{{ s.common_name }} · {{ s.count }} event{{ '' if s.count == 1 else 's' }}">{{ s.common_name }}</a>{% if s.count > 1 %} ×{{ s.count }}{% endif %}{{ ' · ' if not loop.last }}
+        {%- endfor %}
+      {%- endif %}
+      {%- if v.unidentified %}{{ ' · ' if v.others }}<a href="{{ u('unidentified') }}" title="Events in this visit that still need a name">{{ v.unidentified | length }} unidentified</a>{% endif %}
+      {{ ' · ' if v.others or v.unidentified }}<a href="{{ u('visit_detail', visit_id=v.id) }}">full visit</a>
+    </div>
+    {% else %}
     {# Species strip: everything identified in this visit, first-seen order. A visit with
        a cardinal AND a wren lists both — each is its own bird, with its own crop. #}
     <div class="visit-species">
       {% for s in v.species %}
       <a class="visit-sp" href="{{ u('species_detail', name=s.common_name) }}"
          title="{{ s.common_name }}{% if s.scientific_name %} ({{ s.scientific_name }}){% endif %} · {{ s.count }} event{{ '' if s.count == 1 else 's' }}">
-        {# The crop of the bird itself — a second bird found in another bird's event has
-           its own crop file, keyed by its subject index. #}
-        {% set sidx = s.rep.subject_idx or 0 %}
-        {% set crop = (u('frigate_subject_crop', event_id=s.rep.source_ref, idx=sidx) if sidx else u('frigate_crop', event_id=s.rep.source_ref)) if has_crop(s.rep.source_ref, sidx) else None %}
-        <img loading="lazy" alt="" src="{{ crop or u('frigate_snapshot', event_id=s.rep.source_ref) ~ '?thumbnail=true' }}" onerror="this.remove()">
+        <img loading="lazy" alt="" src="{{ rep_src(s.rep) }}" onerror="this.remove()">
         <span class="visit-sp-name">{{ s.common_name }}</span>
         {% if s.rep.id_score is not none %}<span class="visit-sp-score">{{ s.rep.id_score | fmt_pct }}</span>{% endif %}
         {% if s.count > 1 %}<span class="visit-sp-count">×{{ s.count }}</span>{% endif %}
@@ -275,6 +303,7 @@
       </a>
       {% endif %}
     </div>
+    {% endif %}
     <div class="meta">
       {% if v.zones_list %}<span title="zones">{{ v.zones_list | join(', ') | replace('_', ' ') }}</span>{% endif %}
       {% if absolute_time %}<a class="det-time" href="{{ u('visit_detail', visit_id=v.id) }}">{{ v.start_time | fmt_time }}</a>

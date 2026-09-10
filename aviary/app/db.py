@@ -113,6 +113,22 @@ CREATE TABLE IF NOT EXISTS species_confirmed (
     confirmed_at REAL NOT NULL
 );
 
+-- Regional seasonality cache: iNaturalist observations per month of year within a radius
+-- of the Home Assistant location, for the species page's Seasonality card. Pure cache
+-- (TTL-refilled; nothing user-authored). lat/lon record which location the months were
+-- fetched for, so a moved house refetches.
+CREATE TABLE IF NOT EXISTS species_season (
+    common_name TEXT PRIMARY KEY COLLATE NOCASE,
+    taxon_id    INTEGER,
+    lat         REAL,
+    lon         REAL,
+    radius_km   REAL,
+    months      TEXT,               -- JSON: 12 integers, January first
+    total       INTEGER,
+    fetched_at  REAL NOT NULL,
+    ok          INTEGER NOT NULL DEFAULT 0
+);
+
 -- Cached reference photos per species (licensed iNaturalist taxon photos), so a
 -- questionable detection can be compared against known pictures of the bird — the camera
 -- snapshot answers "what did we catch", these answer "what should it look like". Ordered
@@ -305,6 +321,51 @@ CREATE TABLE IF NOT EXISTS species_audio (
 
 _db_path: str = ""
 
+# One row per SIGHTING of a species in an event: the detections row itself (the tracked
+# bird, or the BirdNET row) plus one synthetic row per OTHER bird the identifier named in
+# a Frigate event (detection_subjects: is_primary = 0, ok or manual, with a name). Subject
+# rows inherit the event's time, visit, camera and snapshot, so a cardinal event with an
+# oriole in view is one oriole sighting at that moment, in that visit. ``id`` stays the
+# PARENT detection id in both arms — that is what makes the seen unit (visit_id or -id,
+# plus species) count a visit-less two-species event as one seen for EACH species, and
+# dedupe a species that is both the tracked bird and a subject of the same event.
+#
+# Species-shaped aggregates read FROM this view, aliased ``detections`` so the shared
+# clause helpers (_named_clause, _confirmed_clause) apply unchanged; row fetches, feeds
+# and every mutation stay on the table. Dropped and recreated on every start: a view
+# cannot be altered, and the ALTER TABLEs in init_db must have run first (zone and
+# visit_id are added columns).
+_SIGHTINGS_VIEW = """
+DROP VIEW IF EXISTS species_sightings;
+CREATE VIEW species_sightings AS
+    SELECT d.id, d.id AS detection_id, 0 AS subject_idx,
+           d.source, d.source_ref, d.common_name, d.scientific_name, d.species_code,
+           d.confidence, d.location, d.zone, d.start_time, d.end_time,
+           d.has_clip, d.has_snapshot, d.clip_ref, d.snapshot_ref, d.visit_id,
+           d.id_status, d.id_score, d.retained_at
+    FROM detections d
+    UNION ALL
+    SELECT d.id, d.id AS detection_id, s.idx AS subject_idx,
+           d.source, d.source_ref,
+           COALESCE(s.manual_name, s.common_name)    AS common_name,
+           COALESCE(s.manual_sci, s.scientific_name) AS scientific_name,
+           s.species_code,
+           d.confidence, d.location, d.zone, d.start_time, d.end_time,
+           d.has_clip, d.has_snapshot, d.clip_ref, d.snapshot_ref, d.visit_id,
+           s.id_status, s.score AS id_score, d.retained_at
+    FROM detection_subjects s
+    JOIN detections d ON d.id = s.detection_id
+    WHERE s.is_primary = 0 AND s.id_status IN ('ok', 'manual')
+      AND COALESCE(s.manual_name, s.common_name) IS NOT NULL;
+"""
+# Named secondaries are a small fraction of subject rows (most events hold one bird); a
+# partial index lets the view's second arm and feed_page's species test touch only them.
+_SUBJECTS_NAMED_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_subjects_named
+    ON detection_subjects (detection_id, idx)
+    WHERE is_primary = 0 AND id_status IN ('ok', 'manual')
+"""
+
 
 def init_db(db_path: str) -> None:
     """Configure the module and create the schema."""
@@ -363,6 +424,9 @@ def init_db(db_path: str) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_detections_visit ON detections (visit_id)"
         )
+        # The sightings view needs every column the loop above may have just added.
+        conn.executescript(_SIGHTINGS_VIEW)
+        conn.execute(_SUBJECTS_NAMED_INDEX)
         # One-time, best-effort zone backfill for rows that predate the zone column.
         # raw_json stores the Frigate `after` object (size-capped, largest values
         # dropped first — entered_zones is small and usually survives; some rows have
@@ -417,6 +481,11 @@ def init_db(db_path: str) -> None:
             # nothing for up to a month. Expire them so the next lookup refills the id.
             # One-time, and only for rows that predate the column.
             conn.execute("UPDATE species_info SET fetched_at = 0 WHERE inat_taxon_id IS NULL")
+        if "sections" not in info_cols:
+            # Wikipedia section extracts (0.29.0). Expire cached rows so the next view of
+            # each species page fills them in, rather than waiting out a month-long TTL.
+            conn.execute("ALTER TABLE species_info ADD COLUMN sections TEXT")
+            conn.execute("UPDATE species_info SET fetched_at = 0 WHERE sections IS NULL")
         # Everything already in the registry counts as approved: enabling the confirmation
         # gate must not dump an existing collection into the review queue. Guarded by a
         # marker rather than "is species_confirmed empty", which would re-stamp for someone
@@ -883,6 +952,9 @@ def feed_page(
     own cards, exactly as before. ``before``/``since`` are start_time cursors, valid for
     both kinds because a visit's start_time is a real timestamp too.
 
+    ``species`` matches the tracked bird OR a named other bird in view (see the
+    species_sightings view), so a species page lists every visit the bird took part in.
+
     Visit dicts carry ``kind="visit"`` and ``members``; detection dicts are unchanged.
     """
     v_params: list = []
@@ -897,10 +969,14 @@ def feed_page(
     else:
         d_where += " AND (source != 'frigate' OR visit_id IS NULL)"
     if species:
-        v_where += (" AND EXISTS (SELECT 1 FROM detections m WHERE m.visit_id = v.id"
-                    " AND m.common_name = ? COLLATE NOCASE)")
+        # A visit is about a species if ANY member's event contains it — as the tracked
+        # bird or as a named other bird (the sightings view spells out "named" once); a
+        # visit-less event qualifies on the same terms.
+        v_where += (" AND EXISTS (SELECT 1 FROM species_sightings ss WHERE ss.visit_id = v.id"
+                    " AND ss.common_name = ? COLLATE NOCASE)")
         v_params.append(species)
-        d_where += " AND common_name = ? COLLATE NOCASE"
+        d_where += (" AND EXISTS (SELECT 1 FROM species_sightings ss WHERE ss.id = detections.id"
+                    " AND ss.common_name = ? COLLATE NOCASE)")
         d_params.append(species)
     if zone:
         v_where += (" AND (" + _zone_like("v.zones", v_params, zone)
@@ -1053,6 +1129,27 @@ def set_subject_species_manually(detection_id: int, idx: int, common_name: str,
         return cur.rowcount > 0
 
 
+def _reject_subject_row(conn, detection_id: int, idx: int, species: str) -> None:
+    """Record "not a <species>" for one other-bird and clear its name (status rejected)."""
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO detection_subject_rejections
+            (detection_id, idx, species, rejected_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (detection_id, idx, species, time.time()),
+    )
+    conn.execute(
+        """
+        UPDATE detection_subjects
+        SET common_name = NULL, scientific_name = NULL, species_code = NULL,
+            manual_name = NULL, manual_sci = NULL, id_status = 'rejected'
+        WHERE detection_id = ? AND idx = ?
+        """,
+        (detection_id, idx),
+    )
+
+
 def reject_subject(detection_id: int, idx: int, species: str) -> bool:
     """"That other bird is not a <species>": remember it and clear the subject's name.
 
@@ -1067,24 +1164,27 @@ def reject_subject(detection_id: int, idx: int, species: str) -> bool:
         ).fetchone()
         if row is None:
             return False
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO detection_subject_rejections
-                (detection_id, idx, species, rejected_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (detection_id, idx, species, time.time()),
-        )
-        conn.execute(
-            """
-            UPDATE detection_subjects
-            SET common_name = NULL, scientific_name = NULL, species_code = NULL,
-                manual_name = NULL, manual_sci = NULL, id_status = 'rejected'
-            WHERE detection_id = ? AND idx = ?
-            """,
-            (detection_id, idx),
-        )
+        _reject_subject_row(conn, detection_id, idx, species)
         return True
+
+
+def _reject_named_subjects(conn, common_name: str) -> int:
+    """Rule ``common_name`` out for every other-bird currently named as it.
+
+    Part of removing a species: the sightings view would otherwise resurrect it from the
+    subject rows the moment its tracked detections were gone. Returns how many were cleared.
+    """
+    rows = conn.execute(
+        """
+        SELECT detection_id, idx FROM detection_subjects
+        WHERE is_primary = 0
+          AND COALESCE(manual_name, common_name) = ? COLLATE NOCASE
+        """,
+        (common_name,),
+    ).fetchall()
+    for r in rows:
+        _reject_subject_row(conn, r["detection_id"], r["idx"], common_name)
+    return len(rows)
 
 
 def subject_rejections(detection_id: int) -> dict[int, list[str]]:
@@ -1301,7 +1401,7 @@ def change_marker(source: Optional[str] = None, species: Optional[str] = None) -
         params.append(species)
     with _connect() as conn:
         row = conn.execute(
-            f"SELECT COUNT(*) AS total, MAX(start_time) AS newest FROM detections {where}",
+            f"SELECT COUNT(*) AS total, MAX(start_time) AS newest FROM species_sightings detections {where}",
             params,
         ).fetchone()
     return dict(row) if row else {"total": 0, "newest": None}
@@ -1324,7 +1424,7 @@ def species_stats(name: str) -> dict:
                 MIN(CASE WHEN source = 'birdnet' THEN start_time END) AS first_birdnet,
                 MAX(CASE WHEN source = 'birdnet' THEN start_time END) AS last_birdnet,
                 MAX(scientific_name)    AS scientific_name
-            FROM detections WHERE common_name = ?
+            FROM species_sightings detections WHERE common_name = ?
             """,
             (name,),
         ).fetchone()
@@ -1375,7 +1475,7 @@ def unconfirmed_count() -> int:
         row = conn.execute(
             """
             SELECT COUNT(*) AS c FROM (
-                SELECT common_name FROM detections
+                SELECT common_name FROM species_sightings detections
                 WHERE common_name != '' AND common_name != 'bird' COLLATE NOCASE
                   AND NOT EXISTS (
                     SELECT 1 FROM species_confirmed sc
@@ -1400,7 +1500,7 @@ def new_species_count(source: Optional[str] = None, since: Optional[float] = Non
     if since is None:
         with _connect() as conn:
             row = conn.execute(
-                f"SELECT COUNT(DISTINCT common_name) AS c FROM detections WHERE 1=1{src}",
+                f"SELECT COUNT(DISTINCT common_name) AS c FROM species_sightings detections WHERE 1=1{src}",
                 params,
             ).fetchone()
         return row["c"] if row else 0
@@ -1409,7 +1509,7 @@ def new_species_count(source: Optional[str] = None, since: Optional[float] = Non
         row = conn.execute(
             f"""
             SELECT COUNT(*) AS c FROM (
-                SELECT common_name FROM detections WHERE 1=1{src}
+                SELECT common_name FROM species_sightings detections WHERE 1=1{src}
                 GROUP BY common_name HAVING MIN(start_time) >= ?
             )
             """,
@@ -1460,7 +1560,7 @@ def species_list(
                MAX(CASE WHEN source = 'frigate' THEN start_time END) AS last_frigate,
                MIN(CASE WHEN source = 'birdnet' THEN start_time END) AS first_birdnet,
                MAX(CASE WHEN source = 'birdnet' THEN start_time END) AS last_birdnet
-        FROM detections {where}
+        FROM species_sightings detections {where}
         GROUP BY common_name{having}
         ORDER BY {order}
     """
@@ -1502,7 +1602,7 @@ def daily_recap(day_start: float, day_end: float,
                    -- enough here; refs are same-day event ids).
                    MAX(CASE WHEN source = 'frigate' AND has_snapshot = 1
                             THEN snapshot_ref END) AS snapshot_ref
-            FROM detections {where}
+            FROM species_sightings detections {where}
             GROUP BY common_name
             ORDER BY count DESC, last_time DESC
             """,
@@ -1514,7 +1614,7 @@ def daily_recap(day_start: float, day_end: float,
             firsts = conn.execute(
                 f"""
                 SELECT common_name, MIN(start_time) AS first_ever
-                FROM detections
+                FROM species_sightings detections
                 WHERE common_name IN ({marks}) COLLATE NOCASE
                 GROUP BY common_name
                 """,
@@ -1544,8 +1644,8 @@ def recap_ticks(day_start: float, day_end: float,
     with _connect() as conn:
         rows = conn.execute(
             f"""
-            SELECT common_name, source, MIN(start_time) AS t, COUNT(*) AS n
-            FROM detections {where}
+            SELECT common_name, source, MIN(start_time) AS t, COUNT(DISTINCT id) AS n
+            FROM species_sightings detections {where}
             GROUP BY common_name, source,
                      CASE WHEN source = 'frigate' THEN COALESCE(visit_id, -id) ELSE id END
             ORDER BY common_name, t
@@ -1575,7 +1675,7 @@ def hourly_by_species(start: float, end: float,
                    CAST(strftime('%H', start_time, 'unixepoch', 'localtime') AS INTEGER) AS hour,
                    {SEEN_COUNT_BY_SPECIES} AS seen,
                    {HEARD_COUNT}           AS heard
-            FROM detections {where}
+            FROM species_sightings detections {where}
             GROUP BY common_name, hour
             """,
             [start, end],
@@ -1621,7 +1721,7 @@ def species_regularity(before: Optional[float] = None,
                    MAX(start_time) AS last_seen,
                    COUNT(DISTINCT date(start_time, 'unixepoch', 'localtime')) AS days_active,
                    MAX(CASE WHEN start_time < ? THEN start_time END) AS prev_before
-            FROM detections {where}
+            FROM species_sightings detections {where}
             GROUP BY common_name
             """,
             [before if before is not None else 0.0],
@@ -1651,7 +1751,7 @@ def daily_counts_by_species(since: float,
             SELECT common_name,
                    date(start_time, 'unixepoch', 'localtime') AS day,
                    {SEEN_COUNT_BY_SPECIES} + {HEARD_COUNT} AS count
-            FROM detections {where}
+            FROM species_sightings detections {where}
             GROUP BY common_name, day
             """,
             [since],
@@ -1680,12 +1780,15 @@ def retained_detections() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def distinct_species(source: Optional[str] = None) -> list[str]:
+def distinct_species(source: Optional[str] = None, include_subjects: bool = True) -> list[str]:
+    """Every species name. ``include_subjects=False`` restricts to species that have been
+    the tracked bird of an event (or heard) — what "new species" notifications key on."""
     params: list = []
     where = "WHERE 1=1" + _source_clause(source, params) + _named_clause()
+    table = "species_sightings detections" if include_subjects else "detections"
     with _connect() as conn:
         rows = conn.execute(
-            f"SELECT DISTINCT common_name FROM detections {where} ORDER BY common_name",
+            f"SELECT DISTINCT common_name FROM {table} {where} ORDER BY common_name",
             params,
         ).fetchall()
     return [r["common_name"] for r in rows]
@@ -1706,7 +1809,7 @@ def species_dex_numbers(only_confirmed: bool = False) -> dict[str, int]:
             f"""
             SELECT common_name,
                    ROW_NUMBER() OVER (ORDER BY MIN(start_time), common_name) AS dex_no
-            FROM detections
+            FROM species_sightings detections
             WHERE 1=1{_confirmed_clause(only_confirmed)}{_named_clause()}
             GROUP BY common_name
             """
@@ -1734,7 +1837,7 @@ def registry_stats(only_confirmed: bool = False) -> dict:
             FROM (
                 SELECT MAX(source = 'frigate') AS seen,
                        MAX(source = 'birdnet') AS heard
-                FROM detections
+                FROM species_sightings detections
                 WHERE 1=1{_confirmed_clause(only_confirmed)}{_named_clause()}
                 GROUP BY common_name
             )
@@ -1760,7 +1863,7 @@ def latest_snapshot_refs(names: list[str]) -> dict[str, str]:
         rows = conn.execute(
             f"""
             SELECT common_name, snapshot_ref, MAX(start_time)
-            FROM detections
+            FROM species_sightings detections
             WHERE source = 'frigate' AND has_snapshot = 1 AND snapshot_ref IS NOT NULL
               AND common_name IN ({marks})
             GROUP BY common_name
@@ -1775,7 +1878,7 @@ def scientific_name_for(common_name: str) -> Optional[str]:
     with _connect() as conn:
         row = conn.execute(
             """
-            SELECT scientific_name FROM detections
+            SELECT scientific_name FROM species_sightings detections
             WHERE common_name = ? COLLATE NOCASE
               AND scientific_name IS NOT NULL AND scientific_name != ''
             ORDER BY start_time DESC LIMIT 1
@@ -1859,7 +1962,11 @@ def delete_species(common_name: str) -> list[dict]:
                 [(r["id"],) for r in rows],
             )
             _delete_subjects(conn, [r["id"] for r in rows])
+        # The species may also live on as a named other-bird in someone else's event —
+        # those rows count as sightings, so a removal has to rule them out too.
+        _reject_named_subjects(conn, common_name)
         conn.execute("DELETE FROM species_info WHERE common_name = ? COLLATE NOCASE", (common_name,))
+        conn.execute("DELETE FROM species_season WHERE common_name = ? COLLATE NOCASE", (common_name,))
         conn.execute("DELETE FROM species_audio WHERE common_name = ? COLLATE NOCASE", (common_name,))
         conn.execute("DELETE FROM species_photos WHERE common_name = ? COLLATE NOCASE", (common_name,))
         # Drop the approval too, so a species removed as a misclassification queues for
@@ -2553,10 +2660,10 @@ def put_species_info(row: dict[str, Any]) -> None:
             """
             INSERT INTO species_info (
                 common_name, scientific_name, descriptor, extract, wiki_url,
-                family, "order", conservation, fetched_at, ok, inat_taxon_id
+                family, "order", conservation, fetched_at, ok, inat_taxon_id, sections
             ) VALUES (
                 :common_name, :scientific_name, :descriptor, :extract, :wiki_url,
-                :family, :order, :conservation, :fetched_at, :ok, :inat_taxon_id
+                :family, :order, :conservation, :fetched_at, :ok, :inat_taxon_id, :sections
             )
             ON CONFLICT(common_name) DO UPDATE SET
                 scientific_name = excluded.scientific_name,
@@ -2570,7 +2677,8 @@ def put_species_info(row: dict[str, Any]) -> None:
                 ok              = excluded.ok,
                 -- A later fetch that failed to resolve the taxon shouldn't discard an
                 -- id we already have; reference audio depends on it.
-                inat_taxon_id   = COALESCE(excluded.inat_taxon_id, species_info.inat_taxon_id)
+                inat_taxon_id   = COALESCE(excluded.inat_taxon_id, species_info.inat_taxon_id),
+                sections        = excluded.sections
             """,
             row,
         )
@@ -2668,7 +2776,7 @@ def summary_stats(source: Optional[str] = None, since: Optional[float] = None,
                                     THEN common_name END) AS species,
                 {SEEN_COUNT}                 AS frigate_total,
                 {HEARD_COUNT}                AS birdnet_total
-            FROM detections {where}
+            FROM species_sightings detections {where}
             """,
             params,
         ).fetchone()
@@ -2700,7 +2808,7 @@ def top_species(
                    {SEEN_COUNT_BY_SPECIES} AS seen,
                    MAX(CASE WHEN source = 'frigate' THEN start_time END) AS last_frigate,
                    MAX(CASE WHEN source = 'birdnet' THEN start_time END) AS last_birdnet
-            FROM detections {where}
+            FROM species_sightings detections {where}
             GROUP BY common_name
             ORDER BY count DESC, last_seen DESC
             LIMIT ?
@@ -2734,7 +2842,7 @@ def detections_per_day(
             f"""
             SELECT date(start_time, 'unixepoch', 'localtime') AS day,
                    {SEEN_COUNT} + {HEARD_COUNT} AS count
-            FROM detections {where}
+            FROM species_sightings detections {where}
             GROUP BY day
             ORDER BY day
             """,
@@ -2763,7 +2871,7 @@ def hourly_activity(
             f"""
             SELECT CAST(strftime('%H', start_time, 'unixepoch', 'localtime') AS INTEGER) AS hour,
                    {SEEN_COUNT} + {HEARD_COUNT} AS count
-            FROM detections {where}
+            FROM species_sightings detections {where}
             GROUP BY hour
             ORDER BY hour
             """,
@@ -2771,3 +2879,60 @@ def hourly_activity(
         ).fetchall()
     counts = {int(r["hour"]): r["count"] for r in rows}
     return [{"hour": h, "count": counts.get(h, 0)} for h in range(24)]
+
+
+def monthly_counts(species: str) -> list[int]:
+    """All-time sightings of a species per calendar month (January first), the same units
+    as everywhere else (visits + heard rows) — the Seasonality card's "at your feeder"
+    overlay against the regional curve."""
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT CAST(strftime('%m', start_time, 'unixepoch', 'localtime') AS INTEGER) AS month,
+                   {SEEN_COUNT} + {HEARD_COUNT} AS count
+            FROM species_sightings detections
+            WHERE common_name = ? COLLATE NOCASE
+            GROUP BY month
+            """,
+            (species,),
+        ).fetchall()
+    counts = {int(r["month"]): int(r["count"] or 0) for r in rows}
+    return [counts.get(m, 0) for m in range(1, 13)]
+
+
+# ---------------------------------------------------------------- seasonality cache
+
+def get_species_season(common_name: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM species_season WHERE common_name = ? COLLATE NOCASE",
+            (common_name,),
+        ).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    try:
+        d["months"] = json.loads(d["months"]) if d.get("months") else None
+    except (ValueError, TypeError):
+        d["months"] = None
+    return d
+
+
+def put_species_season(row: dict) -> None:
+    values = dict(row)
+    months = values.get("months")
+    values["months"] = json.dumps(months) if months is not None else None
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO species_season
+                (common_name, taxon_id, lat, lon, radius_km, months, total, fetched_at, ok)
+            VALUES (:common_name, :taxon_id, :lat, :lon, :radius_km, :months, :total,
+                    :fetched_at, :ok)
+            ON CONFLICT(common_name) DO UPDATE SET
+                taxon_id = excluded.taxon_id, lat = excluded.lat, lon = excluded.lon,
+                radius_km = excluded.radius_km, months = excluded.months,
+                total = excluded.total, fetched_at = excluded.fetched_at, ok = excluded.ok
+            """,
+            values,
+        )

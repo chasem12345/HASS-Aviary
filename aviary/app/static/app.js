@@ -220,6 +220,21 @@
       };
       set(".about-descriptor", info.descriptor);
       set(".about-extract", info.extract);
+      // The article's own sections, collapsed: the lead paragraph is often two sentences.
+      const secs = el.querySelector(".about-sections");
+      if (secs && Array.isArray(info.sections)) {
+        info.sections.forEach((sec) => {
+          if (!sec || !sec.title || !sec.text) return;
+          const d = document.createElement("details");
+          d.className = "about-section";
+          const sum = document.createElement("summary");
+          sum.textContent = sec.title;
+          const p = document.createElement("p");
+          p.textContent = sec.text;
+          d.appendChild(sum); d.appendChild(p);
+          secs.appendChild(d);
+        });
+      }
 
       const tax = el.querySelector(".about-tax");
       [["Order", info.order], ["Family", info.family], ["Status", info.conservation],
@@ -377,10 +392,110 @@
     } catch (e) { /* leave the reference card hidden */ }
   }
 
+  // ------------------------------------------------------------- seasonality
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  // Dashed line at the current month, so "is it here now?" is one glance.
+  function nowMarker(month) {
+    return [{
+      id: "aviaryNow",
+      afterDraw(chart) {
+        const { ctx, chartArea: a, scales: { x } } = chart;
+        if (!a || !x || !month) return;
+        const X = x.getPixelForValue(month - 1);
+        ctx.save();
+        ctx.strokeStyle = cssVar("--warn", "#d9a441"); ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(X, a.top); ctx.lineTo(X, a.bottom); ctx.stroke();
+        ctx.fillStyle = cssVar("--warn", "#d9a441"); ctx.font = "11px " + cssVar("--font-body", "sans-serif");
+        ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.fillText("now", X, a.top + 2);
+        ctx.restore();
+      },
+    }];
+  }
+
+  async function loadSeasonality(name, scientific) {
+    const el = document.getElementById("season");
+    if (!el) return;
+    try {
+      const d = await getJson("/seasonality", { name: name, sci: scientific });
+      const region = d.region && Array.isArray(d.region.months) ? d.region : null;
+      const yard = Array.isArray(d.yard) ? d.yard : [];
+      const yardTotal = yard.reduce((a, b) => a + b, 0);
+      if (!region && !yardTotal && !d.migration) return;
+
+      const bits = [];
+      if (region && region.label) bits.push(region.label);
+      if (d.migration) bits.push(d.migration);
+      if (d.mass_g) bits.push(Math.round(d.mass_g) + " g");
+      el.querySelector(".season-label").textContent = bits.join(" · ");
+
+      const credit = el.querySelector(".season-credit");
+      if (region) {
+        credit.textContent = "Regional presence: " + region.total.toLocaleString() +
+          " iNaturalist research-grade observations within " + region.radius_km +
+          " km of your Home Assistant location, by month observed" +
+          (d.migration ? " · migration class & mass: AVONET (CC BY 4.0)" : "");
+      } else {
+        credit.textContent = "Set a location in Home Assistant to see the region's month-by-month presence" +
+          (d.migration ? " · migration class & mass: AVONET (CC BY 4.0)" : "");
+      }
+
+      const datasets = [];
+      const scales = {
+        x: { ticks: { color: axisColor() }, grid: { display: false } },
+      };
+      if (region) {
+        const peak = Math.max.apply(null, region.months) || 1;
+        datasets.push({
+          label: "in the region", yAxisID: "yRegion",
+          data: region.months.map((v) => Math.round(1000 * v / peak) / 10),
+          backgroundColor: tint(cssVar("--accent", "#2f7d5b"), 0.35), borderRadius: 3,
+        });
+        scales.yRegion = {
+          position: "left", beginAtZero: true, max: 100,
+          ticks: { color: axisColor(), callback: (v) => v + "%" },
+          title: { display: true, text: "share of peak month", color: axisColor(), font: { size: 11 } },
+        };
+      }
+      if (yardTotal) {
+        datasets.push({
+          label: "at your feeder", yAxisID: "yYard", data: yard,
+          backgroundColor: cssVar("--frigate", "#3b6ea5"), borderRadius: 3,
+          barPercentage: region ? 0.45 : 0.8,
+        });
+        scales.yYard = {
+          position: region ? "right" : "left", beginAtZero: true,
+          ticks: { color: axisColor(), precision: 0 }, grid: { drawOnChartArea: !region },
+          title: { display: true, text: "your sightings", color: axisColor(), font: { size: 11 } },
+        };
+      }
+      if (datasets.length) {
+        new Chart(document.getElementById("seasonChart"), {
+          type: "bar",
+          data: { labels: MONTHS, datasets },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { callbacks: {
+              label: (c) => c.dataset.yAxisID === "yRegion"
+                ? c.parsed.y + "% of peak (" + region.months[c.dataIndex].toLocaleString() + " obs.)"
+                : c.parsed.y + " at your feeder",
+            } } },
+            scales,
+          },
+          plugins: nowMarker(d.month_now),
+        });
+      } else {
+        el.querySelector(".chart-box").hidden = true;
+      }
+      el.hidden = false;
+    } catch (e) { /* leave the Seasonality card hidden */ }
+  }
+
   window.aviaryInitSpecies = function (opts) {
     perDayChart({ species: opts.species, days: 30 });
     hourlyChart({ species: opts.species, days: 3650 }, opts.sun);
     loadSpeciesInfo(opts.species, opts.scientific);
+    loadSeasonality(opts.species, opts.scientific);
     loadReferencePhotos(opts.species, opts.scientific);
     loadReferenceAudio(opts.species, opts.scientific);
   };
