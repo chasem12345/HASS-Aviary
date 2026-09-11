@@ -427,7 +427,9 @@ async def _process(row: dict[str, Any]) -> None:
     # Keep the crop that backed the answer either way. The review queue is where seeing
     # what the model actually looked at matters MOST — especially when the classified
     # footage (a zoomed PTZ recording) is not the event's own media.
-    await asyncio.to_thread(crops.save, ref, result.get("best_crop"))
+    if await asyncio.to_thread(crops.save, ref, result.get("best_crop")):
+        # The row keeps a flag too: the feed filter needs "has its own picture" in SQL.
+        await asyncio.to_thread(db.set_has_crop, ref, True)
     # And every OTHER bird the service found in the event, each on its own crop and
     # embedding. Done on both branches below: a second bird can be perfectly clear while
     # the tracked one is not.

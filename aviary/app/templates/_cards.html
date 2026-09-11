@@ -22,7 +22,11 @@
         <img loading="lazy" alt="{{ d.common_name }}"
              src="{{ crop or u('frigate_snapshot', event_id=d.source_ref) }}">
       {% else %}
-        <div class="nomedia"><span class="bird-mark">🐦</span><span>no media</span></div>
+        {# "footage expired": the media audit found Frigate no longer has this event's
+           clip or snapshot. The crop (or species photo) still stands in. #}
+        <div class="nomedia"><span class="bird-mark">🐦</span>
+          <span{% if d.media_expired_at %} title="Frigate expired this footage · noticed {{ d.media_expired_at | fmt_time }}"{% endif %}>
+            {{ 'footage expired' if d.media_expired_at else 'no media' }}</span></div>
         <img loading="lazy" class="overlay-img" alt="{{ d.common_name }}"
              src="{{ crop or u('species_image', name=d.common_name) }}" onerror="this.remove()">
       {% endif %}

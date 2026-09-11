@@ -649,6 +649,41 @@ recent Frigate; without the export id an export fails loudly rather than being o
 Turn the whole feature off with `keepsakes: false`, or keep the flag but skip the video
 with `keepsake_video: false`.
 
+## Expired footage
+
+Frigate forgets footage on its own schedule, and until now Aviary never noticed: a
+detection's clip and snapshot flags came from the MQTT message at the time and were never
+checked again, so a species with no visit inside your retention still got a player, a
+▶ button and a thumbnail that 404s. A **media audit** now keeps the two in step.
+
+After start-up (once the backfill has finished) and every six hours, Aviary asks Frigate
+for the bird events it still has — one paged listing, the same call the backfill uses —
+and compares it with its own rows:
+
+- an event Frigate no longer lists, or lists with neither clip nor snapshot, is marked
+  **expired**: its media flags go to zero and the time is stamped. **The row stays.**
+  Counts, first-seen, attendance tiers, registry numbers and stored crops are history,
+  not footage, and none of them move;
+- an event Frigate lists with only one of the two gone has that one flag synced;
+- an event that was marked expired but that Frigate lists with media again (a pin
+  restored, footage re-imported) is restored.
+
+**What you see.** Recent, the species pages and the zone feeds **hide expired
+detections** — and visits made up only of them — unless the event has its own stored
+crop, in which case the bird's picture is still worth a card and it stays. The recap,
+the dashboard, species statistics and the Kept page are unchanged, and a card reached
+directly (a detection or visit page) shows *footage expired* in place of the player,
+with the crop or species photo standing in. The species tile prefers a stored crop or a
+kept event's picture; with neither it shows the generic species photo instead of a
+broken thumbnail. Kept events (📌 or a keepsake) never expire in this audit, because
+Frigate keeps listing them.
+
+**Safety.** The audit acts only on a *complete* listing. If Frigate is unreachable, fails
+part-way, or reports no bird events at all while Aviary ingested some today, nothing is
+marked — a partial answer cannot tell "gone" from "not seen yet". Events from the last
+hour are left alone while Frigate finalises them. Nothing here talks to Frigate more than
+the backfill already does, and nothing is ever deleted.
+
 ## Filtering by camera
 
 A common setup is two cameras on one feeder: a wide one for zone detection, and a zoomed

@@ -14,8 +14,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    backfill, bootstrap, crops, db, identify, ingest, keepsakes, kept, notify, probe, proxy,
-    seasonality, solar, species_audio, species_info, species_photos,
+    backfill, bootstrap, crops, db, identify, ingest, keepsakes, kept, media_audit, notify,
+    probe, proxy, seasonality, solar, species_audio, species_info, species_photos,
 )
 from .mqtt_client import MqttIngestor
 from .routes import ASSET_VER, register_routes
@@ -162,6 +162,14 @@ def create_app() -> FastAPI:
     keepsakes.configure(settings)
     if keepsakes.enabled():
         ingest.set_keepsake_hook(keepsakes.schedule)
+    media_audit.configure(settings)
+    # One-time catch-up for the has_crop column: rows from before it existed learn
+    # whether their crop file is on disk (one directory listing, one UPDATE).
+    if not db.get_pref("has_crop_scan_done"):
+        flagged = db.mark_crops_present(crops.list_primary_refs())
+        db.set_pref("has_crop_scan_done", "1")
+        if flagged:
+            log.info("Flagged %d detection(s) as having a stored crop.", flagged)
     # Seed BEFORE MQTT/backfill start so existing species/refs never fire notifications.
     ingest.seed_notify_state()
     # Same for visits: species already present in a recent/open visit were announced (or
@@ -217,12 +225,16 @@ def create_app() -> FastAPI:
         # Species keepsakes: pin each species' first and latest sighting at Frigate. After
         # the backfill (so imported history counts), then a periodic safety-net sweep.
         keepsake_task = asyncio.create_task(keepsakes.run(after=backfill_task))
+        # Media audit: mark detections whose footage Frigate has expired, so cards and
+        # feeds stop offering players for video that is gone. Keepsakes wait for its
+        # first pass.
+        audit_task = asyncio.create_task(media_audit.run(after=backfill_task))
         # Charts and the "today" boundary use OS localtime; make misconfiguration visible.
         log.info("Aviary started (timezone: %s, TZ=%s).", time.strftime("%Z"), os.environ.get("TZ", "unset"))
         try:
             yield
         finally:
-            for task in (backfill_task, identify_maint_task, solar_task, keepsake_task):
+            for task in (backfill_task, identify_maint_task, solar_task, keepsake_task, audit_task):
                 if task is not None:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):

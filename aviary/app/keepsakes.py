@@ -40,7 +40,7 @@ import time
 from datetime import date
 from typing import Optional
 
-from . import db, kept
+from . import db, kept, media_audit
 
 log = logging.getLogger("aviary.keepsakes")
 
@@ -444,8 +444,14 @@ async def run(after: Optional[asyncio.Task] = None) -> None:
             await after
         except Exception:  # noqa: BLE001 — the backfill logs its own failures
             pass
-    # Let the identification workers and Frigate settle before the first sweep.
+    # Let the identification workers and Frigate settle before the first sweep, and let
+    # the media audit go first: once it has marked expired footage, oldest_sighting IS
+    # the oldest surviving sighting and the probing search is rarely needed.
     await asyncio.sleep(20)
+    try:
+        await asyncio.wait_for(media_audit.first_pass.wait(), timeout=600)
+    except asyncio.TimeoutError:
+        log.info("Media audit has not finished after 10 minutes; sweeping keepsakes anyway.")
     deep = True  # the start-up sweep is the one that may see newly imported history
     while True:
         started = time.monotonic()

@@ -28,6 +28,19 @@
   The **Kept** page opens with the shelf — species, first, latest, ▶ clip — and cards
   carry a 🏅 badge. Options `keepsakes` and `keepsake_video`. Needs Frigate 0.18+ for the
   exports. See *Species keepsakes* in the docs.
+- **Aviary stops believing in footage Frigate has expired.** A detection's clip and
+  snapshot flags were written once from the MQTT message and never checked again, so a
+  species with no visit inside Frigate's retention still got players, ▶ buttons and
+  thumbnail links that 404. A **media audit** now runs after start-up and every six hours:
+  one paged listing of the bird events Frigate still has, compared with ours. Events
+  Frigate no longer lists (or lists with no media) are marked *expired* — flags zeroed,
+  time stamped, row kept, so counts, first-seen, tiers and dex numbers do not move; a
+  single expired flag is synced; footage that reappears is restored. **Recent and species
+  feeds hide expired detections** (and visits made only of them) unless the event has its
+  own stored crop; the recap, stats and direct pages still show everything, and a card
+  that is reached directly reads *footage expired*. The audit acts only on a complete
+  listing, so a Frigate hiccup can never mark live footage as gone. See *Expired footage*
+  in the docs.
 - **Docs correction on 📌 keep.** Since Frigate 0.14 the retain flag protects the event
   (row, snapshot, thumbnail) but *not* the recording segments behind its clip, which
   still expire with the alerts/detections retention — only Frigate's emergency low-disk

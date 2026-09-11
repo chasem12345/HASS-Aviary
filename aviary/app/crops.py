@@ -114,6 +114,25 @@ def remove(event_id: str) -> None:
             log.debug("Could not remove the crop %s: %s", path, exc)
 
 
+def list_primary_refs() -> list[str]:
+    """Event ids that have a PRIMARY crop on disk (``{event}.jpg``; subject crops carry a
+    ``-idx`` suffix and are skipped). For the one-time has_crop catch-up."""
+    if _dir is None or not os.path.isdir(_dir):
+        return []
+    refs = []
+    for name in os.listdir(_dir):
+        if not name.endswith(".jpg") or name.endswith(".part"):
+            continue
+        stem = name[:-4]
+        # A subject crop is "<event>-<n>.jpg"; Frigate ids themselves contain a dash
+        # ("1718123456.123456-abc123"), so only a purely numeric suffix marks a subject.
+        head, sep, tail = stem.rpartition("-")
+        if sep and tail.isdigit() and head:
+            continue
+        refs.append(stem)
+    return refs
+
+
 def remove_subjects(event_id: str) -> None:
     """Delete only the OTHER birds' crops (before a re-identify replaces them)."""
     safe = _safe(event_id)
