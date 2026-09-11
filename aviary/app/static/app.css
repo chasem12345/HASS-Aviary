@@ -1006,6 +1006,33 @@ img.overlay-img {
 }
 
 /* --------------------------------------------------------------- kept catalogue */
+/* Species keepsake badge on a detection card: this event is a species' first or
+   latest sighting and Aviary keeps it — separate from the user's 📌. */
+.keepsake-badge {
+  font-size: 11px; color: var(--accent); border: 1px solid var(--accent);
+  border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+}
+/* The keepsakes shelf on the Kept page. */
+.table-scroll { overflow-x: auto; }
+.keepsakes { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 8px; }
+.keepsakes th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.keepsakes td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.keepsake-species a { font-weight: 600; }
+.keepsake-species em { display: block; color: var(--muted); font-style: italic; font-size: 12px; }
+.keepsake-cell { min-width: 220px; }
+.keepsake-cell .muted { color: var(--muted); }
+.keepsake-thumb { display: inline-block; vertical-align: middle; margin-right: 10px; }
+.keepsake-thumb img {
+  width: 72px; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 8px;
+  background: var(--line); display: block;
+}
+.keepsake-meta { display: inline-flex; flex-direction: column; gap: 4px; vertical-align: middle; }
+.keepsake-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.keepsake-actions button {
+  background: none; border: 1px solid var(--line); border-radius: 6px; color: var(--ink);
+  font: inherit; font-size: 12px; padding: 2px 8px; cursor: pointer;
+}
+.keepsake-actions button:hover { border-color: var(--accent); color: var(--accent); }
 .kept-species { margin: 22px 0 10px; align-items: baseline; }
 .kept-species h2 { margin: 0; font-size: 17px; }
 .kept-species .sci { color: var(--muted); font-style: italic; font-size: 12px; }

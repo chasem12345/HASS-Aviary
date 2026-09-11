@@ -3,6 +3,7 @@
    lazy-loaded by the same app.js functions the default template uses — the ids and
    classes below are the contract (#dex-order/#dex-family/#dex-status, #ref-audio). #}
 {% extends "base.html" %}
+{% from "_cards.html" import hero_img with context %}
 {% block title %} · No.{{ '%03d' | format(dex_no) if dex_no else '???' }} {{ species }}{% endblock %}
 {% block content %}
 
@@ -43,8 +44,7 @@
      image icon. Same pattern as _cards.html. #}
   <div class="dex-screen dex-photo">
     <span class="thumb-mark">🐦</span>
-    <img class="overlay-img" alt="{{ species }}" onerror="this.remove()"
-         src="{{ u('frigate_snapshot', event_id=thumb) if thumb else u('species_image', name=species) }}">
+    {{ hero_img(hero, species, full=True, alt=species) }}
   </div>
 
   <div class="dex-side">

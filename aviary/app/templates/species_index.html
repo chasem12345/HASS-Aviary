@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_cards.html" import hero_img with context %}
 {% block title %} · {{ 'Unconfirmed' if reviewing else ('New species' if only_new else 'Species') }}{% endblock %}
 {% block content %}
 <div class="controls">
@@ -62,13 +63,10 @@
      data-name="{{ s.common_name | lower }}" data-sci="{{ (s.scientific_name or '') | lower }}"
      data-count="{{ s.count or 0 }}" data-last="{{ s.last_seen or 0 }}" data-first="{{ s.first_seen or 0 }}">
     <div class="tile-thumb">
-      {% if thumbs.get(s.common_name) %}
-      <img loading="lazy" alt="" src="{{ u('frigate_snapshot', event_id=thumbs[s.common_name]) }}?thumbnail=true">
-      {% else %}
+      {# The species' own picture (its crop, or a kept/recent snapshot), over a
+         placeholder; falls back to the generic species photo if Frigate expired it. #}
       <span class="thumb-mark">🐦</span>
-      <img loading="lazy" class="overlay-img" alt=""
-           src="{{ u('species_image', name=s.common_name) }}" onerror="this.remove()">
-      {% endif %}
+      {{ hero_img(heroes.get(s.common_name), s.common_name) }}
       {% if reviewing %}<span class="new-badge unconfirmed-badge">UNCONFIRMED</span>
       {% elif is_new %}<span class="new-badge">NEW</span>{% endif %}
     </div>

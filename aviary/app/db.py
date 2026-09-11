@@ -292,6 +292,31 @@ CREATE TABLE IF NOT EXISTS detection_subject_rejections (
     PRIMARY KEY (detection_id, idx, species)
 );
 
+-- Species keepsakes: the FIRST and the LATEST camera sighting of each species, kept at
+-- Frigate automatically (retain_indefinitely on the event plus an export of the padded
+-- clip). One row per (species, role); "latest" moves to a newer sighting at most once
+-- per local day and the previous one is released, so a species never holds more than
+-- two. Independent of the user's own 📌 pin (detections.retained_at): Frigate's flag is
+-- held while EITHER wants it, and releasing one never clears the other's hold.
+-- detection_id is the parent event — for a species that was only "also in view" in
+-- another bird's event, that event is what gets kept (subject_idx says which bird).
+CREATE TABLE IF NOT EXISTS species_keepsakes (
+    common_name      TEXT    NOT NULL COLLATE NOCASE,
+    role             TEXT    NOT NULL,             -- 'first' | 'latest'
+    detection_id     INTEGER NOT NULL,
+    subject_idx      INTEGER NOT NULL DEFAULT 0,
+    start_time       REAL    NOT NULL,             -- the sighting's time (daily cadence, display)
+    kept_at          REAL    NOT NULL,             -- when Frigate accepted the retain
+    export_id        TEXT,                         -- event camera's padded window
+    export_file      TEXT,                         -- served basename, resolved lazily
+    zoom_export_id   TEXT,                         -- paired camera's window, when paired
+    zoom_export_file TEXT,
+    export_status    TEXT,                         -- queued | not applicable | failed: ...
+    export_tried_at  REAL,                         -- set once tried; startup retries failures
+    PRIMARY KEY (common_name, role)
+);
+CREATE INDEX IF NOT EXISTS idx_keepsakes_detection ON species_keepsakes (detection_id);
+
 """
 
 # Split out of _SCHEMA so the kind-column migration below can recreate just this table.
@@ -1596,12 +1621,10 @@ def daily_recap(day_start: float, day_end: float,
                    MAX(start_time)      AS last_time,
                    -- Distinct local days with activity: the multi-day recap's
                    -- "how regular a visitor" signal.
-                   COUNT(DISTINCT date(start_time, 'unixepoch', 'localtime')) AS days_active,
-                   -- A representative image for the row: the latest snapshot-bearing
-                   -- Frigate event of the day (MAX pairs ref with time lexically well
-                   -- enough here; refs are same-day event ids).
-                   MAX(CASE WHEN source = 'frigate' AND has_snapshot = 1
-                            THEN snapshot_ref END) AS snapshot_ref
+                   COUNT(DISTINCT date(start_time, 'unixepoch', 'localtime')) AS days_active
+                   -- No image column here: the row's picture comes from
+                   -- species_heroes(start, end) via heroes.pick, so a species that was
+                   -- only "also in view" shows its own crop, not the other bird.
             FROM species_sightings detections {where}
             GROUP BY common_name
             ORDER BY count DESC, last_time DESC
@@ -1854,23 +1877,58 @@ def registry_stats(only_confirmed: bool = False) -> dict:
     }
 
 
-def latest_snapshot_refs(names: list[str]) -> dict[str, str]:
-    """Newest Frigate snapshot event-ref per species, for thumbnails."""
+# How many of a species' newest camera sightings the hero picker gets to choose from.
+# Enough to skip past a run of subject-only sightings without a stored crop; small enough
+# that the species index (fifty-odd species) stays one cheap query.
+HERO_CANDIDATES = 8
+
+
+def species_heroes(names: list[str], start: Optional[float] = None,
+                   end: Optional[float] = None) -> dict[str, list[dict]]:
+    """Per species, the camera sightings a hero image may come from — newest first.
+
+    The ``HERO_CANDIDATES`` newest Frigate sightings of each species, plus every one that
+    is kept (the user's 📌 or a keepsake) because a kept event's media is the one thing
+    Frigate is guaranteed to still have. Rows carry ``subject_idx`` so the picker (see
+    ``heroes.pick``) can prefer the bird's OWN crop: a species that was only "also in
+    view" in another bird's event inherits that event's snapshot here, and showing that
+    would be showing the other bird. ``start``/``end`` bound the sightings (the recap's
+    window); kept rows are only included when they fall inside it too.
+    """
     if not names:
         return {}
     marks = ",".join("?" * len(names))
+    window = ""
+    params: list = list(names)
+    if start is not None:
+        window += " AND d.start_time >= ?"
+        params.append(start)
+    if end is not None:
+        window += " AND d.start_time < ?"
+        params.append(end)
     with _connect() as conn:
         rows = conn.execute(
             f"""
-            SELECT common_name, snapshot_ref, MAX(start_time)
-            FROM species_sightings detections
-            WHERE source = 'frigate' AND has_snapshot = 1 AND snapshot_ref IS NOT NULL
-              AND common_name IN ({marks})
-            GROUP BY common_name
+            WITH ranked AS (
+                SELECT d.common_name, d.id, d.source_ref, d.subject_idx, d.start_time,
+                       d.has_snapshot, d.retained_at,
+                       EXISTS (SELECT 1 FROM species_keepsakes k
+                               WHERE k.detection_id = d.id) AS is_keepsake,
+                       ROW_NUMBER() OVER (PARTITION BY d.common_name
+                                          ORDER BY d.start_time DESC, d.subject_idx) AS rn
+                FROM species_sightings d
+                WHERE d.source = 'frigate' AND d.common_name IN ({marks}){window}
+            )
+            SELECT * FROM ranked
+            WHERE rn <= {int(HERO_CANDIDATES)} OR retained_at IS NOT NULL OR is_keepsake
+            ORDER BY common_name, start_time DESC, subject_idx
             """,
-            names,
+            params,
         ).fetchall()
-    return {r["common_name"]: r["snapshot_ref"] for r in rows}
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r["common_name"], []).append(dict(r))
+    return out
 
 
 def scientific_name_for(common_name: str) -> Optional[str]:
@@ -1905,7 +1963,12 @@ def detection_by_ref(source: str, source_ref: str) -> Optional[dict]:
 
 
 def delete_detection(det_id: int) -> Optional[dict]:
-    """Delete one detection and tombstone its ref. Returns the deleted row."""
+    """Delete one detection and tombstone its ref. Returns the deleted row.
+
+    The row carries ``keepsakes`` — any keepsake rows that pointed at it, removed in the
+    same transaction — so the API can release their exports and re-pick the species'
+    first/latest.
+    """
     with _connect() as conn:
         row = conn.execute("SELECT * FROM detections WHERE id = ?", (det_id,)).fetchone()
         if row is None:
@@ -1918,12 +1981,15 @@ def delete_detection(det_id: int) -> Optional[dict]:
         conn.execute("DELETE FROM identification_embeddings WHERE detection_id = ?", (det_id,))
         conn.execute("DELETE FROM identification_rejections WHERE detection_id = ?", (det_id,))
         _delete_subjects(conn, [det_id])
+        keepsakes = clear_keepsakes_for_detections(conn, [det_id])
         conn.execute(
             "INSERT OR REPLACE INTO deleted_refs (source, source_ref, deleted_at) VALUES (?, ?, ?)",
             (row["source"], row["source_ref"], time.time()),
         )
         _settle_visits(conn, visit_ids)
-    return dict(row)
+    out = dict(row)
+    out["keepsakes"] = keepsakes
+    return out
 
 
 def delete_species(common_name: str) -> list[dict]:
@@ -1962,9 +2028,17 @@ def delete_species(common_name: str) -> list[dict]:
                 [(r["id"],) for r in rows],
             )
             _delete_subjects(conn, [r["id"] for r in rows])
+            # Other species' keepsakes may sit on these events too (a two-bird event
+            # kept for the other bird); those are released by the API, not here.
+            orphaned = clear_keepsakes_for_detections(conn, [r["id"] for r in rows])
+            for r in rows:
+                r["keepsakes"] = [k for k in orphaned if k["detection_id"] == r["id"]]
         # The species may also live on as a named other-bird in someone else's event —
         # those rows count as sightings, so a removal has to rule them out too.
         _reject_named_subjects(conn, common_name)
+        # Its own keepsakes go with it (the API releases them at Frigate).
+        conn.execute("DELETE FROM species_keepsakes WHERE common_name = ? COLLATE NOCASE",
+                     (common_name,))
         conn.execute("DELETE FROM species_info WHERE common_name = ? COLLATE NOCASE", (common_name,))
         conn.execute("DELETE FROM species_season WHERE common_name = ? COLLATE NOCASE", (common_name,))
         conn.execute("DELETE FROM species_audio WHERE common_name = ? COLLATE NOCASE", (common_name,))
@@ -2478,6 +2552,244 @@ def retained_missing_export() -> list[dict]:
             """
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ------------------------------------------------------------------------ keepsakes
+
+# One camera sighting of a species, as the keepsake logic sees it: the parent event's
+# row fields plus which bird in it (subject_idx) the species is. From the sightings view,
+# so a species named "also in view" counts — its event is what gets kept.
+_SIGHTING_COLS = """
+    d.id, d.source_ref, d.subject_idx, d.start_time, d.end_time, d.location,
+    d.has_clip, d.has_snapshot, d.retained_at, d.common_name
+"""
+# Only events Frigate itself kept a record of: one that ended with neither clip nor
+# snapshot is gone from Frigate moments later and could never be retained.
+_SIGHTING_WHERE = "d.source = 'frigate' AND (d.has_clip = 1 OR d.has_snapshot = 1)"
+
+
+def oldest_sighting(common_name: str) -> Optional[dict]:
+    """The species' earliest camera sighting on record, or None."""
+    with _connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT {_SIGHTING_COLS} FROM species_sightings d
+            WHERE {_SIGHTING_WHERE} AND d.common_name = ? COLLATE NOCASE
+            ORDER BY d.start_time ASC, d.subject_idx ASC LIMIT 1
+            """,
+            (common_name,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def newest_sighting(common_name: str) -> Optional[dict]:
+    """The species' most recent camera sighting on record, or None."""
+    with _connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT {_SIGHTING_COLS} FROM species_sightings d
+            WHERE {_SIGHTING_WHERE} AND d.common_name = ? COLLATE NOCASE
+            ORDER BY d.start_time DESC, d.subject_idx ASC LIMIT 1
+            """,
+            (common_name,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def sightings_timeline(common_name: str) -> list[dict]:
+    """Every camera sighting of a species, oldest first — the surviving-first search's
+    haystack. Slim rows (id, source_ref, subject_idx, start_time); a busy feeder's
+    commonest bird is thousands of rows, which is still small in memory."""
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT d.id, d.source_ref, d.subject_idx, d.start_time FROM species_sightings d
+            WHERE {_SIGHTING_WHERE} AND d.common_name = ? COLLATE NOCASE
+            ORDER BY d.start_time ASC, d.subject_idx ASC
+            """,
+            (common_name,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def sighting_by_detection(det_id: int, common_name: str) -> Optional[dict]:
+    """The sighting row for one event AS a given species (None if the event no longer
+    features that species — deleted, relabelled, or the subject rejected)."""
+    with _connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT {_SIGHTING_COLS} FROM species_sightings d
+            WHERE {_SIGHTING_WHERE} AND d.id = ? AND d.common_name = ? COLLATE NOCASE
+            ORDER BY d.subject_idx ASC LIMIT 1
+            """,
+            (det_id, common_name),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def keepsakes_for_species(common_name: str) -> dict[str, dict]:
+    """{'first': row, 'latest': row} — whichever exist — for one species."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM species_keepsakes WHERE common_name = ? COLLATE NOCASE",
+            (common_name,),
+        ).fetchall()
+    return {r["role"]: dict(r) for r in rows}
+
+
+def keepsake_roles(detection_id: int) -> list[str]:
+    """Which keepsake roles ('first', 'latest') this event holds, for any species.
+
+    Template helper (one indexed lookup per Frigate card) and the release guard: an
+    event that is still someone's keepsake keeps its Frigate flag when the user unpins.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT role FROM species_keepsakes WHERE detection_id = ? ORDER BY role",
+            (detection_id,),
+        ).fetchall()
+    return [r["role"] for r in rows]
+
+
+def keepsakes_all() -> list[dict]:
+    """Every keepsake with its event's fields, species A→Z then first before latest —
+    the Kept page's shelf. LEFT JOIN so a keepsake whose event vanished (a race with a
+    delete) still lists and can be cleaned up rather than silently disappearing."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT k.*, d.source_ref, d.location, d.end_time, d.has_clip, d.has_snapshot,
+                   d.scientific_name, d.retained_at,
+                   COALESCE(s.manual_sci, s.scientific_name) AS subject_sci
+            FROM species_keepsakes k
+            LEFT JOIN detections d ON d.id = k.detection_id
+            LEFT JOIN detection_subjects s
+                   ON s.detection_id = k.detection_id AND s.idx = k.subject_idx
+                  AND k.subject_idx > 0
+            ORDER BY k.common_name COLLATE NOCASE ASC,
+                     CASE k.role WHEN 'first' THEN 0 ELSE 1 END
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def keepsake(common_name: str, role: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM species_keepsakes WHERE common_name = ? COLLATE NOCASE AND role = ?",
+            (common_name, role),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_keepsake(common_name: str, role: str, detection_id: int, subject_idx: int,
+                 start_time: float) -> None:
+    """Point a species' role at an event (replacing whatever held it). Export columns
+    reset: a new event needs its own exports."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO species_keepsakes
+                (common_name, role, detection_id, subject_idx, start_time, kept_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(common_name, role) DO UPDATE SET
+                detection_id = excluded.detection_id, subject_idx = excluded.subject_idx,
+                start_time = excluded.start_time, kept_at = excluded.kept_at,
+                export_id = NULL, export_file = NULL, zoom_export_id = NULL,
+                zoom_export_file = NULL, export_status = NULL, export_tried_at = NULL
+            """,
+            (common_name, role, detection_id, int(subject_idx or 0), start_time, time.time()),
+        )
+
+
+def set_keepsake_exports(common_name: str, role: str, export_id: Optional[str],
+                         zoom_export_id: Optional[str], status: Optional[str]) -> None:
+    """Record the outcome of the export attempt(s) for a keepsake. ``export_tried_at``
+    is stamped regardless, so a window Frigate no longer has recordings for is not
+    re-requested on every reconcile — only by the startup pass."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE species_keepsakes
+            SET export_id = ?, zoom_export_id = ?, export_status = ?, export_tried_at = ?,
+                export_file = NULL, zoom_export_file = NULL
+            WHERE common_name = ? COLLATE NOCASE AND role = ?
+            """,
+            (export_id, zoom_export_id, status, time.time(), common_name, role),
+        )
+
+
+def set_keepsake_export_file(common_name: str, role: str, zoom: bool, file: Optional[str]) -> None:
+    """Fill in (or clear) a keepsake export's served filename once Frigate finished it."""
+    col = "zoom_export_file" if zoom else "export_file"
+    with _connect() as conn:
+        conn.execute(
+            f"UPDATE species_keepsakes SET {col} = ? WHERE common_name = ? COLLATE NOCASE AND role = ?",
+            (file, common_name, role),
+        )
+
+
+def clear_keepsake_export(common_name: str, role: str, zoom: bool) -> None:
+    """Forget an export Frigate no longer has (deleted in its Export UI, or a failed job)."""
+    cols = ("zoom_export_id = NULL, zoom_export_file = NULL" if zoom
+            else "export_id = NULL, export_file = NULL")
+    with _connect() as conn:
+        conn.execute(
+            f"UPDATE species_keepsakes SET {cols} WHERE common_name = ? COLLATE NOCASE AND role = ?",
+            (common_name, role),
+        )
+
+
+def clear_keepsake(common_name: str, role: str) -> Optional[dict]:
+    """Drop one keepsake row; returns it so the caller can release it at Frigate."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM species_keepsakes WHERE common_name = ? COLLATE NOCASE AND role = ?",
+            (common_name, role),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "DELETE FROM species_keepsakes WHERE common_name = ? COLLATE NOCASE AND role = ?",
+            (common_name, role),
+        )
+    return dict(row)
+
+
+def clear_keepsakes_for_detections(conn: sqlite3.Connection, det_ids: list[int]) -> list[dict]:
+    """Remove every keepsake pointing at these events (same transaction as the delete
+    that orphaned them). Returns the removed rows: their exports still exist at Frigate
+    and the caller decides what to release."""
+    if not det_ids:
+        return []
+    marks = ",".join("?" * len(det_ids))
+    rows = [dict(r) for r in conn.execute(
+        f"SELECT * FROM species_keepsakes WHERE detection_id IN ({marks})", det_ids,
+    ).fetchall()]
+    if rows:
+        conn.execute(f"DELETE FROM species_keepsakes WHERE detection_id IN ({marks})", det_ids)
+    return rows
+
+
+def forget_keepsakes(common_name: str) -> list[dict]:
+    """Drop a species' keepsakes (the species itself is being removed). Returns them."""
+    with _connect() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM species_keepsakes WHERE common_name = ? COLLATE NOCASE",
+            (common_name,),
+        ).fetchall()]
+        conn.execute("DELETE FROM species_keepsakes WHERE common_name = ? COLLATE NOCASE",
+                     (common_name,))
+    return rows
+
+
+def keepsake_species() -> list[str]:
+    """Species that hold at least one keepsake."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT common_name FROM species_keepsakes ORDER BY common_name"
+        ).fetchall()
+    return [r["common_name"] for r in rows]
 
 
 def tombstoned_refs() -> list[tuple[str, str]]:

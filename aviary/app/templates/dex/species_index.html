@@ -3,6 +3,7 @@
    species_index.html is unchanged. Rows are plain <a> elements so clicking and keyboard
    activation work with no JS — app.js only adds arrow-key cursor movement on top. #}
 {% extends "base.html" %}
+{% from "_cards.html" import hero_img with context %}
 {% block title %} · {{ 'New entries' if only_new else 'Registry' }}{% endblock %}
 {% block content %}
 <div class="controls">
@@ -58,16 +59,14 @@
   {% for s in species | sort(attribute='dex_no') %}
   {% set is_seen = s.frigate_total or 0 %}
   {% set is_new = since is not none and s.first_seen is not none and s.first_seen >= since %}
-  {% set thumb_ref = thumbs.get(s.common_name) %}
   <a class="dex-reg-row{{ ' heard-only' if not is_seen }}"
      href="{{ u('species_detail', name=s.common_name) }}">
     <span class="dex-tri dex-tri-r cursor" aria-hidden="true"></span>
-    {# Full colour once a camera has seen it; darkened while only heard. Falls back to
-       BirdNET-Go's generic species photo, then to the placeholder. #}
+    {# Full colour once a camera has seen it; darkened while only heard. The bird's own
+       picture, falling back to BirdNET-Go's generic species photo, then the placeholder. #}
     <span class="dex-thumb">
       <span class="thumb-mark">🐦</span>
-      <img loading="lazy" alt="" onerror="this.remove()"
-           src="{% if thumb_ref %}{{ u('frigate_snapshot', event_id=thumb_ref) }}?thumbnail=true{% else %}{{ u('species_image', name=s.common_name) }}{% endif %}">
+      {{ hero_img(heroes.get(s.common_name), s.common_name, cls='') }}
     </span>
     {# Unconfirmed species have no registry number yet — they earn one on approval. #}
     <span class="dex-plate">No.{{ '%03d' | format(s.dex_no) if s.dex_no else '???' }}</span>

@@ -293,8 +293,42 @@ async def frigate_kept_export(det_id: int, request: Request):
     det = await run_in_threadpool(db.detection_by_id, det_id)
     if not det or not det.get("kept_export_id"):
         return JSONResponse({"error": "no kept export for detection"}, status_code=404)
+    return await _serve_export(
+        request, base, det["kept_export_id"], det.get("kept_export_file"),
+        remember=lambda f: db.set_kept_export_file(det_id, f),
+        # Deleted at Frigate (their Export UI, or a failed job): clear the stored id so
+        # the card stops offering a button that can never play.
+        forget=lambda: db.set_kept_export(det_id, None, None),
+    )
 
-    filename = det.get("kept_export_file")
+
+@router.get("/keepsake/video.mp4", name="keepsake_video")
+async def keepsake_video(request: Request, species: str, role: str, zoom: int = 0):
+    """A species keepsake's exported clip (``zoom=1`` for the paired camera's window).
+
+    Same lazy filename resolution as the kept zoomed export above.
+    """
+    base = request.app.state.settings.frigate_url
+    if not base:
+        return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
+    if role not in ("first", "latest"):
+        return JSONResponse({"error": "role must be first or latest"}, status_code=400)
+    row = await run_in_threadpool(db.keepsake, species, role)
+    id_col, file_col = ("zoom_export_id", "zoom_export_file") if zoom else ("export_id", "export_file")
+    if not row or not row.get(id_col):
+        return JSONResponse({"error": "no export for this keepsake"}, status_code=404)
+    return await _serve_export(
+        request, base, row[id_col], row.get(file_col),
+        remember=lambda f: db.set_keepsake_export_file(species, role, bool(zoom), f),
+        forget=lambda: db.clear_keepsake_export(species, role, bool(zoom)),
+    )
+
+
+async def _serve_export(request: Request, base: str, export_id: str, filename: Optional[str],
+                        remember, forget):
+    """Stream a Frigate export, resolving its filename from the exports list the first
+    time (exports finish asynchronously). ``remember(filename)`` caches the resolved
+    name; ``forget()`` runs when Frigate no longer has the export."""
     if not filename:
         try:
             status, data = await proxy.get_json(proxy.frigate_exports_url(base))
@@ -302,12 +336,9 @@ async def frigate_kept_export(det_id: int, request: Request):
             return JSONResponse({"error": "Frigate unreachable"}, status_code=502)
         if status >= 400 or not isinstance(data, list):
             return JSONResponse({"error": f"exports list failed ({status})"}, status_code=502)
-        record = next(
-            (e for e in data if str(e.get("id")) == str(det["kept_export_id"])), None)
+        record = next((e for e in data if str(e.get("id")) == str(export_id)), None)
         if record is None:
-            # Deleted at Frigate (their Export UI, or a failed job): clear the stored id
-            # so the card stops offering a button that can never play.
-            await run_in_threadpool(db.set_kept_export, det_id, None, None)
+            await run_in_threadpool(forget)
             return JSONResponse(
                 {"error": "export no longer exists at Frigate"}, status_code=404)
         if record.get("in_progress"):
@@ -316,7 +347,7 @@ async def frigate_kept_export(det_id: int, request: Request):
         filename = os.path.basename(record.get("video_path") or "")
         if not filename:
             return JSONResponse({"error": "export has no video file"}, status_code=502)
-        await run_in_threadpool(db.set_kept_export_file, det_id, filename)
+        await run_in_threadpool(remember, filename)
 
     return await proxy.stream_upstream(
         request, proxy.frigate_export_video_url(base, filename))

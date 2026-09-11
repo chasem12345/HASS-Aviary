@@ -37,7 +37,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import db, proxy
+from . import crops, db, heroes, proxy
 from .settings import Settings
 
 log = logging.getLogger("aviary.notify")
@@ -298,12 +298,18 @@ async def _resolve_image(row: dict) -> Optional[tuple[bytes, str]]:
                 )
                 if fetched:
                     return fetched
-        # Last resort: the species' most recent camera snapshot, if it has one.
+        # Last resort: the species' hero picture — its own stored crop when there is
+        # one (never another bird's thumbnail), else its best Frigate snapshot.
         if _settings.frigate_url and common:
-            ref = (await asyncio.to_thread(db.latest_snapshot_refs, [common])).get(common)
-            if ref:
+            hero = (await asyncio.to_thread(heroes.for_species, [common])).get(common)
+            if hero:
+                path = crops.path_if_exists(hero["source_ref"], hero["subject_idx"])
+                if path:
+                    data = await asyncio.to_thread(Path(path).read_bytes)
+                    if data:
+                        return data, "image/jpeg"
                 return await _fetch_image(
-                    proxy.frigate_snapshot_url(_settings.frigate_url, ref)
+                    proxy.frigate_snapshot_url(_settings.frigate_url, hero["source_ref"])
                 )
     except Exception:  # noqa: BLE001 - the image is best-effort, never fatal
         log.exception("Notification image resolution failed for %s", row.get("common_name"))

@@ -13,7 +13,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from .. import (
-    backfill, bootstrap, crops, db, identify, ingest, kept, notify, probe, proxy,
+    backfill, bootstrap, crops, db, identify, ingest, keepsakes, kept, notify, probe, proxy,
     seasonality, species_audio, species_info, species_photos, traits,
 )
 from . import ingress_url, set_theme
@@ -158,10 +158,13 @@ async def delete_detection(det_id: int, request: Request, source_action: Optiona
     if det is None:
         return {"ok": False, "error": "detection not found"}
     source_result = await _source_action(request.app.state.settings, det, action)
-    await run_in_threadpool(db.delete_detection, det_id)
+    deleted = await run_in_threadpool(db.delete_detection, det_id)
     ingest.add_tombstone(det["source"], det["source_ref"])
     await run_in_threadpool(crops.remove, det["source_ref"])
     await run_in_threadpool(_forget_if_gone, det["common_name"])
+    # Any species keepsake that sat on this event is released and re-picked.
+    if deleted:
+        await keepsakes.on_detection_deleted(deleted)
     # A deleted detection is usually a misclassification — the probe must stop learning
     # from its embedding immediately, not at the next restart.
     await _refresh_probe()
@@ -176,6 +179,8 @@ async def delete_species(name: str, request: Request, source_action: Optional[st
     # A species can exist only as a named other-bird in view (no tracked detections of
     # its own); delete_species rules those out too, so "found" is judged beforehand.
     existed = bool((await run_in_threadpool(db.species_stats, name)).get("total") or 0)
+    # Its keepsakes go first, while their events still exist to be released at Frigate.
+    await keepsakes.forget(name)
     rows = await run_in_threadpool(db.delete_species, name)
     if not rows and not existed:
         return {"ok": False, "error": "species not found", "deleted": 0}
@@ -186,6 +191,9 @@ async def delete_species(name: str, request: Request, source_action: Optional[st
         result = await _source_action(request.app.state.settings, det, action)
         if result and not result["ok"]:
             source_errors.append(f"{det['source']} {det['source_ref']}: {result['error']}")
+        # A two-bird event kept as ANOTHER species' keepsake went with this delete.
+        if det.get("keepsakes"):
+            await keepsakes.on_detection_deleted(det)
     ingest.forget_species(name)
     # Its embeddings and its confirmation are gone; the probe must unlearn them now.
     await _refresh_probe()
@@ -358,13 +366,17 @@ async def retain_detection(det_id: int, request: Request,
     if not settings.frigate_url:
         return {"ok": False, "error": "frigate_url not configured"}
 
-    url = proxy.frigate_retain_url(settings.frigate_url, det["source_ref"])
-    try:
-        status, text = await proxy.call_upstream("POST" if keep else "DELETE", url)
-    except httpx.HTTPError as exc:
-        return {"ok": False, "error": f"Frigate unreachable: {exc}"}
-    if status >= 400:
-        return {"ok": False, "error": f"Frigate returned {status}: {text}"}
+    # A species keepsake on the same event holds Frigate's flag in its own right: the
+    # user's pin comes off, the event stays kept, and the response says why.
+    held_by_keepsake = bool(await run_in_threadpool(db.keepsake_roles, det_id))
+    if keep or not held_by_keepsake:
+        err = await kept.set_frigate_retain(settings, det["source_ref"], bool(keep))
+        if err == kept.GONE:
+            if keep:
+                return {"ok": False, "error": "Frigate no longer has this event"}
+            err = None  # nothing left at Frigate to release; clear our side anyway
+        if err:
+            return {"ok": False, "error": err}
 
     await run_in_threadpool(db.set_retained, det_id, bool(keep))
 
@@ -389,6 +401,8 @@ async def retain_detection(det_id: int, request: Request,
     result = {"ok": True, "retained": bool(keep)}
     if zoomed:
         result["zoomed_export"] = zoomed
+    if not keep and held_by_keepsake:
+        result["held_by"] = "keepsake"
     return result
 
 
@@ -434,6 +448,8 @@ async def set_species(det_id: int, species: str = Query(..., min_length=1),
     previous = det.get("common_name")
     if previous and previous != name:
         await run_in_threadpool(_forget_if_gone, previous)
+        keepsakes.schedule(previous)  # it may have lost its first or latest
+    keepsakes.schedule(name)
     return {"ok": True, "common_name": name, "scientific_name": sci}
 
 
@@ -474,6 +490,7 @@ async def set_subject_species(det_id: int, idx: int, species: str = Query(..., m
     # A person naming it is the strongest signal there is — same reasoning as set_species.
     await run_in_threadpool(db.confirm_species, name)
     await _refresh_probe()
+    keepsakes.schedule(name)
     return {"ok": True, "common_name": name, "scientific_name": sci}
 
 
@@ -487,6 +504,7 @@ async def reject_subject_species(det_id: int, idx: int, species: str = Query(...
     if not ok:
         return {"ok": False, "error": "no such bird in this detection"}
     await _refresh_probe()
+    keepsakes.schedule(species.strip())  # this event may have been its first or latest
     remaining = [s for s in await run_in_threadpool(db.secondary_subjects_for, det_id)
                  if s["idx"] == idx]
     return {"ok": True, "subject": remaining[0] if remaining else None}
@@ -610,6 +628,7 @@ async def confirm_species(species: str = Query(..., min_length=1)):
     """Approve a species into the registry, giving it a dex number and its place in the stats."""
     await run_in_threadpool(db.confirm_species, species)
     await _refresh_probe()
+    keepsakes.schedule(species)  # now in the registry: keep its first and latest
     return {"ok": True, "species": species, "confirmed": True}
 
 
@@ -621,6 +640,7 @@ async def unconfirm_species(name: str):
         return {"ok": False, "error": "species was not confirmed"}
     # Unconfirmed means its detections are no longer trusted labels; unlearn them now.
     await _refresh_probe()
+    keepsakes.schedule(name)  # back out of the registry: its keepsakes are released
     return {"ok": True, "species": name, "confirmed": False}
 
 

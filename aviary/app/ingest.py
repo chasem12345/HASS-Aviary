@@ -50,6 +50,12 @@ _loop: Optional[asyncio.AbstractEventLoop] = None
 # one), and so tests can substitute a fake.
 _identify_hook: Optional[Callable[[dict], bool]] = None
 
+# Set by main() to keepsakes.schedule: called with a species name whenever a live Frigate
+# event ends with that species on it, so its first/latest keepsakes can be reconsidered.
+# Same injection reasoning as _identify_hook. Never called during backfill — the startup
+# pass reconciles history in one sweep instead.
+_keepsake_hook: Optional[Callable[[str], None]] = None
+
 
 def configure(ignore_unclassified: bool, ignore_cameras: tuple[str, ...] = ()) -> None:
     global _ignore_unclassified, _ignore_cameras
@@ -63,6 +69,23 @@ def set_identify_hook(hook: Optional[Callable[[dict], bool]]) -> None:
     """Route unclassified Frigate detections to external identification."""
     global _identify_hook
     _identify_hook = hook
+
+
+def set_keepsake_hook(hook: Optional[Callable[[str], None]]) -> None:
+    """Tell the keepsakes module when a species gained a finished camera sighting."""
+    global _keepsake_hook
+    _keepsake_hook = hook
+
+
+def touch_keepsake(common_name: Optional[str]) -> None:
+    """Fire the keepsake hook for a species named outside the normal ingest path (an
+    other-bird subject the identifier named). Best-effort."""
+    if not common_name or _keepsake_hook is None:
+        return
+    try:
+        _keepsake_hook(common_name)
+    except Exception:  # noqa: BLE001
+        log.exception("Keepsake hook failed for %s", common_name)
 
 
 def seed_notify_state() -> None:
@@ -194,6 +217,14 @@ def store_row(row: Optional[dict], live: bool = True, announce: bool = True,
     db.upsert_detection(row)
     if announce:
         _announce(row, live)
+        # A finished, named camera sighting may be the species' first or its newest.
+        # Best-effort and off the ingest path's critical section — the hook only queues.
+        if live and row.get("source") == "frigate" and not is_unclassified(row) \
+                and _keepsake_hook is not None:
+            try:
+                _keepsake_hook(row["common_name"])
+            except Exception:  # noqa: BLE001 — keepsakes must never break ingest
+                log.exception("Keepsake hook failed for %s", row.get("common_name"))
     return True
 
 

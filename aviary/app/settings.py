@@ -163,6 +163,15 @@ class Settings:
 
     log_level: str
 
+    # --- Species keepsakes ---------------------------------------------------------
+    # Keep the first and the latest camera sighting of every species at Frigate
+    # (retain_indefinitely on the event; "latest" moves at most once a day and releases
+    # the previous one). keepsake_video additionally exports the padded clip — the only
+    # form of footage Frigate never expires. Defaulted so the frozen positional
+    # construction in older callers/tests keeps working.
+    keepsakes: bool = True
+    keepsake_video: bool = True
+
     @property
     def mqtt_enabled(self) -> bool:
         return bool(self.mqtt_host)
@@ -243,4 +252,6 @@ def load_settings() -> Settings:
         clip_pad_seconds=min(300.0, max(0.0, _pick_float(
             "CLIP_PAD_SECONDS", opts, "clip_pad_seconds", 10.0))),
         log_level=_pick("LOG_LEVEL", opts, "log_level", "info").lower(),
+        keepsakes=_as_bool(_pick("KEEPSAKES", opts, "keepsakes", "true")),
+        keepsake_video=_as_bool(_pick("KEEPSAKE_VIDEO", opts, "keepsake_video", "true")),
     )

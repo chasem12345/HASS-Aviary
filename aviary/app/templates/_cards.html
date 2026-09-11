@@ -106,6 +106,14 @@
               data-id="{{ d.id }}" data-retained="{{ 1 if d.retained_at else 0 }}">
         {{- '📌 kept' if d.retained_at else '📌 keep' -}}
       </button>
+      {# Species keepsake: Aviary itself keeps this event as a species' first or latest
+         sighting. Independent of the pin above — releasing 📌 leaves this hold in place. #}
+      {% set roles = keepsake_roles(d.id) %}
+      {% if roles %}
+      <span class="keepsake-badge"
+            title="Kept automatically as the species' {{ roles | join(' and ') }} camera sighting — see Kept">
+        🏅 {{ roles | join(' & ') }} sighting</span>
+      {% endif %}
       {% endif %}
     </div>
     {# Other birds the identification service found in this event, each on its own crop,
@@ -222,14 +230,25 @@
 
 {# Image URL for a species' representative: the crop of the bird itself — a second bird
    found in another bird's event has its own crop file, keyed by its subject index — else
-   the event's thumbnail. #}
-{% macro rep_src(rep) -%}
+   the event's thumbnail (``full`` asks for the whole snapshot instead, for a hero). #}
+{% macro rep_src(rep, full=False) -%}
 {%- set sidx = rep.subject_idx or 0 -%}
 {%- if has_crop(rep.source_ref, sidx) -%}
 {{ u('frigate_subject_crop', event_id=rep.source_ref, idx=sidx) if sidx else u('frigate_crop', event_id=rep.source_ref) }}
 {%- else -%}
-{{ u('frigate_snapshot', event_id=rep.source_ref) }}?thumbnail=true
+{{ u('frigate_snapshot', event_id=rep.source_ref) }}{{ '' if full else '?thumbnail=true' }}
 {%- endif -%}
+{%- endmacro %}
+
+{# A species picture that degrades gracefully. ``hero`` is the species' representative
+   sighting (heroes.pick) or none. On error the image swaps ONCE to the generic species
+   photo (Frigate expired the footage), and if that fails too it removes itself, leaving
+   whatever placeholder sits underneath. ``cls`` is the img's class attribute verbatim. #}
+{% macro hero_img(hero, name, cls='overlay-img', full=False, alt='') -%}
+<img loading="lazy"{% if cls %} class="{{ cls }}"{% endif %} alt="{{ alt }}"
+     src="{{ rep_src(hero, full) if hero else u('species_image', name=name) }}"
+     {%- if hero %} data-fallback="{{ u('species_image', name=name) }}"{% endif %}
+     onerror="if(this.dataset.fallback){this.src=this.dataset.fallback;delete this.dataset.fallback}else{this.remove()}">
 {%- endmacro %}
 
 {# One VISIT: a Frigate review item — every tracked object Frigate grouped into one

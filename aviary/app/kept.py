@@ -1,12 +1,15 @@
-"""Kept-footage plumbing: preserve the ZOOMED half of a pinned two-camera event.
+"""Kept-footage plumbing: Frigate's retain flag and exports, shared by 📌 keep and keepsakes.
 
-📌 keep flips ``retain_indefinitely`` on the Frigate event, which protects the event's
-own (wide) clip — but on a paired setup the zoomed view is the PTZ camera's continuous
-recordings, which no retain flag can reach: they expire with ``record.retain.days``
-regardless. Frigate's only retention-exempt form for non-event footage is an **export**,
-so pinning a paired-camera event also exports the partner camera's window, and unpinning
-deletes the export. Shared between the retain endpoint and the one-time startup backfill
-so both decide identically.
+📌 keep flips ``retain_indefinitely`` on the Frigate event. Since Frigate 0.14 that flag
+protects the event itself — its row, snapshot and thumbnail — but NOT the recording
+segments behind its clip: those expire with the alerts/detections retention regardless
+(only Frigate's emergency low-disk purge still spares them). And on a paired setup the
+zoomed view is the PTZ camera's continuous recordings, which no flag ever reached.
+Frigate's one retention-exempt form of footage is an **export**, so pinning a
+paired-camera event also exports the partner camera's window, and unpinning deletes the
+export. The species keepsakes (``keepsakes.py``) use the same two primitives for the
+first and latest sighting of every species. Shared here so every caller decides
+identically.
 """
 
 from __future__ import annotations
@@ -66,18 +69,55 @@ def kept_export_window(det: dict, settings) -> Optional[tuple[str, float, float]
     return other, p_start, p_end
 
 
-async def create_kept_export(det: dict, settings) -> tuple[Optional[str], str]:
-    """Export the paired camera's window at Frigate. Returns (export_id, status text).
+# What set_frigate_retain returns when Frigate no longer has the event at all.
+GONE = "gone"
 
-    Asynchronous at Frigate (202 queued); the media route resolves the finished file
-    lazily. Status text is user-facing: "queued", "not applicable", or "failed: …".
+
+async def set_frigate_retain(settings, source_ref: str, keep: bool) -> Optional[str]:
+    """Flip ``retain_indefinitely`` on a Frigate event. None on success, else an error.
+
+    ``GONE`` means Frigate answered 404: the event is past retention and no longer
+    exists there — nothing to keep, and (for a release) nothing left to release.
     """
-    window = kept_export_window(det, settings)
-    if window is None:
-        return None, "not applicable"
-    camera, start, end = window
-    stamp = datetime.fromtimestamp(start).strftime("%Y-%m-%d %H:%M")
-    name = f"Aviary · {det.get('common_name') or 'bird'} · {stamp}"
+    url = proxy.frigate_retain_url(settings.frigate_url, source_ref)
+    try:
+        status, text = await proxy.call_upstream("POST" if keep else "DELETE", url)
+    except httpx.HTTPError as exc:
+        return f"Frigate unreachable: {exc}"
+    if status == 404:
+        return GONE
+    if status >= 400:
+        return f"Frigate returned {status}: {text}"
+    return None
+
+
+async def frigate_has_event(settings, source_ref: str) -> Optional[bool]:
+    """Whether Frigate still has the event (None when Frigate can't be asked)."""
+    try:
+        status, _ = await proxy.call_upstream(
+            "GET", proxy.frigate_event_api_url(settings.frigate_url, source_ref))
+    except httpx.HTTPError:
+        return None
+    if status == 404:
+        return False
+    if status >= 400:
+        return None
+    return True
+
+
+def export_stamp(start: float) -> str:
+    return datetime.fromtimestamp(start).strftime("%Y-%m-%d %H:%M")
+
+
+async def export_window(settings, camera: str, start: float, end: float,
+                        name: str) -> tuple[Optional[str], str]:
+    """Ask Frigate to export ``camera``'s recordings for [start, end].
+
+    Returns (export_id, status text). Asynchronous at Frigate (202 queued); callers
+    resolve the finished file lazily. Status text is user-facing: "queued" or
+    "failed: …" — Frigate rejects a window it has no recordings for with a 4xx, which
+    is the normal outcome for history that has already expired.
+    """
     try:
         status, text = await proxy.call_upstream(
             "POST", proxy.frigate_export_url(settings.frigate_url, camera, start, end),
@@ -96,6 +136,19 @@ async def create_kept_export(det: dict, settings) -> tuple[Optional[str], str]:
         # or deleted, so fail loudly rather than orphaning exports silently.
         return None, "failed: Frigate did not return an export id (needs Frigate 0.18+)"
     return str(export_id), "queued"
+
+
+async def create_kept_export(det: dict, settings) -> tuple[Optional[str], str]:
+    """Export the paired camera's window at Frigate. Returns (export_id, status text).
+
+    Status text is user-facing: "queued", "not applicable", or "failed: …".
+    """
+    window = kept_export_window(det, settings)
+    if window is None:
+        return None, "not applicable"
+    camera, start, end = window
+    name = f"Aviary · {det.get('common_name') or 'bird'} · {export_stamp(start)}"
+    return await export_window(settings, camera, start, end, name)
 
 
 async def delete_kept_export(export_id: str, settings) -> Optional[str]:

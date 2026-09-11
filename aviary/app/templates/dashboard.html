@@ -80,19 +80,11 @@
         {% for s in leaders %}
         <tr>
           <td class="thumb-cell">
-            {% if thumbs.get(s.common_name) %}
-            <a href="{{ u('species_detail', name=s.common_name) }}">
-              <img loading="lazy" class="thumb" alt=""
-                   src="{{ u('frigate_snapshot', event_id=thumbs[s.common_name]) }}?thumbnail=true">
-            </a>
-            {% else %}
             <a href="{{ u('species_detail', name=s.common_name) }}">
               <span class="thumb thumb-empty">🐦
-                <img loading="lazy" class="overlay-img" alt=""
-                     src="{{ u('species_image', name=s.common_name) }}" onerror="this.remove()">
+                {{ cards.hero_img(heroes.get(s.common_name), s.common_name) }}
               </span>
             </a>
-            {% endif %}
           </td>
           <td>
             <a href="{{ u('species_detail', name=s.common_name) }}">{{ s.common_name }}</a>

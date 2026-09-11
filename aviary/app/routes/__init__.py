@@ -224,6 +224,9 @@ templates.env.globals["has_crop"] = crops.exists
 # query per Frigate card, the same cost class as has_crop). Empty for BirdNET rows, for
 # detections predating subjects, and for the common single-bird event.
 templates.env.globals["subjects_for"] = db.secondary_subjects_for
+# Which species keepsakes ('first' / 'latest' sighting) an event holds — one indexed
+# lookup per Frigate card, shown as a badge next to 📌 keep.
+templates.env.globals["keepsake_roles"] = db.keepsake_roles
 
 
 def register_routes(app: FastAPI) -> None:

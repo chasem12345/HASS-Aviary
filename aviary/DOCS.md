@@ -567,25 +567,87 @@ visit.
 ## Keeping a clip forever
 
 Every Frigate detection card with a clip has a **📌 keep** button. It flips Frigate's
-`retain_indefinitely` flag on the event, exempting that clip from Frigate's normal
-retention expiry, and marks the card **📌 kept** (click again to release). Aviary's own
-housekeeping also leaves kept rows alone, so a pinned-but-unidentified detection never
-loses its card while Frigate still holds the video.
+`retain_indefinitely` flag on the event and marks the card **📌 kept** (click again to
+release). Aviary's own housekeeping also leaves kept rows alone, so a
+pinned-but-unidentified detection never loses its card while Frigate still holds the
+event.
 
-**On a paired two-camera setup** (`identify_zoom_map`), the retain flag only protects
-the event's own — wide — clip; the zoomed view is the partner camera's *continuous
-recordings*, which no retain flag can reach. So pinning a paired-camera event **also
-creates a Frigate export** of the partner camera's recordings for the event window
-(named "Aviary · <species> · <time>", visible in Frigate's own Export UI, exempt from
-retention). The card gains a **▶ zoomed (kept)** button that plays it — exports process
-asynchronously at Frigate, so it may take a few seconds to become playable after
-pinning. Unpinning deletes the export. Requires Frigate 0.18+ (older builds don't
-return the export id). On upgrade, a one-time task retro-exports the zoomed window for
+**What the flag actually protects.** Since Frigate 0.14 `retain_indefinitely` keeps the
+*event* — its record, snapshot and thumbnail — out of Frigate's clean-up. It does **not**
+keep the recording segments behind the event's clip: those still expire with the
+`alerts` / `detections` recording retention (only Frigate's emergency low-disk purge
+spares them). So a pinned event always has a picture, but its ▶ clip lives only as long
+as your recording retention. The one form of footage Frigate never expires is an
+**export**; see *Species keepsakes* below for the automatic version.
+
+**On a paired two-camera setup** (`identify_zoom_map`) the zoomed view is the partner
+camera's *continuous recordings*, which no flag reaches. So pinning a paired-camera
+event **also creates a Frigate export** of the partner camera's recordings for the event
+window (named "Aviary · <species> · <time>", visible in Frigate's own Export UI, exempt
+from retention). The card gains a **▶ zoomed (kept)** button that plays it — exports
+process asynchronously at Frigate, so it may take a few seconds to become playable after
+pinning. Unpinning deletes the export. Requires Frigate 0.18+ (older builds don't return
+the export id). On upgrade, a one-time task retro-exports the zoomed window for
 already-kept events whose recordings still exist.
 
 Requires Aviary to reach Frigate's API (`frigate_url`). If Frigate authentication is
-enabled, the retain endpoint requires an admin credential — the same constraint as the
-delete-at-source actions.
+enabled, the retain and export endpoints require an admin credential — the same
+constraint as the delete-at-source actions.
+
+## Species keepsakes
+
+Frigate expires footage on a schedule that knows nothing about birds, so the one picture
+of the American Robin that first turned up in March is gone by April, and a species that
+stopped visiting ends up with no picture at all. **Keepsakes** fix that: Aviary keeps two
+events per species at Frigate, automatically.
+
+- **First** — the species' earliest camera sighting Frigate still has. Pinned once and
+  left alone. If the true first is already past retention when this runs (an existing
+  installation, or imported history), the earliest *surviving* sighting is taken — a
+  binary search over the species' timeline, a dozen or so lookups even for a bird with
+  thousands of sightings.
+- **Latest** — the newest sighting, re-pinned at most **once per local day**. A bird seen
+  forty times a day costs one Frigate round-trip a day, and the previous "latest" is
+  released (flag off, export deleted), so a species never holds more than two events. A
+  species whose newest sighting *is* its first has no separate latest.
+
+"Kept" means `retain_indefinitely` on the event (the row, snapshot and thumbnail
+survive, so the species tile always has a picture) and — with `keepsake_video`, on by
+default — a **Frigate export of the padded clip**: `clip_pad_seconds` either side of the
+event on the event's camera, plus the paired PTZ camera's window on a two-camera setup.
+An export is the only footage Frigate never expires; it is a few MB per keepsake and
+shows in Frigate's Export UI as "Aviary · <species> · first sighting · <time>". Where the
+recordings behind an old first have already expired, the export fails harmlessly and the
+snapshot alone is kept (the Kept page says *no recording left*).
+
+A species that was only **also in view** in another bird's event keeps that event —
+which is exactly the footage that shows it; the badge and the shelf name the bird. With
+`require_species_confirmation` on, only **confirmed** species get keepsakes, so a
+misclassification waiting in the review queue is never enshrined (rejecting or
+un-confirming a species releases its keepsakes). Keepsakes are independent of your own
+📌 pins: Frigate's flag is held while *either* wants it, releasing a pin never releases a
+keepsake and vice versa, and the card shows a 🏅 *first sighting* / *latest sighting*
+badge next to 📌 for an event Aviary is holding.
+
+**Where to see them.** The **Kept** page opens with the keepsakes shelf — one row per
+species with its first and latest sighting, each with the bird's own picture and, once
+Frigate has finished the export, **▶ clip** (and **▶ zoomed** on a paired setup). The
+species tile and hero prefer a kept event's picture when the bird has no stored crop.
+
+**When it runs.** After the start-up backfill has finished (so imported history counts
+as history), whenever a Frigate event ends with a species on it, when you name, confirm,
+reject or delete something, and as a safety-net sweep every six hours — the sweep costs
+two database lookups per species and no Frigate calls when nothing has changed. The
+first run over an existing registry pins each species' surviving first and its newest,
+paced a second apart, and logs a summary
+(`Keepsakes: pinned N and released M event(s) across S species; E export(s) queued, F
+window(s) had no recordings left.`). Deleting a keepsake's event releases it and the next
+sighting takes its place; removing a species releases both.
+
+Needs `frigate_url`, and Frigate 0.18+ for the exports (the retain flag works on any
+recent Frigate; without the export id an export fails loudly rather than being orphaned).
+Turn the whole feature off with `keepsakes: false`, or keep the flag but skip the video
+with `keepsake_video: false`.
 
 ## Filtering by camera
 
@@ -837,6 +899,8 @@ stay independent.
 | `identify_zoom_map` | `"detect_camera:ptz_camera"` pairs (default empty). Events from the detect camera are classified from the PTZ camera's recordings for the event's time window instead of the event clip — see *Cross-camera zoom* below. Needs aviary-id 0.8.0+. |
 | `identify_zoom_start_offset` | Seconds trimmed from the zoom window's start for PTZ travel time (default `2.0`). |
 | `identify_zoom_zone_priority` | Your PTZ automation's zone priority list, highest first (default empty = no gating). With two birds in different zones at once, the lower-priority event skips the zoomed footage rather than classifying the bird the PTZ was actually filming. |
+| `keepsakes` | Keep each species' first and latest camera sighting at Frigate (`retain_indefinitely`; "latest" moves at most once a day, the previous one is released) (default `true`). See [Species keepsakes](#species-keepsakes). |
+| `keepsake_video` | Also export the padded clip of each keepsake — the event's camera and the paired PTZ camera — the only footage Frigate never expires (default `true`). Needs Frigate 0.18+. |
 | `log_level` | Logging verbosity. |
 
 Changing any of these needs an add-on restart. The **Settings** page inside Aviary holds

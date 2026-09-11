@@ -244,7 +244,7 @@ def dawn_card(rows: list[dict], ticks_by_name: dict[str, list[dict]],
         out.append({
             "common_name": r["common_name"],
             "scientific_name": r.get("scientific_name"),
-            "snapshot_ref": r.get("snapshot_ref"),
+            "hero": r.get("hero"),
             "seen": sum(1 for t in inside if t["source"] == "frigate"),
             "heard": sum(1 for t in inside if t["source"] != "frigate"),
             "first": first, "first_label": solar.clock(first),

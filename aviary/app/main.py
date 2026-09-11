@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    backfill, bootstrap, crops, db, identify, ingest, kept, notify, probe, proxy,
+    backfill, bootstrap, crops, db, identify, ingest, keepsakes, kept, notify, probe, proxy,
     seasonality, solar, species_audio, species_info, species_photos,
 )
 from .mqtt_client import MqttIngestor
@@ -159,6 +159,9 @@ def create_app() -> FastAPI:
     notify.configure(settings)
     species_audio.configure(settings)
     identify.configure(settings)
+    keepsakes.configure(settings)
+    if keepsakes.enabled():
+        ingest.set_keepsake_hook(keepsakes.schedule)
     # Seed BEFORE MQTT/backfill start so existing species/refs never fire notifications.
     ingest.seed_notify_state()
     # Same for visits: species already present in a recent/open visit were announced (or
@@ -197,6 +200,7 @@ def create_app() -> FastAPI:
         seasonality.init_client()
         loop = asyncio.get_running_loop()
         ingest.set_event_loop(loop)
+        keepsakes.set_event_loop(loop)
         notify.install_blueprint()
         await identify.start(loop)
         ingestor.start()
@@ -210,12 +214,15 @@ def create_app() -> FastAPI:
         # Sunrise for the recap's dawn chorus and the chart markers: one Core API call
         # for the configured location, refreshed occasionally. Nothing waits on it.
         solar_task = asyncio.create_task(solar.location_loop())
+        # Species keepsakes: pin each species' first and latest sighting at Frigate. After
+        # the backfill (so imported history counts), then a periodic safety-net sweep.
+        keepsake_task = asyncio.create_task(keepsakes.run(after=backfill_task))
         # Charts and the "today" boundary use OS localtime; make misconfiguration visible.
         log.info("Aviary started (timezone: %s, TZ=%s).", time.strftime("%Z"), os.environ.get("TZ", "unset"))
         try:
             yield
         finally:
-            for task in (backfill_task, identify_maint_task, solar_task):
+            for task in (backfill_task, identify_maint_task, solar_task, keepsake_task):
                 if task is not None:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):

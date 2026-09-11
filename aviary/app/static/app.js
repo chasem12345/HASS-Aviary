@@ -978,6 +978,22 @@
     });
   });
 
+  // A species keepsake's exported clip (Kept page). Same shape as the kept export above.
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".keepsake-open");
+    if (!btn) return;
+    e.preventDefault();
+    const url = BASE + "/media/keepsake/video.mp4?species=" + encodeURIComponent(btn.dataset.species) +
+      "&role=" + encodeURIComponent(btn.dataset.role) + "&zoom=" + (btn.dataset.zoom === "1" ? "1" : "0");
+    openPlayer({
+      name: btn.dataset.species + " · " + btn.dataset.role + " sighting" +
+        (btn.dataset.zoom === "1" ? " · zoomed" : ""),
+      time: btn.dataset.time,
+      src: url,
+      fallback: url,
+    });
+  });
+
   // "View on the other camera": the same time window, from the paired camera's
   // continuous recordings. Same player, different source URLs.
   document.addEventListener("click", (e) => {

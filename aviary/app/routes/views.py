@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .. import db, solar, visits
+from .. import db, heroes, solar, visits
 from .. import recap as recap_vm
 # The helper, not the module: this file's /kept route is itself named `kept`.
 from ..kept import view_pad
@@ -147,7 +147,7 @@ def dashboard(
         # to-do count, not a statistic.
         "unconfirmed": db.unconfirmed_count() if gated else 0,
         "leaders": leaders,
-        "thumbs": db.latest_snapshot_refs([s["common_name"] for s in leaders]),
+        "heroes": heroes.for_species([s["common_name"] for s in leaders]),
         "latest": latest[0] if latest else None,
         "mqtt_enabled": request.app.state.settings.mqtt_enabled,
         "mqtt_connected": bool(ingestor and ingestor.connected),
@@ -316,6 +316,11 @@ def recap(
     gated = request.app.state.settings.require_species_confirmation
     start_ts, end_ts = _midnight(w["start"]), _midnight(w["end"])
     rows = db.daily_recap(start_ts, end_ts, only_confirmed=gated)
+    # Each row's picture: the species' own best sighting INSIDE the window (a bird that
+    # was only "also in view" gets its own crop, not the tracked bird's thumbnail).
+    hero_by = heroes.for_species([r["common_name"] for r in rows], start=start_ts, end=end_ts)
+    for r in rows:
+        r["hero"] = hero_by.get(r["common_name"])
     # Attendance history for the tiers and "back after N days" — one query, cached.
     reg = db.species_regularity(before=start_ts, only_confirmed=gated) if rows else {}
     # Sun for the window's shading and markers. A multi-day window takes its middle day;
@@ -449,7 +454,29 @@ def kept(request: Request):
         "page": "kept",
         "groups": groups,
         "total": len(rows),
+        "keepsakes": _keepsake_shelf(db.keepsakes_all()),
     })
+
+
+def _keepsake_shelf(rows: list[dict]) -> list[dict]:
+    """Species keepsakes as one row per species: {species, scientific_name, first, latest}.
+
+    Rows arrive species A→Z with first before latest. A keepsake whose event is gone
+    (source_ref None: a race with a delete) is dropped from the shelf — the next sweep
+    cleans the row up.
+    """
+    shelf: list[dict] = []
+    for k in rows:
+        if not k.get("source_ref"):
+            continue
+        if not shelf or shelf[-1]["species"].lower() != k["common_name"].lower():
+            shelf.append({"species": k["common_name"],
+                          "scientific_name": k.get("subject_sci") or k.get("scientific_name"),
+                          "first": None, "latest": None})
+        entry = dict(k)
+        entry["rep"] = {"source_ref": k["source_ref"], "subject_idx": k.get("subject_idx") or 0}
+        shelf[-1][k["role"]] = entry
+    return shelf
 
 
 @router.get("/recent", response_class=HTMLResponse)
@@ -623,7 +650,7 @@ def species_index(
         "gated": gated,
         "species": species,
         "since": since,
-        "thumbs": db.latest_snapshot_refs([s["common_name"] for s in species]),
+        "heroes": heroes.for_species([s["common_name"] for s in species]),
         "registry": db.registry_stats(only_confirmed=gated),
     }
     return render("species_index.html", ctx)
@@ -674,7 +701,7 @@ def species_detail(
         # Drives the review banner. With the gate off nothing is pending, so no banner.
         "gated": gated,
         "confirmed": (not gated) or db.is_species_confirmed(name),
-        "thumb": db.latest_snapshot_refs([name]).get(name),
+        "hero": heroes.for_species([name]).get(name),
         "groups": _day_groups(detections),
         "next_before": next_before,
         "older_url": older_url,

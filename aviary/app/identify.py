@@ -610,6 +610,10 @@ async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str) -> 
             log.info("Event %s: %d other bird(s) in view: %s", ref, len(others),
                      ", ".join(f"{r['manual_name'] or r['common_name'] or 'unidentified'}"
                                f" ({r['id_status']}, {r['score']:.2f})" for r in others))
+            # A named other bird is a sighting of ITS species too — maybe its first.
+            for r in others:
+                if r["id_status"] in ("ok", "manual"):
+                    ingest.touch_keepsake(r["manual_name"] or r["common_name"])
     except Exception:  # noqa: BLE001 — never let the bonus break the answer
         log.exception("Storing subjects for %s failed.", row.get("source_ref"))
 

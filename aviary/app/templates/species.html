@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_cards.html" import hero_img with context %}
 {% block title %} · {{ species }}{% endblock %}
 {% block content %}
 <div class="species-head">
@@ -23,15 +24,11 @@
 {% endif %}
 
 <section class="card species-hero">
-  {% if thumb %}
-  <img class="hero-thumb" alt="{{ species }}"
-       src="{{ u('frigate_snapshot', event_id=thumb) }}">
-  {% else %}
+  {# This bird's own picture — its stored crop, else its best snapshot in full — over a
+     placeholder; the generic species photo when Frigate has expired the footage. #}
   <div class="hero-thumb hero-thumb-empty">🐦
-    <img class="overlay-img" alt="{{ species }}"
-         src="{{ u('species_image', name=species) }}" onerror="this.remove()">
+    {{ hero_img(hero, species, full=True, alt=species) }}
   </div>
-  {% endif %}
   <div class="hero-body">
     <h1>{{ species }}</h1>
     {% if stats.scientific_name %}<div class="sci">{{ stats.scientific_name }}</div>{% endif %}

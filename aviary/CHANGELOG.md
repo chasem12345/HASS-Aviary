@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.30.0
+
+- **Species tiles show the right bird, and keep showing one.** The Species grid, the
+  species page hero, the dashboard leaderboard and the recap picked each species' picture
+  as "its newest Frigate snapshot" — but a species that was only *also in view* in another
+  bird's event inherits that event's snapshot, and Frigate's thumbnail is of the tracked
+  bird. So the Carolina Wren tile showed a House Finch and the House Finch tile a
+  hummingbird. Pictures now come from the same subject-aware picker the visit cards use:
+  the bird's **own stored crop** first (a second bird in view has its own crop file, and
+  crops never expire), then a kept event's thumbnail, then the newest snapshot; a species
+  with no honest picture of its own gets the generic species photo rather than another
+  bird. When Frigate has expired the footage behind a tile, the image now falls back to
+  the species photo instead of going blank (the American Robin case).
+- **Species keepsakes: the first and the latest sighting of every species, kept.** Aviary
+  now flags each species' earliest camera sighting Frigate still has, and its newest, as
+  `retain_indefinitely` at Frigate — the event, its snapshot and its thumbnail survive
+  retention — and with `keepsake_video` (default on) also **exports the padded clip**
+  (the event's camera, plus the paired PTZ camera on a two-camera setup). "Latest" moves to
+  a newer sighting at most **once per local day** and the previous one is released (flag
+  off, export deleted), so a species never holds more than two events however busy the
+  feeder. Runs after the start-up backfill, on every finished event, and as a six-hourly
+  sweep; if a species' true first is already gone, the earliest surviving sighting is
+  taken (a binary search over its timeline). A species named *also in view* keeps the
+  event it was seen in. With `require_species_confirmation` on, only confirmed species
+  qualify. Independent of your own 📌 pins: an event stays kept while either wants it.
+  The **Kept** page opens with the shelf — species, first, latest, ▶ clip — and cards
+  carry a 🏅 badge. Options `keepsakes` and `keepsake_video`. Needs Frigate 0.18+ for the
+  exports. See *Species keepsakes* in the docs.
+- **Docs correction on 📌 keep.** Since Frigate 0.14 the retain flag protects the event
+  (row, snapshot, thumbnail) but *not* the recording segments behind its clip, which
+  still expire with the alerts/detections retention — only Frigate's emergency low-disk
+  purge spares them. The *Keeping a clip forever* section now says so; exporting the
+  event camera's own window for manual pins is a natural follow-up.
+
 ## 0.29.0
 
 - **Species pages lead with their species.** A visit (one Frigate review item) can hold

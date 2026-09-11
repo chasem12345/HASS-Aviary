@@ -7,6 +7,64 @@
   <span class="count">{{ total }} clip{{ '' if total == 1 else 's' }} pinned to keep forever</span>
 </div>
 
+{# Species keepsakes: the first and the latest camera sighting of every species, kept at
+   Frigate automatically. Each cell is that sighting's own picture (the bird's crop when
+   it was "also in view") and, once Frigate has finished the export, its clip. #}
+{% if keepsakes %}
+<div class="species-head kept-species">
+  <h2>Species keepsakes</h2>
+  <span class="count">{{ keepsakes | length }} species · first and latest sighting, kept automatically</span>
+</div>
+<div class="table-scroll">
+<table class="keepsakes">
+  <thead><tr><th>Species</th><th>First sighting</th><th>Latest sighting</th></tr></thead>
+  <tbody>
+  {% for k in keepsakes %}
+  <tr>
+    <td class="keepsake-species">
+      <a href="{{ u('species_detail', name=k.species) }}">{{ k.species }}</a>
+      {% if k.scientific_name %}<em>{{ k.scientific_name }}</em>{% endif %}
+    </td>
+    {% for role in ('first', 'latest') %}
+    {% set r = k[role] %}
+    <td class="keepsake-cell">
+      {% if r %}
+      <a class="keepsake-thumb" href="{{ u('species_detail', name=k.species) }}">
+        <img loading="lazy" alt="" src="{{ cards.rep_src(r.rep) }}" onerror="this.remove()">
+      </a>
+      <div class="keepsake-meta">
+        <span title="{{ r.start_time | fmt_time }}">{{ r.start_time | fmt_time }}</span>
+        <span class="keepsake-actions">
+          {% if r.export_id %}
+          <button type="button" class="keepsake-open" data-species="{{ k.species }}" data-role="{{ role }}"
+                  data-zoom="0" data-time="{{ r.start_time }}"
+                  title="Play the kept clip (a Frigate export — survives retention)">▶ clip</button>
+          {% endif %}
+          {% if r.zoom_export_id %}
+          <button type="button" class="keepsake-open" data-species="{{ k.species }}" data-role="{{ role }}"
+                  data-zoom="1" data-time="{{ r.start_time }}"
+                  title="Play the paired camera's kept footage">▶ zoomed</button>
+          {% endif %}
+          {% if not r.export_id and not r.zoom_export_id %}
+          <span class="muted" title="{{ r.export_status or 'export not attempted yet' }}">
+            {{ 'no recording left' if (r.export_status or '').startswith('failed') else 'snapshot only' }}</span>
+          {% endif %}
+        </span>
+      </div>
+      {% elif role == 'latest' %}
+      <span class="muted" title="The newest sighting is the first one">same as first</span>
+      {% else %}
+      <span class="muted">—</span>
+      {% endif %}
+    </td>
+    {% endfor %}
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+
 {% if groups %}
 {% for g in groups %}
 <div class="species-head kept-species">
@@ -22,9 +80,10 @@
 {% endfor %}
 {% else %}
 <p class="empty">
-  Nothing kept yet. Use the <strong>📌 keep</strong> button on any Frigate detection
+  Nothing pinned yet. Use the <strong>📌 keep</strong> button on any Frigate detection
   card to pin its clip forever — it will be protected from retention expiry at Frigate
-  and collected here.
+  and collected here.{% if not keepsakes %} Species keepsakes (each species' first and
+  latest sighting) appear above once the first sweep has run.{% endif %}
 </p>
 {% endif %}
 {% endblock %}

@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.29.0"
+version: "0.30.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -58,6 +58,8 @@ options:
   identify_zoom_start_offset: 2.0
   identify_zoom_zone_priority: []
   clip_pad_seconds: 10.0
+  keepsakes: true
+  keepsake_video: true
   log_level: "info"
 schema:
   frigate_url: "url"
@@ -145,4 +147,16 @@ schema:
   # birds arrive before tracking starts and linger after it ends. Needs the camera's
   # recordings to cover the padding; falls back to the bare event clip when they don't.
   clip_pad_seconds: "float(0.0,300.0)"
+  # --- Species keepsakes --------------------------------------------------------
+  # Keep the FIRST and the LATEST camera sighting of every species at Frigate: the event
+  # is flagged retain_indefinitely so its snapshot and thumbnail never expire, and the
+  # species tile always has a picture. "Latest" moves to a newer sighting at most once a
+  # day and releases the previous one, so a species never holds more than two events.
+  # With require_species_confirmation on, only confirmed species get keepsakes.
+  keepsakes: "bool"
+  # Also export the padded clip of each keepsake (the event's camera, plus the paired
+  # PTZ camera from identify_zoom_map). Frigate's retain flag no longer protects the
+  # recording behind a clip — only an export survives retention. A few MB per keepsake;
+  # released exports are deleted. Needs Frigate 0.18+.
+  keepsake_video: "bool"
   log_level: "list(debug|info|warning|error)"

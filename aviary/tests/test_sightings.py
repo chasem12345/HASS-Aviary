@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from app import db, ingest
+from app import crops, db, heroes, ingest
 
 T0 = 1_788_904_615.0
 CAM = "birdzone"
@@ -129,8 +129,17 @@ def test_recap_ticks_and_first_ever_include_subjects(world):
     assert db.monthly_counts(ORIOLE) and sum(db.monthly_counts(ORIOLE)) == 2
 
 
-def test_thumbnails_dex_numbers_and_registry(world):
-    assert db.latest_snapshot_refs([ORIOLE])[ORIOLE] == "solo"
+def test_thumbnails_dex_numbers_and_registry(world, tmp_path):
+    crops.configure(str(tmp_path / "data"))
+    # The oriole only ever appears as the OTHER bird in cardinal events. With no crop of
+    # its own there is no honest picture: the cardinal's thumbnail must not stand in.
+    assert ORIOLE not in heroes.for_species([ORIOLE])
+    assert heroes.for_species([CARD])[CARD] == {
+        "id": det_id("solo"), "source_ref": "solo", "subject_idx": 0, "start_time": T0 + 500}
+    # Once the identifier stored the oriole's own crop from the solo event, that is it.
+    (tmp_path / "data" / "crops" / "solo-1.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    assert heroes.for_species([ORIOLE])[ORIOLE] == {
+        "id": det_id("solo"), "source_ref": "solo", "subject_idx": 1, "start_time": T0 + 500}
     assert set(db.species_dex_numbers()) == {CARD, ORIOLE}
     assert db.registry_stats()["total"] == 2 and db.registry_stats()["seen"] == 2
     assert db.distinct_species() == [ORIOLE, CARD]
