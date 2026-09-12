@@ -270,6 +270,9 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 .grid2-uneven { grid-template-columns: 3fr 2fr; }
 .hero-card .det-card { border: none; }
 .hero-card .det-card:hover { box-shadow: none; transform: none; }
+/* The dashboard's seen + heard cards stacked in one grid column; align-content keeps
+   them together at the top instead of spreading to match a tall leaderboard. */
+.latest-col { display: grid; gap: 18px; align-content: start; }
 .muted { color: var(--muted); }
 
 /* ----------------------------------------------------------------------- visits */

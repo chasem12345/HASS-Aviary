@@ -126,8 +126,17 @@ def dashboard(
     gated = request.app.state.settings.require_species_confirmation
 
     leaders = db.top_species(limit=10, source=src, since=since, only_confirmed=gated)
-    latest = _hydrate(request, db.feed_page(limit=1, source=src))
     ingestor = getattr(request.app.state, "ingestor", None)
+
+    # The newest thing seen (a visit or a lone Frigate event) AND the newest thing heard
+    # (a BirdNET-Go row), each all-time — one card per sense, so a chatty microphone can't
+    # hide the last bird on camera or vice versa. The Source dropdown narrows to one.
+    def _latest(source: str):
+        items = _hydrate(request, db.feed_page(limit=1, source=source))
+        return items[0] if items else None
+
+    latest_seen = _latest("frigate") if src in (None, "frigate") else None
+    latest_heard = _latest("birdnet") if src in (None, "birdnet") else None
 
     ctx = {
         "request": request,
@@ -144,7 +153,8 @@ def dashboard(
         "unconfirmed": db.unconfirmed_count() if gated else 0,
         "leaders": leaders,
         "heroes": heroes.for_species([s["common_name"] for s in leaders]),
-        "latest": latest[0] if latest else None,
+        "latest_seen": latest_seen,
+        "latest_heard": latest_heard,
         "mqtt_enabled": request.app.state.settings.mqtt_enabled,
         "mqtt_connected": bool(ingestor and ingestor.connected),
         # Sunrise/sunset markers for the hourly chart; None when the location is unknown.

@@ -26,7 +26,7 @@
   </form>
 </div>
 
-{% if not stats.total and not latest %}
+{% if not stats.total and not latest_seen and not latest_heard %}
 <section class="card first-run">
   <div class="empty-icon">🪶</div>
   <h2>Waiting for the first bird…</h2>
@@ -102,15 +102,32 @@
       </tbody>
     </table>
   </div>
-  <div class="card">
-    <h2>Latest detection</h2>
-    {% if latest %}
-      <div class="hero-card">
-        {% if latest.kind == 'visit' %}{{ cards.visit_card(latest) }}
-        {% else %}{{ cards.detection_card(latest) }}{% endif %}
-      </div>
-    {% else %}
-      <p class="empty">Nothing yet.</p>
+  {# One card per sense. A lone card showed whichever source spoke last, so on a day the
+     microphone was busy the last bird on camera never appeared here. The Source filter
+     leaves just the matching card. #}
+  <div class="latest-col">
+    {% if source != 'birdnet' %}
+    <div class="card">
+      <h2>Latest seen</h2>
+      {% if latest_seen %}
+        <div class="hero-card">
+          {% if latest_seen.kind == 'visit' %}{{ cards.visit_card(latest_seen) }}
+          {% else %}{{ cards.detection_card(latest_seen) }}{% endif %}
+        </div>
+      {% else %}
+        <p class="empty">Nothing seen yet.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% if source != 'frigate' %}
+    <div class="card">
+      <h2>Latest heard</h2>
+      {% if latest_heard %}
+        <div class="hero-card">{{ cards.detection_card(latest_heard) }}</div>
+      {% else %}
+        <p class="empty">Nothing heard yet.</p>
+      {% endif %}
+    </div>
     {% endif %}
   </div>
 </section>

@@ -207,3 +207,36 @@ def test_feed_page_groups_and_keeps_ungrouped(fresh_db):
     by_zone = db.feed_page(limit=10, zone="bath")
     assert [it.get("kind") for it in by_zone] == [None, "visit"]
     assert db.feed_page(limit=10, zone="porch") == []
+
+
+def _birdnet_row(ref: str, start: float, name: str = "Carolina Wren") -> dict:
+    return {
+        "source": "birdnet", "source_ref": ref, "common_name": name, "scientific_name": None,
+        "species_code": None, "confidence": 0.9, "location": "mic", "start_time": start,
+        "end_time": start + 3, "has_clip": 1, "has_snapshot": 0, "clip_ref": ref,
+        "snapshot_ref": None, "native_id": ref, "raw_json": None, "created_at": start,
+    }
+
+
+def test_feed_page_latest_per_source(fresh_db):
+    """The dashboard asks for the newest item of EACH source: the newest camera item is a
+    visit or a lone event, the newest audio item is always a bare BirdNET row, and with no
+    source filter the newest of everything wins."""
+    ingest.handle_frigate_review(review_msg("r9", "end", ["a", "b"], T0, T0 + 30))
+    ingest.handle_frigate(event_msg("a", "end", T0, T0 + 3, label="Blue Jay"))
+    ingest.handle_frigate(event_msg("b", "end", T0 + 5, T0 + 8, label="Blue Jay"))
+    ingest.handle_frigate(event_msg("solo", "end", T0 + 500, T0 + 503, label="Blue Jay"))
+    db.upsert_detection(_birdnet_row("w-old", T0 - 50))
+    db.upsert_detection(_birdnet_row("w-new", T0 + 100))
+
+    seen = db.feed_page(limit=1, source="frigate")
+    assert len(seen) == 1 and seen[0].get("kind") is None and seen[0]["source_ref"] == "solo"
+    heard = db.feed_page(limit=1, source="birdnet")
+    assert len(heard) == 1 and heard[0]["source"] == "birdnet" and heard[0]["source_ref"] == "w-new"
+    assert db.feed_page(limit=1)[0]["source_ref"] == "solo"
+
+    # Once the camera goes quiet the visit itself is the latest thing seen.
+    db.delete_detection(seen[0]["id"])
+    seen = db.feed_page(limit=1, source="frigate")
+    assert seen[0].get("kind") == "visit" and seen[0]["review_id"] == "r9"
+    assert db.feed_page(limit=1)[0]["source_ref"] == "w-new"
