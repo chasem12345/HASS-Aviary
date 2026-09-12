@@ -934,6 +934,7 @@ stay independent.
 | `identify_zoom_map` | `"detect_camera:ptz_camera"` pairs (default empty). Events from the detect camera are classified from the PTZ camera's recordings for the event's time window instead of the event clip — see *Cross-camera zoom* below. Needs aviary-id 0.8.0+. |
 | `identify_zoom_start_offset` | Seconds trimmed from the zoom window's start for PTZ travel time (default `2.0`). |
 | `identify_zoom_zone_priority` | Your PTZ automation's zone priority list, highest first (default empty = no gating). With two birds in different zones at once, the lower-priority event skips the zoomed footage rather than classifying the bird the PTZ was actually filming. |
+| `clip_pad_seconds` | Seconds of recordings played before and after a detection when viewing it — the ⤢ player and the ⇄ other-camera button — and either side of a kept export (default `10.0`, 0–300). Birds arrive before tracking starts and linger after it ends. Needs the camera's recordings to cover the padding; falls back to the bare event clip when they don't. See *Padded clips* under [Species keepsakes](#species-keepsakes). |
 | `keepsakes` | Keep each species' first and latest camera sighting at Frigate (`retain_indefinitely`; "latest" moves at most once a day, the previous one is released) (default `true`). See [Species keepsakes](#species-keepsakes). |
 | `keepsake_video` | Also export the padded clip of each keepsake — the event's camera and the paired PTZ camera — the only footage Frigate never expires (default `true`). Needs Frigate 0.18+. |
 | `log_level` | Logging verbosity. |
@@ -980,6 +981,10 @@ python scripts/replay_frigate_review.py --frigate http://<frigate>:5000 \
 The tests exercise the same ingest handlers in-process, with no broker:
 
 ```bash
-pip install pytest
-python -m pytest tests -q        # from the aviary directory
+pip install -r requirements-dev.txt
+python -m pytest -q              # from the aviary directory (pytest.ini sets the path)
+python -m pytest aviary/tests -q # or from the repository root
 ```
+
+The identification service has its own suite: `python -m pytest aviary-id/tests -q`. The
+two packages are both named `app`, so they cannot share one pytest session.

@@ -85,23 +85,11 @@ Turn Frigate's own bird classification off when you enable this. See
 
 ## Configuration
 
-| Option | Default | Description |
-|---|---|---|
-| `frigate_url` | `http://ccab4aaf-frigate:5000` | Base URL of your Frigate instance (for clip/snapshot proxying) |
-| `birdnet_url` | `http://a0d7b954-birdnet-go:8080` | Base URL of your BirdNET-Go instance (for audio proxying) |
-| `frigate_topic` | `frigate/events` | MQTT topic Frigate publishes events to |
-| `birdnet_topic` | `birdnet` | MQTT topic BirdNET-Go publishes detections to |
-| `backfill_on_start` | `true` | Import existing detections from Frigate/BirdNET-Go HTTP APIs on startup (idempotent) |
-| `ignore_unclassified` | `true` | Skip species-less detections (Frigate `bird` with no `sub_label`); set `false` to record generic "bird" too |
-| `mqtt_host` | `""` | Override broker host (leave empty to use the HA `mqtt` service) |
-| `mqtt_port` | `1883` | Override broker port |
-| `mqtt_user` | `""` | Override broker username |
-| `mqtt_password` | `""` | Override broker password |
-| `identify_url` | `""` | Base URL of the [aviary-id](aviary-id/) service, e.g. `http://10.0.0.50:8100` |
-| `identify_enabled` | `false` | Route unidentified Frigate detections to that service |
-| `log_level` | `info` | `debug` / `info` / `warning` / `error` |
-
-The full option list, including the identification thresholds, is in
+Out of the box you only need `frigate_url` and `birdnet_url` (the add-on defaults point at
+the official Frigate and BirdNET-Go add-ons), plus the `mqtt_*` overrides if you are not
+running the Mosquitto broker add-on. Everything else — species confirmation, notifications,
+the aviary-id identification thresholds, cross-camera zoom, clip padding, keepsakes — has a
+sensible default and is documented option by option in
 [aviary/DOCS.md](aviary/DOCS.md#configuration).
 
 ## Development
