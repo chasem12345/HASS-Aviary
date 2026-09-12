@@ -1,6 +1,6 @@
 {# Dex-theme entry screen. Selected by routes.render() when the dex theme is active;
    the default species.html is unchanged. Taxonomy rows and the reference recording are
-   lazy-loaded by the same app.js functions the default template uses — the ids and
+   lazy-loaded by the same species.js functions the default template uses — the ids and
    classes below are the contract (#dex-order/#dex-family/#dex-status, #ref-audio). #}
 {% extends "base.html" %}
 {% from "_cards.html" import hero_img with context %}
@@ -128,7 +128,7 @@
   <div class="ref-photo-strip"></div>
 </section>
 
-{# Registry stepping. Real links, so ←/→ in app.js is an enhancement, not a requirement. #}
+{# Registry stepping. Real links, so ←/→ in registry.js is an enhancement, not a requirement. #}
 <nav class="dex-steps" id="dexSteps">
   {% if dex_prev %}
   <a class="dex-step prev" rel="prev" href="{{ u('species_detail', name=dex_prev.common_name) }}">
@@ -196,6 +196,9 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ u('static', path='/charts.js') }}"></script>
+<script src="{{ u('static', path='/species.js') }}"></script>
+<script src="{{ u('static', path='/registry.js') }}"></script>
 <script>
   window.aviaryInitSpecies({
     species: {{ species | tojson }},

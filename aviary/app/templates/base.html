@@ -42,7 +42,7 @@
     // HA's app panel always loads this iframe at its root and delivers the URL tail after
     // /<addon_slug> separately, over postMessage — so a notification tap action can only
     // deep-link to a species page if we navigate there ourselves. Inline and ahead of
-    // app.js to keep the flash of the dashboard as short as possible.
+    // the page scripts to keep the flash of the dashboard as short as possible.
     (function () {
       if (window.parent === window) return;
       var base = window.AVIARY_BASE || "", handled = false;
@@ -67,7 +67,9 @@
     })();
   </script>
   <script src="{{ u('static', path='/chart.umd.js') }}"></script>
-  <script src="{{ u('static', path='/app.js') }}"></script>
+  <script src="{{ u('static', path='/core.js') }}"></script>
+  <script src="{{ u('static', path='/player.js') }}"></script>
+  <script src="{{ u('static', path='/cards.js') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -248,7 +248,7 @@ def create_app() -> FastAPI:
     app.add_middleware(IngressStripMiddleware)
 
     # Version the static mount PATH (not just a ?v query) so a reverse proxy that
-    # caches by path and ignores query strings still can't serve a stale app.js/app.css
+    # caches by path and ignores query strings still can't serve stale JS/CSS
     # after an update — each build is a brand-new URL path.
     app.mount(
         f"/static-{ASSET_VER}",
