@@ -806,17 +806,47 @@
   };
 
   // ------------------------------------------------------------------ clip player
-  // Frigate's clips are fragmented MP4s with a zero-duration header, so a browser can't
-  // seek them — the progress bar just grows as it plays. /play.mp4 serves an ffmpeg
-  // faststart remux instead, and this player pulls that down ONCE into a blob: every seek
-  // after that is against bytes already in memory, so scrubbing is instant and the server
-  // is never touched again. That is what makes remux-per-request affordable.
+  // Two kinds of source, one player.
   //
-  // It also gives the cramped 260px card scrubber somewhere roomier to live, and a place
-  // for a still-capture button.
+  // Recordings windows (▶ play visit, ⤢ with padding, ⇄ other camera) play as HLS from
+  // Frigate's own recordings service, proxied same-origin by /media/frigate/vod/…: the
+  // first frame is one 10 s segment away however long the window, the playlist carries
+  // the duration so seeking works from the start, and segments load on demand. hls.js is
+  // fetched lazily on the first such play (Safari on iPhone plays HLS natively).
+  //
+  // Event clips, exports and keepsakes are short MP4s. Frigate's event clip is a
+  // fragmented MP4 with a zero-duration header that a browser can't seek, so /play.mp4
+  // serves an ffmpeg faststart remux and the player pulls it ONCE into a blob: every seek
+  // after that is against bytes already in memory.
+  //
+  // Either way the player gives the cramped 260px card scrubber somewhere roomier to
+  // live, and a place for a still-capture button.
 
   let player = null;          // the open overlay, or null
   let playerObjectUrl = null; // revoked on close; each open allocates a fresh blob
+  let playerHls = null;       // the hls.js instance for an HLS source; destroyed on close
+  let hlsLoading = null;      // memoised script-load promise for hls.js
+
+  /** Load the vendored hls.js once, on demand. Resolves when window.Hls exists. */
+  function loadHls() {
+    if (window.Hls) return Promise.resolve();
+    if (!hlsLoading) {
+      hlsLoading = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = window.AVIARY_HLS_SRC || (BASE + "/static/hls.light.min.js");
+        script.onload = () => (window.Hls ? resolve() : reject(new Error("hls.js did not define Hls")));
+        script.onerror = () => { hlsLoading = null; reject(new Error("hls.js failed to load")); };
+        document.head.appendChild(script);
+      });
+    }
+    return hlsLoading;
+  }
+
+  /** The master playlist of a camera's recordings window, via the Aviary proxy. */
+  function vodPlaylistUrl(camera, start, end) {
+    return BASE + "/media/frigate/vod/" + encodeURIComponent(camera) +
+      "/start/" + encodeURIComponent(start) + "/end/" + encodeURIComponent(end) + "/master.m3u8";
+  }
 
   function playerOpen() {
     return player !== null;
@@ -825,6 +855,7 @@
   function closePlayer() {
     if (!player) return;
     const video = player.querySelector("video");
+    if (playerHls) { playerHls.destroy(); playerHls = null; }
     if (video) { video.pause(); video.removeAttribute("src"); video.load(); }
     if (playerObjectUrl) { URL.revokeObjectURL(playerObjectUrl); playerObjectUrl = null; }
     player.remove();
@@ -851,8 +882,9 @@
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-    // PNG: lossless for the decoded frame. The blob is same-origin, so the canvas is
-    // never tainted and toBlob can't throw a security error.
+    // PNG: lossless for the decoded frame. The source is same-origin either way — a blob,
+    // or HLS segments proxied by Aviary — so the canvas is never tainted and toBlob can't
+    // throw a security error.
     canvas.toBlob((blob) => {
       if (!blob) return;
       const url = URL.createObjectURL(blob);
@@ -881,11 +913,50 @@
       (video.duration || Infinity), video.currentTime + dir * (1 / 30)));
   }
 
+  /** Attach an HLS playlist to the player's <video>; fall back to the fMP4 passthrough. */
+  function startHls(ds, video, title) {
+    const name = ds.name || "Clip";
+    title.textContent = name + " · loading…";
+    let started = false;
+    video.addEventListener("loadedmetadata", () => { started = true; title.textContent = name; }, { once: true });
+    const fallback = () => {
+      if (playerHls) { playerHls.destroy(); playerHls = null; }
+      // Once frames have played there is nothing sensible to fall back to mid-stream.
+      if (started) { title.textContent = name + " · stream lost"; return; }
+      video.src = ds.fallback;
+      title.textContent = name + " · seeking unavailable";
+    };
+    loadHls().then(() => {
+      if (window.Hls && Hls.isSupported()) {
+        playerHls = new Hls({ maxBufferLength: 30, maxBufferSize: 20 * 1000 * 1000 });
+        let recovered = false;
+        playerHls.on(Hls.Events.ERROR, (_, data) => {
+          if (!data.fatal) return;
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !recovered) {
+            recovered = true;
+            playerHls.recoverMediaError();
+            return;
+          }
+          fallback();
+        });
+        playerHls.loadSource(ds.hls);
+        playerHls.attachMedia(video);
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        // No MSE (iPhone Safari): the browser plays the playlist itself.
+        video.addEventListener("error", fallback, { once: true });
+        video.src = ds.hls;
+      } else {
+        fallback();
+      }
+    }).catch(fallback);
+  }
+
   function openPlayer(ds) {
     closePlayer();
-    // Sources default to the event's own media; ds.src/ds.fallback override them for
-    // non-event footage (a paired camera's recordings window). Everything downstream —
-    // blob playback, stepping, still capture — is URL-agnostic.
+    // Sources default to the event's own media. ds.hls selects HLS playback of a
+    // recordings window (with ds.fallback as the passthrough); ds.src/ds.fallback override
+    // the MP4 URLs for other footage (exports, keepsakes). Everything downstream —
+    // stepping, still capture — is source-agnostic.
     const clipBase = BASE + "/media/frigate/" + encodeURIComponent(ds.event || "");
     const src = ds.src || clipBase + "/play.mp4";
     const fallback = ds.fallback || clipBase + "/clip.mp4";
@@ -913,21 +984,25 @@
     title.textContent = ds.name || "Clip";
     const video = player.querySelector("video");
 
-    // Fetch the remuxed clip whole, then play from memory. The stage stays black while
-    // that happens and the browser's own buffering UI takes over once src is set — no
-    // custom loading overlay, which is one less thing to sit on top of the video.
-    fetch(src)
-      .then((res) => { if (!res.ok) throw new Error(res.status); return res.blob(); })
-      .then((blob) => {
-        playerObjectUrl = URL.createObjectURL(blob);
-        video.src = playerObjectUrl;
-      })
-      .catch(() => {
-        // Remux unavailable (no ffmpeg, Frigate unreachable): play the original so there
-        // is still something to watch, and say in the title why it won't scrub.
-        video.src = fallback;
-        title.textContent = (ds.name || "Clip") + " · seeking unavailable";
-      });
+    if (ds.hls) {
+      startHls({ ...ds, fallback }, video, title);
+    } else {
+      // Fetch the remuxed clip whole, then play from memory. The stage stays black while
+      // that happens and the browser's own buffering UI takes over once src is set — no
+      // custom loading overlay, which is one less thing to sit on top of the video.
+      fetch(src)
+        .then((res) => { if (!res.ok) throw new Error(res.status); return res.blob(); })
+        .then((blob) => {
+          playerObjectUrl = URL.createObjectURL(blob);
+          video.src = playerObjectUrl;
+        })
+        .catch(() => {
+          // Remux unavailable (no ffmpeg, Frigate unreachable): play the original so there
+          // is still something to watch, and say in the title why it won't scrub.
+          video.src = fallback;
+          title.textContent = (ds.name || "Clip") + " · seeking unavailable";
+        });
+    }
 
     player.addEventListener("click", (e) => {
       if (e.target.closest(".clip-backdrop") || e.target.closest(".clip-close")) {
@@ -949,14 +1024,12 @@
     if (!btn) return;
     e.preventDefault();
     const ds = { event: btn.dataset.event, name: btn.dataset.name, time: btn.dataset.time };
-    // When the card carries a padded window, play the camera's own recordings for it
-    // (±clip_pad_seconds around the event). The bare event clip stays the fallback —
+    // When the card carries a padded window, stream the camera's own recordings for it
+    // (±clip_pad_seconds around the event) as HLS. The bare event clip stays the fallback —
     // recordings older than the camera's retention are gone while the event clip
     // survives under alert/detection retention.
     if (btn.dataset.camera && btn.dataset.start && btn.dataset.end) {
-      ds.src = BASE + "/media/frigate/recordings/" + encodeURIComponent(btn.dataset.camera) +
-        "/play.mp4?start=" + encodeURIComponent(btn.dataset.start) +
-        "&end=" + encodeURIComponent(btn.dataset.end);
+      ds.hls = vodPlaylistUrl(btn.dataset.camera, btn.dataset.start, btn.dataset.end);
       ds.fallback = BASE + "/media/frigate/" + encodeURIComponent(btn.dataset.event) + "/clip.mp4";
     }
     openPlayer(ds);
@@ -995,20 +1068,19 @@
   });
 
   // "View on the other camera": the same time window, from the paired camera's
-  // continuous recordings. Same player, different source URLs.
+  // continuous recordings. Same player, HLS like ▶ play visit; the fMP4 passthrough of
+  // the same window is the fallback.
   document.addEventListener("click", (e) => {
     const btn = e.target.closest(".other-cam-open");
     if (!btn) return;
     e.preventDefault();
-    const q = "?start=" + encodeURIComponent(btn.dataset.start) +
-              "&end=" + encodeURIComponent(btn.dataset.end);
-    const recBase = BASE + "/media/frigate/recordings/" +
-      encodeURIComponent(btn.dataset.camera) + "/";
     openPlayer({
       name: (btn.dataset.name || "Clip") + " · " + btn.dataset.camera,
       time: btn.dataset.start,
-      src: recBase + "play.mp4" + q,
-      fallback: recBase + "clip.mp4" + q,
+      hls: vodPlaylistUrl(btn.dataset.camera, btn.dataset.start, btn.dataset.end),
+      fallback: BASE + "/media/frigate/recordings/" + encodeURIComponent(btn.dataset.camera) +
+        "/clip.mp4?start=" + encodeURIComponent(btn.dataset.start) +
+        "&end=" + encodeURIComponent(btn.dataset.end),
     });
   });
 

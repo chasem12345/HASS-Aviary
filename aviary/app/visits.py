@@ -71,18 +71,19 @@ def species_present(members: list[dict]) -> list[dict]:
 def play_window(visit: dict, pad: float) -> Optional[dict]:
     """The recordings window the ▶ button should request, or None while the visit is open.
 
-    Padded like every other player window, then clamped to the media route's cap so a
-    marathon visit plays its first quarter-hour rather than getting a 400. ``clamped``
-    tells the template to say so on the button.
+    Padded like every other player window, then clamped to the streaming cap so a
+    marathon visit plays its first hour rather than getting a 400. ``clamped`` tells the
+    template to say so on the button, ``max_minutes`` is the number it says.
     """
     start, end = visit.get("start_time"), visit.get("end_time")
     if start is None or end is None or end <= start:
         return None
     p_start, p_end = kept.padded_window(float(start), float(end), pad)
-    clamped = (p_end - p_start) > kept.RECORDING_MAX_S
+    clamped = (p_end - p_start) > kept.PLAYBACK_MAX_S
     if clamped:
-        p_end = p_start + kept.RECORDING_MAX_S
-    return {"start": p_start, "end": p_end, "clamped": clamped}
+        p_end = p_start + kept.PLAYBACK_MAX_S
+    return {"start": p_start, "end": p_end, "clamped": clamped,
+            "max_minutes": int(kept.PLAYBACK_MAX_S // 60)}
 
 
 def _fallback(species: list[dict], members: list[dict]) -> Optional[dict]:

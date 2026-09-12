@@ -58,10 +58,18 @@ with a scrubber only as wide as the card, it's worse still.
 
 **⤢ scrub / still** opens a full-width player that fixes both:
 
-- Aviary remuxes the clip to a proper seekable MP4 (ffmpeg `-c copy` — lossless, no
-  re-encode) and the player downloads it **whole** before playing. That costs a moment on
-  open, and buys **instant scrubbing**: every seek afterwards happens in your browser
-  against video it already has, with no further requests.
+- **Recordings windows stream as HLS.** ▶ play visit, ⤢ on an event with padding, and ⇄
+  view on the other camera all play the camera's continuous recordings for a time span.
+  Aviary asks Frigate's own recordings service for that span as an HLS playlist — the same
+  thing Frigate's Review page plays — and proxies it through the add-on, so the first frame
+  arrives after **one ten-second segment** however long the visit, the duration is known
+  from the start, seeking works immediately, and only the parts you watch are ever fetched.
+  Nothing is downloaded or re-muxed on the add-on. A visit can stream up to **60 minutes**;
+  longer ones play their first hour and the button says so.
+- **Event clips, exports and keepsakes** are short MP4s. Aviary remuxes an event clip to a
+  proper seekable MP4 (ffmpeg `-c copy` — lossless, no re-encode) and the player downloads
+  it **whole** before playing: a moment on open, then every seek happens in your browser
+  against video it already has.
 - Large transport buttons — ⏪ 1s, single-frame stepping both ways, ⏩ 1s — sized for a
   thumb. Arrow keys seek, `,` / `.` step a frame, Escape closes.
 - **⬇ save still** writes the frame on screen to a PNG at the clip's **native encoded
@@ -69,9 +77,13 @@ with a scrubber only as wide as the card, it's worse still.
   best still the clip can give. It's named like the video download:
   `blue-jay-20260811-142233-4.20s.png`.
 
-Nothing is cached server-side, so each open re-fetches and re-remuxes — the player stays
-black for a moment before the clip appears. If ffmpeg is unavailable it falls back to
-direct playback and the title reads *seeking unavailable*: watchable, but not scrubbable.
+While an HLS stream is starting the title reads *loading…*. If the recordings behind a
+window have expired, or the browser can play neither HLS nor MSE, the player falls back to
+Frigate's plain clip and the title reads *seeking unavailable*: watchable, but not
+scrubbable. Frigate needs its `/vod/` recordings service reachable at the same `frigate_url`
+Aviary already uses for `/api/` — it is, on the default add-on URL. The HLS player library
+(hls.js, Apache-2.0) ships inside the add-on and loads the first time you play a window;
+nothing is fetched from the internet.
 
 ## Confirming new species
 

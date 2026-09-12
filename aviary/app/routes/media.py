@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import logging
 import os
-import re
 import shutil
 import tempfile
 import time
@@ -221,25 +220,22 @@ async def frigate_download(event_id: str, request: Request):
 
 
 # ------------------------------------------------------------ recordings by window
-# Backs the cards' "view on the other camera" button: the same time window as an event,
-# but from the paired camera's continuous recordings (Frigate's recordings-by-window
-# endpoint works for any recorded camera, event or not).
+# Backs the cards' ▶ play visit, ⤢ scrub (with padding) and ⇄ other-camera buttons: a
+# time window from a camera's continuous recordings, event or not.
+#
+# Playback is HLS. Frigate's ``clip.mp4`` for a window is a fragmented MP4 streamed out of
+# ffmpeg with no duration in its header, so a browser cannot seek it; the old answer was
+# to download the whole window and remux it, which scaled with the window and stalled for
+# minutes on a long visit. Frigate's nginx also serves the same recordings as an HLS VOD
+# playlist (see ``proxy.frigate_vod_url``): the first frame is one segment away however
+# long the window, and every segment is fetched on demand. The passthrough ``clip.mp4``
+# stays as the player's fallback for a browser without MSE or a window nginx-vod rejects.
 
-# The cap lives in kept.py so the visit card can clamp to the same number this route
-# enforces.
-_RECORDING_MAX_S = kept.RECORDING_MAX_S
-_CAMERA_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
-
-
-def _recording_window(camera: str, start: float, end: float
-                      ) -> Optional[tuple[str, float, float]]:
-    """Validate a recordings request. None = reject with 400."""
-    camera = (camera or "").strip().lower()
-    if not _CAMERA_RE.match(camera):
-        return None
-    if not (end > start) or (end - start) > _RECORDING_MAX_S:
-        return None
-    return camera, float(start), float(end)
+_VOD_HEADERS = {
+    # nginx gzips playlists. httpx would decode transparently while the relayed
+    # Content-Length still described the compressed body; ask for plain bytes instead.
+    "Accept-Encoding": "identity",
+}
 
 
 @router.get("/frigate/recordings/{camera}/clip.mp4", name="frigate_recording_clip")
@@ -248,35 +244,31 @@ async def frigate_recording_clip(camera: str, start: float, end: float, request:
     base = request.app.state.settings.frigate_url
     if not base:
         return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
-    window = _recording_window(camera, start, end)
+    window = kept.recording_window(camera, start, end, kept.PLAYBACK_MAX_S)
     if window is None:
         return JSONResponse({"error": "invalid camera or window"}, status_code=400)
     return await proxy.stream_upstream(
         request, proxy.frigate_recordings_url(base, *window))
 
 
-@router.get("/frigate/recordings/{camera}/play.mp4", name="frigate_recording_play")
-async def frigate_recording_play(camera: str, start: float, end: float, request: Request):
-    """A seekable recordings window, same remux as an event's play.mp4."""
+@router.get("/frigate/vod/{camera}/start/{start}/end/{end}/{filename}", name="frigate_vod")
+async def frigate_vod(camera: str, start: float, end: float, filename: str, request: Request):
+    """One file of a recordings window's HLS rendition, proxied from Frigate's nginx.
+
+    Path parameters rather than a query string on purpose: the playlists name their
+    segments relatively, and the browser resolves those against THIS URL, so the segment
+    requests land back here with the same camera and window — the ingress prefix and all.
+    """
     base = request.app.state.settings.frigate_url
     if not base:
         return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
-    window = _recording_window(camera, start, end)
+    if not kept.vod_filename_ok(filename):
+        return JSONResponse({"error": "not an HLS file"}, status_code=400)
+    window = kept.recording_window(camera, start, end, kept.PLAYBACK_MAX_S)
     if window is None:
         return JSONResponse({"error": "invalid camera or window"}, status_code=400)
-    cam, w_start, w_end = window
-    result = await _remuxed_clip(
-        proxy.frigate_recordings_url(base, cam, w_start, w_end),
-        f"{cam}@{w_start:.0f}-{w_end:.0f}",
-    )
-    if result is None:
-        return JSONResponse(
-            {"error": "no recordings from Frigate for that window"}, status_code=502)
-    path, tmpdir = result
-    return FileResponse(
-        path, media_type="video/mp4",
-        background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True),
-    )
+    return await proxy.stream_upstream(
+        request, proxy.frigate_vod_url(base, *window, filename), headers=_VOD_HEADERS)
 
 
 @router.get("/frigate/export/{det_id}/video.mp4", name="frigate_kept_export")

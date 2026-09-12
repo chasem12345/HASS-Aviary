@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -33,12 +34,52 @@ log = logging.getLogger("aviary.kept")
 # you preview is exactly what gets kept.
 _DEFAULT_PAD_S = 10.0
 
-# Longest recordings window any player button or export may request. A malformed
-# request must not make ffmpeg remux an hour of 4K; sized to fit a long event plus
-# clip_pad_seconds at its maximum (300 each side). Shared by the media route (which
-# rejects longer windows) and the visit card (which clamps to it, so a marathon visit
-# plays its first 15 minutes instead of a 400).
+# Longest recordings window anything may pull through ffmpeg or export whole: the kept
+# exports and the event download. A malformed request must not make Frigate concatenate
+# an hour of 4K into one file; sized to fit a long event plus clip_pad_seconds at its
+# maximum (300 each side).
 RECORDING_MAX_S = 900.0
+
+# Longest window the players may STREAM. Playback is HLS from Frigate's own recordings
+# service (segments on demand, nothing assembled up front), so it can afford far more
+# than the export cap; Frigate's UI streams hour blocks through the same endpoint. Shared
+# by the media routes (which reject longer windows) and the visit card (which clamps to
+# it, so a marathon visit plays its first hour instead of getting a 400).
+PLAYBACK_MAX_S = 3600.0
+
+_CAMERA_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
+
+# The only files nginx-vod-module emits for a window: the master playlist, per-rendition
+# index playlists, the fMP4 init segment and media segments (``seg-N-v1-a1.m4s``; ``.ts``
+# only if a Frigate ever switches the container back). Anything else — ``clip.mp4``, a
+# path with a query, an uppercase spelling — never reaches Frigate.
+VOD_FILE_RE = re.compile(
+    r"^(?:master\.m3u8|index(?:-[a-z0-9]+)*\.m3u8|init(?:-[a-z0-9]+)*\.mp4"
+    r"|seg-\d+(?:-[a-z0-9]+)*\.(?:m4s|ts))$")
+
+
+def vod_filename_ok(name: str) -> bool:
+    """Whether ``name`` is a file an HLS window legitimately asks for."""
+    return bool(name) and VOD_FILE_RE.match(name) is not None
+
+
+def recording_window(camera: str, start: float, end: float, max_s: float
+                     ) -> Optional[tuple[str, float, float]]:
+    """Validate a recordings request: (camera, start, end), or None to reject with 400.
+
+    ``max_s`` is ``PLAYBACK_MAX_S`` for anything streamed and ``RECORDING_MAX_S`` for
+    anything pulled whole.
+    """
+    camera = (camera or "").strip().lower()
+    if not _CAMERA_RE.match(camera):
+        return None
+    try:
+        start, end = float(start), float(end)
+    except (TypeError, ValueError):
+        return None
+    if not (end > start) or (end - start) > max_s:
+        return None
+    return camera, start, end
 
 
 def view_pad(settings) -> float:

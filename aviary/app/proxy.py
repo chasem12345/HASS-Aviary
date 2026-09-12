@@ -232,6 +232,22 @@ def frigate_recordings_url(base: str, camera: str, start: float, end: float) -> 
     return f"{base}/api/{camera}/start/{start:.3f}/end/{end:.3f}/clip.mp4"
 
 
+def frigate_vod_url(base: str, camera: str, start: float, end: float, filename: str) -> str:
+    """One file of the HLS rendition of a recordings window, from Frigate's nginx.
+
+    ``/vod/{camera}/start/{s}/end/{e}/master.m3u8`` is what Frigate's own recordings UI
+    plays: nginx-vod-module assembles a VOD playlist over the recording segments, so
+    playback starts after one segment instead of after the whole window has been
+    concatenated. Frigate configures ``vod_base_url ''`` and ``vod_segments_base_url ''``,
+    which makes every URI inside the playlists RELATIVE (``index-v1-a1.m3u8``,
+    ``init-v1-a1.mp4``, ``seg-3-v1-a1.m4s``). Aviary's proxy route mirrors this exact path
+    shape, so the browser resolves those siblings under the ingress prefix on its own and
+    no playlist body is ever rewritten. Should a Frigate release set a base URL, that
+    assumption is the thing to check first.
+    """
+    return f"{base}/vod/{camera}/start/{start:.3f}/end/{end:.3f}/{filename}"
+
+
 def frigate_export_url(base: str, camera: str, start: float, end: float) -> str:
     """POST here creates an export of the window — recordings that survive retention.
 

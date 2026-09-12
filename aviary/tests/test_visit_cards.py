@@ -110,3 +110,13 @@ def test_no_species_falls_back_to_any_member():
     assert v["species"] == [] and v["focus"] is None
     assert len(v["unidentified"]) == 2
     assert v["fallback"]["source_ref"] == "u2"
+
+
+def test_marathon_visit_clamps_to_the_playback_cap():
+    from app import kept
+    v = visits.card_model(visit(two_species(), end=T0 + 2 * 3600), PAD)
+    assert v["window"]["clamped"] is True
+    assert v["window"]["end"] == v["window"]["start"] + kept.PLAYBACK_MAX_S
+    assert v["window"]["max_minutes"] == 60
+    short = visits.card_model(visit(two_species()), PAD)
+    assert short["window"]["clamped"] is False and short["window"]["max_minutes"] == 60

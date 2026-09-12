@@ -36,6 +36,8 @@
     // Ingress-aware URL bases (root-relative; X-Ingress-Path prefix already applied).
     window.AVIARY_BASE = "{{ ingress_path }}";
     window.AVIARY_API = "{{ ingress_path }}/api";
+    // hls.js is fetched on first play of a recordings window, not on every page load.
+    window.AVIARY_HLS_SRC = "{{ u('static', path='/hls.light.min.js') }}";
 
     // HA's app panel always loads this iframe at its root and delivers the URL tail after
     // /<addon_slug> separately, over postMessage — so a notification tap action can only

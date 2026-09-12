@@ -338,7 +338,7 @@
          and JS as a detection's ⤢ button; the lead event's clip is the fallback once the
          recordings have expired. Offered only once Frigate has closed the review item. #}
       <button type="button" class="clip-open"
-              title="Play the whole visit from {{ v.camera }}'s recordings{% if v.window and v.window.clamped %} (first 15 minutes){% endif %}"
+              title="Play the whole visit from {{ v.camera }}'s recordings{% if v.window and v.window.clamped %} (first {{ v.window.max_minutes }} minutes){% endif %}"
               data-event="{{ v.fallback.source_ref }}"
               data-name="{{ (v.species[0].common_name if v.species else 'Visit') }} · {{ v.camera }}"
               data-time="{{ v.start_time }}"
@@ -346,7 +346,7 @@
               data-camera="{{ v.camera }}"
               data-start="{{ v.window.start }}"
               data-end="{{ v.window.end }}"
-              {%- endif %}>▶ play visit{% if v.window and v.window.clamped %} (first 15 min){% endif %}</button>
+              {%- endif %}>▶ play visit{% if v.window and v.window.clamped %} (first {{ v.window.max_minutes }} min){% endif %}</button>
       {% endif %}
       {% set other_cam = camera_pairs.get(v.camera) if v.window else none %}
       {% if other_cam %}
