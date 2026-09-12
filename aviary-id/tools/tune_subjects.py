@@ -10,12 +10,13 @@ judge by eye whether the two birds came apart cleanly.
 Usage (from the aviary-id directory, so ``app.subjects`` imports):
 
     pip install -r requirements-dev.txt
-    python tools/tune_subjects.py --service http://10.10.69.8:8100 --token "$AVIARY_ID_TOKEN" \\
-        --frigate http://10.10.69.8:5000 --camera birdzone --overlap --limit 10
+    python tools/tune_subjects.py --service http://<aviary-id-host>:8100 --token "$AVIARY_ID_TOKEN" \\
+        --frigate http://<frigate-host>:5000 --camera birdzone --overlap --limit 10
 
     python tools/tune_subjects.py --service ... --event 1788904637.717787-wf7zvn   # one event
 
-No GPU needed here: the service does the encoding, this script only re-clusters.
+``SERVICE_URL``, ``FRIGATE_URL`` and ``AVIARY_ID_TOKEN`` in the environment stand in for the
+flags. No GPU needed here: the service does the encoding, this script only re-clusters.
 """
 
 from __future__ import annotations

@@ -9,7 +9,7 @@ whichever side lands first.
 
 Usage:
     pip install paho-mqtt httpx
-    python scripts/replay_frigate_review.py --frigate http://10.10.69.8:5000 \
+    python scripts/replay_frigate_review.py --frigate http://<frigate-host>:5000 \
         --review 1788904615.494584-jotr6i --host localhost [--order events-first] \
         [--label 0=Northern\\ Cardinal --label 3=Carolina\\ Wren]
 
@@ -17,8 +17,8 @@ Usage:
 notification path has species to announce without an identification service; two
 different labels should yield exactly two announcements for the visit.
 
-Env overrides: MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, FRIGATE_TOPIC,
-FRIGATE_REVIEW_TOPIC.
+Env overrides: FRIGATE_URL (stands in for --frigate), MQTT_HOST, MQTT_PORT, MQTT_USER,
+MQTT_PASSWORD, FRIGATE_TOPIC, FRIGATE_REVIEW_TOPIC.
 """
 
 from __future__ import annotations
@@ -80,7 +80,9 @@ def review_msg(item: dict, kind: str, refs: list[str]) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--frigate", required=True)
+    frigate_default = os.environ.get("FRIGATE_URL")
+    ap.add_argument("--frigate", default=frigate_default, required=not frigate_default,
+                    help="Frigate base URL, e.g. http://<frigate-host>:5000 (env FRIGATE_URL)")
     ap.add_argument("--review", required=True)
     ap.add_argument("--host", default=os.environ.get("MQTT_HOST", "localhost"))
     ap.add_argument("--port", type=int, default=int(os.environ.get("MQTT_PORT", "1883")))
