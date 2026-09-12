@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.31.0
+
+- **Long visits start playing immediately.** ▶ play visit, ⤢ scrub with padding and ⇄ view
+  on the other camera used to download the whole recordings window to the add-on, remux it
+  with ffmpeg so the browser could seek it, then download it *again* into the player before
+  the first frame — four full passes that were fine for a five-second event clip and took
+  minutes once visits ran to a quarter of an hour. Those windows now stream as **HLS** from
+  Frigate's own recordings service (the same playlist its Review page plays), proxied through
+  the add-on: the first frame is one ten-second segment away however long the visit, the
+  duration is known from the start so scrubbing works immediately, only the parts you watch
+  are fetched, and nothing is assembled or cached server-side. The streaming cap rises from
+  15 to **60 minutes** (exports and the ⬇ video download keep the old 15). hls.js 1.7.3
+  (Apache-2.0, light build) ships inside the add-on and loads on the first play; iPhone
+  Safari plays the playlist natively. If the recordings have expired the player falls back
+  to Frigate's plain clip and says *seeking unavailable*. Event clips, exports and keepsakes
+  still use the remux-and-download player. See *Scrubbing clips and saving stills*.
+- **The dashboard shows the latest bird seen and the latest bird heard.** One "Latest
+  detection" card showed whichever source spoke last, so on a day the microphone was busy
+  the last bird on camera never appeared. It is now two cards — *Latest seen* (a visit or a
+  lone Frigate event) and *Latest heard* (BirdNET-Go) — and the Source filter narrows to the
+  matching one.
+- **Your life list lives on iNaturalist.** eBird has no write API at all (media is
+  drag-and-drop onto a checklist), so a synced list has to live where one exists. Each
+  species can now be posted to your iNaturalist account **once**, from its **first
+  sighting** — the kept keepsake when there is one, else the oldest camera sighting with
+  media, else a stored crop, else the oldest BirdNET-Go clip for a bird only heard — at your
+  Home Assistant location, with its date, a photo (the bird's own crop or Frigate's
+  snapshot) and/or the audio clip, and a description that says it is a reviewed camera-trap
+  record. iNaturalist's Life List then *is* your list. Posting is **manual** (a button on the
+  species page shows exactly what will be sent and asks first); `inat_auto_post` posts on
+  confirmation instead. `inat_geoprivacy` defaults to *obscured* because the coordinates are
+  your house. Video is not accepted there, so a still stands in for the clip. Credentials
+  are four `inat_*` options (an OAuth application plus your login — the password grant is
+  the only flow an add-on without a browser can run); they are never logged or shown.
+  "Forget link" drops Aviary's record only; deleting an observation is done on iNaturalist.
+  See *Life list on iNaturalist*.
+- **Housekeeping.** `clip_pad_seconds` joins the options table; the README's partial option
+  table is a pointer to the full one; `pytest.ini` in both packages so tests run from the
+  repository root; LAN addresses scrubbed from the dev scripts' usage text.
+
 ## 0.30.1
 
 - **Aviary stops believing in footage Frigate has expired.** A detection's clip and
