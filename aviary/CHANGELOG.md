@@ -38,7 +38,9 @@
   See *Life list on iNaturalist*.
 - **Housekeeping.** `clip_pad_seconds` joins the options table; the README's partial option
   table is a pointer to the full one; `pytest.ini` in both packages so tests run from the
-  repository root; LAN addresses scrubbed from the dev scripts' usage text.
+  repository root; LAN addresses scrubbed from the dev scripts' usage text. Internally, the
+  3300-line `db.py` is now a package split by domain, the eight hand-wired HTTP clients
+  share one registry, and `app.js` is nine files loaded per page — no behaviour changed.
 
 ## 0.30.1
 
