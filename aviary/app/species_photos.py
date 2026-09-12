@@ -25,7 +25,7 @@ from typing import Optional
 
 import httpx
 
-from . import db, species_info
+from . import db, http, species_info
 
 log = logging.getLogger("aviary.species_photos")
 
@@ -43,24 +43,10 @@ _MAX_PHOTOS = 3
 # excluded by never matching here.
 _LICENSES = ("cc0", "cc-by", "cc-by-nc", "cc-by-sa", "cc-by-nc-sa")
 
-_client: Optional[httpx.AsyncClient] = None
-
-
-def init_client() -> None:
-    global _client
-    if _client is None:
-        _client = httpx.AsyncClient(
-            timeout=httpx.Timeout(8.0),
-            follow_redirects=True,
-            headers={"User-Agent": species_info.USER_AGENT, "Accept": "application/json"},
-        )
-
-
-async def close_client() -> None:
-    global _client
-    if _client is not None:
-        await _client.aclose()
-        _client = None
+_http = http.register(
+    "species_photos", timeout=httpx.Timeout(8.0), follow_redirects=True,
+    headers={"User-Agent": species_info.USER_AGENT, "Accept": "application/json"},
+)
 
 
 async def resolve(common_name: str, scientific_name: Optional[str] = None) -> list[dict]:
@@ -109,7 +95,7 @@ def _miss(common: str) -> list[dict]:
 
 
 async def _fetch(common: str, sci: Optional[str]) -> list[dict]:
-    if _client is None:
+    if _http.client is None:
         return _miss(common)
 
     # Reuses the taxon lookup the About card already performs and caches.
@@ -119,7 +105,7 @@ async def _fetch(common: str, sci: Optional[str]) -> list[dict]:
         return _miss(common)
 
     try:
-        resp = await _client.get(_INAT_TAXON.format(taxon_id))
+        resp = await _http.client.get(_INAT_TAXON.format(taxon_id))
         if resp.status_code != 200:
             log.debug("iNaturalist taxon %s returned %s", taxon_id, resp.status_code)
             return _miss(common)

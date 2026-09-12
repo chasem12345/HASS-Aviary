@@ -12,6 +12,8 @@ from typing import Optional
 from urllib.parse import quote
 
 import httpx
+
+from . import http
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -28,23 +30,17 @@ _PASS_RESPONSE_HEADERS = (
     "etag",
 )
 
-_client: Optional[httpx.AsyncClient] = None
 
-
-def init_client() -> None:
-    global _client
-    if _client is None:
-        _client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=None), follow_redirects=True)
-
-
-async def close_client() -> None:
-    global _client, _csrf_token_cache
-    if _client is not None:
-        await _client.aclose()
-        _client = None
+def _reset_csrf() -> None:
     # The token belongs to the closed client's cookie jar; keeping it would pair a live
     # header with a cookie the next client doesn't have.
+    global _csrf_token_cache
     _csrf_token_cache = None
+
+
+_http = http.register(
+    "proxy", timeout=httpx.Timeout(30.0, read=None), follow_redirects=True, on_close=_reset_csrf,
+)
 
 
 async def stream_upstream(
@@ -60,7 +56,7 @@ async def stream_upstream(
     adds request headers for the upstream call — the client sets none by default, and
     public APIs (e.g. iNaturalist) ask to be sent a descriptive User-Agent.
     """
-    if _client is None:
+    if _http.client is None:
         return JSONResponse({"error": "proxy client not initialized"}, status_code=500)
 
     fwd_headers = dict(headers or {})
@@ -70,9 +66,9 @@ async def stream_upstream(
     urls = (url, *fallbacks)
     resp = None
     for i, candidate in enumerate(urls):
-        upstream = _client.build_request("GET", candidate, headers=fwd_headers)
+        upstream = _http.client.build_request("GET", candidate, headers=fwd_headers)
         try:
-            attempt = await _client.send(upstream, stream=True)
+            attempt = await _http.client.send(upstream, stream=True)
         except httpx.HTTPError as exc:
             log.warning("Upstream fetch failed for %s: %s", candidate, exc)
             continue
@@ -106,10 +102,10 @@ async def stream_upstream(
 
 async def fetch_to_file(url: str, dest: str) -> bool:
     """Stream an upstream URL into a local file. Returns False on any failure."""
-    if _client is None:
+    if _http.client is None:
         return False
     try:
-        async with _client.stream("GET", url) as resp:
+        async with _http.client.stream("GET", url) as resp:
             if resp.status_code != 200:
                 return False
             with open(dest, "wb") as f:
@@ -133,11 +129,11 @@ async def fetch_bytes(url: str, fallbacks: tuple[str, ...] = ()
     Same fallback semantics as ``stream_upstream`` — used where the bytes are needed in
     hand rather than relayed (re-uploading a snapshot or an audio clip elsewhere).
     """
-    if _client is None:
+    if _http.client is None:
         return None
     for candidate in (url, *fallbacks):
         try:
-            async with _client.stream("GET", candidate) as resp:
+            async with _http.client.stream("GET", candidate) as resp:
                 if resp.status_code >= 400:
                     continue
                 chunks: list[bytes] = []
@@ -161,9 +157,9 @@ async def call_upstream(method: str, url: str, json: Optional[dict] = None,
 
     Raises httpx.HTTPError on transport failure; callers surface it to the UI.
     """
-    if _client is None:
+    if _http.client is None:
         raise httpx.TransportError("proxy client not initialized")
-    resp = await _client.request(method, url, json=json, headers=headers)
+    resp = await _http.client.request(method, url, json=json, headers=headers)
     return resp.status_code, resp.text[:200]
 
 
@@ -174,9 +170,9 @@ async def get_json(url: str) -> tuple[int, Optional[object]]:
     messages); this is for endpoints whose full response is the point, e.g. Frigate's
     exports list. Raises httpx.HTTPError on transport failure like call_upstream.
     """
-    if _client is None:
+    if _http.client is None:
         raise httpx.TransportError("proxy client not initialized")
-    resp = await _client.get(url)
+    resp = await _http.client.get(url)
     try:
         return resp.status_code, resp.json()
     except ValueError:
@@ -207,18 +203,18 @@ async def birdnet_csrf_token(base: str, refresh: bool = False) -> Optional[str]:
     global _csrf_token_cache
     if _csrf_token_cache and not refresh:
         return _csrf_token_cache
-    if _client is None:
+    if _http.client is None:
         return None
     if refresh:
         # Drop the stale pair; the jar would otherwise keep replaying the old cookie.
-        _client.cookies.delete(_CSRF_COOKIE)
+        _http.client.cookies.delete(_CSRF_COOKIE)
         _csrf_token_cache = None
     try:
-        await _client.get(birdnet_app_config_url(base))
+        await _http.client.get(birdnet_app_config_url(base))
     except httpx.HTTPError as exc:
         log.debug("Could not reach BirdNET-Go for a CSRF token: %s", exc)
         return None
-    _csrf_token_cache = _client.cookies.get(_CSRF_COOKIE)
+    _csrf_token_cache = _http.client.cookies.get(_CSRF_COOKIE)
     if not _csrf_token_cache:
         log.debug("BirdNET-Go returned no %s cookie; deleting may fail.", _CSRF_COOKIE)
     return _csrf_token_cache

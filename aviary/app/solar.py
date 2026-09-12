@@ -36,6 +36,8 @@ from typing import Optional
 
 import httpx
 
+from . import http
+
 log = logging.getLogger("aviary.solar")
 
 _CONFIG_URL = "http://supervisor/core/api/config"
@@ -55,7 +57,7 @@ FALLBACK_DAWN = ((5, 0), (7, 30))
 _ZENITH_RISE_SET = 90.833
 _ZENITH_CIVIL = 96.0
 
-_client: Optional[httpx.AsyncClient] = None
+_http = http.register("solar", timeout=httpx.Timeout(15.0))
 _location: Optional["Location"] = None
 _tz_warned = False
 
@@ -92,18 +94,6 @@ class SunTimes:
 
 
 # ------------------------------------------------------------------ location fetch
-
-def init_client() -> None:
-    global _client
-    if _client is None:
-        _client = httpx.AsyncClient(timeout=httpx.Timeout(15.0))
-
-
-async def close_client() -> None:
-    global _client
-    if _client is not None:
-        await _client.aclose()
-        _client = None
 
 
 def location() -> Optional[Location]:
@@ -155,11 +145,11 @@ def _warn_tz_mismatch(loc: Location) -> None:
 
 async def fetch_location() -> Optional[Location]:
     """One request to the Core API for the configured location; None on any failure."""
-    if _client is None or not os.environ.get("SUPERVISOR_TOKEN"):
+    if _http.client is None or not os.environ.get("SUPERVISOR_TOKEN"):
         return None
     headers = {"Authorization": f"Bearer {os.environ.get('SUPERVISOR_TOKEN', '')}"}
     try:
-        resp = await _client.get(_CONFIG_URL, headers=headers)
+        resp = await _http.client.get(_CONFIG_URL, headers=headers)
     except httpx.HTTPError as exc:
         log.info("Could not fetch the Home Assistant location: %s", exc)
         return None

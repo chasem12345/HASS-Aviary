@@ -23,7 +23,7 @@ from typing import Optional
 
 import httpx
 
-from . import db, solar, species_info
+from . import db, http, solar, species_info
 
 log = logging.getLogger("aviary.seasonality")
 
@@ -43,23 +43,10 @@ PRESENT_MIN = 3         # observations
 
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
-_client: Optional[httpx.AsyncClient] = None
-
-
-def init_client() -> None:
-    global _client
-    if _client is None:
-        _client = httpx.AsyncClient(
-            timeout=httpx.Timeout(12.0), follow_redirects=True,
-            headers={"User-Agent": species_info.USER_AGENT, "Accept": "application/json"},
-        )
-
-
-async def close_client() -> None:
-    global _client
-    if _client is not None:
-        await _client.aclose()
-        _client = None
+_http = http.register(
+    "seasonality", timeout=httpx.Timeout(12.0), follow_redirects=True,
+    headers={"User-Agent": species_info.USER_AGENT, "Accept": "application/json"},
+)
 
 
 # ----------------------------------------------------------------------- labels
@@ -165,10 +152,10 @@ def _public(row: dict) -> Optional[dict]:
 
 
 async def _fetch_months(taxon_id: int, lat: float, lon: float) -> Optional[list[int]]:
-    if _client is None:
+    if _http.client is None:
         return None
     try:
-        resp = await _client.get(_HISTOGRAM, params={
+        resp = await _http.client.get(_HISTOGRAM, params={
             "taxon_id": taxon_id, "lat": f"{lat:.4f}", "lng": f"{lon:.4f}",
             "radius": int(RADIUS_KM), "interval": "month_of_year", "date_field": "observed",
             "verifiable": "true", "quality_grade": "research",

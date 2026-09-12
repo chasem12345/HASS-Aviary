@@ -14,8 +14,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    backfill, bootstrap, crops, db, identify, inat, ingest, keepsakes, kept, media_audit, notify,
-    probe, proxy, seasonality, solar, species_audio, species_info, species_photos,
+    backfill, bootstrap, crops, db, http, identify, inat, ingest, keepsakes, kept, media_audit, notify, probe, proxy, seasonality, solar, species_audio, species_info, species_photos,
 )
 from .mqtt_client import MqttIngestor
 from .routes import ASSET_VER, register_routes
@@ -202,15 +201,7 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        proxy.init_client()
-        species_info.init_client()
-        species_audio.init_client()
-        species_photos.init_client()
-        notify.init_client()
-        identify.init_client()
-        solar.init_client()
-        seasonality.init_client()
-        inat.init_client()
+        http.init_all()
         loop = asyncio.get_running_loop()
         ingest.set_event_loop(loop)
         keepsakes.set_event_loop(loop)
@@ -248,15 +239,7 @@ def create_app() -> FastAPI:
             ingestor.stop()
             await bootstrap.stop()
             await identify.stop()
-            await identify.close_client()
-            await proxy.close_client()
-            await species_info.close_client()
-            await species_audio.close_client()
-            await species_photos.close_client()
-            await notify.close_client()
-            await solar.close_client()
-            await seasonality.close_client()
-            await inat.close_client()
+            await http.close_all()
             log.info("Aviary stopped.")
 
     app = FastAPI(title="Aviary", lifespan=lifespan)

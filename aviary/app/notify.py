@@ -37,7 +37,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import crops, db, heroes, proxy
+from . import crops, db, heroes, http, proxy
 from .settings import Settings
 
 log = logging.getLogger("aviary.notify")
@@ -56,7 +56,7 @@ _EVENT_RETRY_S = 5.0
 
 _EXT_BY_TYPE = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
 
-_client: Optional[httpx.AsyncClient] = None
+_http = http.register("notify", timeout=httpx.Timeout(15.0), follow_redirects=True)
 _settings: Optional[Settings] = None
 # Aviary's add-on slug, which doubles as its HA sidebar path (/<slug>) for notification
 # tap actions. Discovered lazily from the Supervisor self-info API; False = lookup failed, retry.
@@ -81,19 +81,6 @@ def enabled() -> bool:
         and _settings.notify_new_species
         and os.environ.get("SUPERVISOR_TOKEN")
     )
-
-
-def init_client() -> None:
-    global _client
-    if _client is None:
-        _client = httpx.AsyncClient(timeout=httpx.Timeout(15.0), follow_redirects=True)
-
-
-async def close_client() -> None:
-    global _client
-    if _client is not None:
-        await _client.aclose()
-        _client = None
 
 
 def install_blueprint() -> None:
@@ -243,10 +230,10 @@ async def _panel_slug() -> Optional[str]:
     global _panel_slug_cache
     if isinstance(_panel_slug_cache, str):
         return _panel_slug_cache
-    if _client is None:
+    if _http.client is None:
         return None
     try:
-        resp = await _client.get(
+        resp = await _http.client.get(
             _SELF_INFO_URL,
             headers={"Authorization": f"Bearer {os.environ.get('SUPERVISOR_TOKEN', '')}"},
         )
@@ -317,10 +304,10 @@ async def _resolve_image(row: dict) -> Optional[tuple[bytes, str]]:
 
 
 async def _fetch_image(url: str) -> Optional[tuple[bytes, str]]:
-    if _client is None:
+    if _http.client is None:
         return None
     try:
-        resp = await _client.get(url)
+        resp = await _http.client.get(url)
     except httpx.HTTPError as exc:
         log.debug("Image fetch failed for %s: %s", url, exc)
         return None
@@ -351,7 +338,7 @@ def _save_image(data: bytes, ctype: str, slug: str) -> Optional[str]:
 
 async def _fire_event(event_type: str, payload: dict) -> Optional[str]:
     """POST an event to the Core API proxy. Returns an error string, or None on success."""
-    if _client is None:
+    if _http.client is None:
         return "notify HTTP client not initialized"
     headers = {"Authorization": f"Bearer {os.environ.get('SUPERVISOR_TOKEN', '')}"}
     last = "unknown error"
@@ -359,7 +346,7 @@ async def _fire_event(event_type: str, payload: dict) -> Optional[str]:
         if attempt:
             await asyncio.sleep(_EVENT_RETRY_S)
         try:
-            resp = await _client.post(_EVENTS_URL.format(event_type), json=payload, headers=headers)
+            resp = await _http.client.post(_EVENTS_URL.format(event_type), json=payload, headers=headers)
         except httpx.HTTPError as exc:
             last = f"Supervisor API unreachable: {exc}"
             continue

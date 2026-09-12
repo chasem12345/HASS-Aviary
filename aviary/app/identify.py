@@ -27,7 +27,7 @@ from typing import Any, Optional
 
 import httpx
 
-from . import crops, db, ingest, probe
+from . import crops, db, http, ingest, probe
 from .settings import Settings
 
 log = logging.getLogger("aviary.identify")
@@ -56,7 +56,20 @@ _PROBE_HEAL_INTERVAL = 60.0
 _probe_heal_at = 0.0
 
 _settings: Optional[Settings] = None
-_client: Optional[httpx.AsyncClient] = None
+
+def _make_client() -> Optional[httpx.AsyncClient]:
+    if _settings is None:
+        return None
+    # Read timeout is the service's whole pipeline: clip download, ffmpeg, inference.
+    # Connect stays short so an unreachable host fails fast instead of occupying a
+    # worker for the full timeout.
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(_settings.identify_timeout, connect=5.0),
+        follow_redirects=True,
+    )
+
+
+_http = http.register("identify", _make_client)
 _queue: Optional[asyncio.Queue] = None
 _workers: list[asyncio.Task] = []
 _loop: Optional[asyncio.AbstractEventLoop] = None
@@ -74,25 +87,6 @@ def configure(settings: Settings) -> None:
 
 def enabled() -> bool:
     return _settings is not None and _settings.identify_active
-
-
-def init_client() -> None:
-    global _client
-    if _client is None and _settings is not None:
-        # Read timeout is the service's whole pipeline: clip download, ffmpeg, inference.
-        # Connect stays short so an unreachable host fails fast instead of occupying a
-        # worker for the full timeout.
-        _client = httpx.AsyncClient(
-            timeout=httpx.Timeout(_settings.identify_timeout, connect=5.0),
-            follow_redirects=True,
-        )
-
-
-async def close_client() -> None:
-    global _client
-    if _client is not None:
-        await _client.aclose()
-        _client = None
 
 
 def _auth_headers() -> dict[str, str]:
@@ -710,7 +704,7 @@ async def _call_service(event_id: str, priors: dict[str, float],
                         exclude: Optional[list[str]] = None,
                         zoom: Optional[dict] = None) -> Optional[dict]:
     """POST to the service, retrying once. Returns the parsed body or None."""
-    if _client is None:
+    if _http.client is None:
         return None
     payload = {
         "event_id": event_id,
@@ -732,7 +726,7 @@ async def _call_service(event_id: str, priors: dict[str, float],
 
     for attempt in (1, 2):
         try:
-            resp = await _client.post(url, json=payload, headers=_auth_headers())
+            resp = await _http.client.post(url, json=payload, headers=_auth_headers())
         except httpx.HTTPError as exc:
             log.warning("Identification request for %s failed (attempt %d): %s",
                         event_id, attempt, exc)
@@ -761,10 +755,10 @@ async def health() -> dict:
     """Service status for the settings page. Never raises."""
     if not enabled():
         return {"configured": False}
-    if _client is None:
+    if _http.client is None:
         return {"configured": True, "ok": False, "error": "client not initialized"}
     try:
-        resp = await _client.get(
+        resp = await _http.client.get(
             f"{_settings.identify_url}/healthz", timeout=httpx.Timeout(5.0)
         )
         if resp.status_code != 200:
@@ -778,10 +772,10 @@ async def health() -> dict:
 
 async def species_list() -> dict:
     """The service's candidate vocabulary, for the manual-entry picker. Never raises."""
-    if not enabled() or _client is None:
+    if not enabled() or _http.client is None:
         return {"ok": False, "species": []}
     try:
-        resp = await _client.get(f"{_settings.identify_url}/species",
+        resp = await _http.client.get(f"{_settings.identify_url}/species",
                                  headers=_auth_headers(), timeout=httpx.Timeout(10.0))
         if resp.status_code != 200:
             return {"ok": False, "species": [], "error": f"HTTP {resp.status_code}"}

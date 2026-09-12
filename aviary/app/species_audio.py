@@ -38,7 +38,7 @@ from typing import Optional
 
 import httpx
 
-from . import db, species_info
+from . import db, http, species_info
 from .settings import Settings
 
 log = logging.getLogger("aviary.species_audio")
@@ -74,7 +74,12 @@ _XC_LEN_MAX = 30
 # all-rights-reserved audio through.
 _LICENSES = ("cc0", "cc-by", "cc-by-nc", "cc-by-sa", "cc-by-nc-sa")
 
-_client: Optional[httpx.AsyncClient] = None
+# Same descriptive User-Agent as species_info; iNaturalist asks that API clients
+# identify themselves, and xeno-canto sits behind bot protection.
+_http = http.register(
+    "species_audio", timeout=httpx.Timeout(8.0), follow_redirects=True,
+    headers={"User-Agent": species_info.USER_AGENT, "Accept": "application/json"},
+)
 _settings: Optional[Settings] = None
 
 
@@ -87,25 +92,6 @@ def configure(settings: Settings) -> None:
             "observations. A free key from https://xeno-canto.org/account enables the "
             "curated song/call recordings."
         )
-
-
-def init_client() -> None:
-    global _client
-    if _client is None:
-        _client = httpx.AsyncClient(
-            timeout=httpx.Timeout(8.0),
-            follow_redirects=True,
-            # Same descriptive User-Agent as species_info; iNaturalist asks that API
-            # clients identify themselves, and xeno-canto sits behind bot protection.
-            headers={"User-Agent": species_info.USER_AGENT, "Accept": "application/json"},
-        )
-
-
-async def close_client() -> None:
-    global _client
-    if _client is not None:
-        await _client.aclose()
-        _client = None
 
 
 async def resolve(common_name: str, scientific_name: Optional[str] = None,
@@ -169,7 +155,7 @@ def _blank(common: str, kind: str) -> dict:
 
 async def _fetch(common: str, sci: Optional[str], kind: str) -> dict:
     row = _blank(common, kind)
-    if _client is None:
+    if _http.client is None:
         return row
 
     if kind in (KIND_SONG, KIND_CALL):
@@ -217,7 +203,7 @@ async def _xc_search(sci: str, kind: str, quality: str) -> list[dict]:
         f"len:{_XC_LEN_MIN}-{_XC_LEN_MAX}"
     )
     try:
-        resp = await _client.get(
+        resp = await _http.client.get(
             _XC_RECORDINGS,
             params={
                 "query": query,
@@ -357,7 +343,7 @@ async def _find_sound(taxon_id: int) -> tuple[Optional[dict], Optional[int]]:
     candidate pool.
     """
     try:
-        resp = await _client.get(
+        resp = await _http.client.get(
             _INAT_OBSERVATIONS,
             params={
                 "taxon_id": taxon_id,

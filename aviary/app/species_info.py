@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import db
+from . import db, http
 
 log = logging.getLogger("aviary.species_info")
 
@@ -34,24 +34,10 @@ _WIKI_EXTRACT = "https://en.wikipedia.org/w/api.php"
 _INAT_SEARCH = "https://api.inaturalist.org/v1/taxa"
 _INAT_TAXON = "https://api.inaturalist.org/v1/taxa/{}"
 
-_client: Optional[httpx.AsyncClient] = None
-
-
-def init_client() -> None:
-    global _client
-    if _client is None:
-        _client = httpx.AsyncClient(
-            timeout=httpx.Timeout(8.0),
-            follow_redirects=True,
-            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-        )
-
-
-async def close_client() -> None:
-    global _client
-    if _client is not None:
-        await _client.aclose()
-        _client = None
+_http = http.register(
+    "species_info", timeout=httpx.Timeout(8.0), follow_redirects=True,
+    headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+)
 
 
 async def resolve(common_name: str, scientific_name: Optional[str] = None) -> dict:
@@ -101,7 +87,7 @@ async def _fetch(common: str, sci: Optional[str]) -> dict:
         "conservation": None, "fetched_at": time.time(), "ok": 0,
         "inat_taxon_id": None, "sections": None,
     }
-    if _client is None:
+    if _http.client is None:
         return row
 
     # Wikipedia: scientific name resolves to the species article most reliably;
@@ -133,7 +119,7 @@ async def _fetch(common: str, sci: Optional[str]) -> dict:
 
 async def _wiki(title: str) -> Optional[dict]:
     try:
-        resp = await _client.get(_WIKI.format(quote(title, safe="")))
+        resp = await _http.client.get(_WIKI.format(quote(title, safe="")))
         if resp.status_code != 200:
             return None
         d = resp.json()
@@ -224,10 +210,10 @@ def parse_sections(extract: str) -> list[dict]:
 
 async def _wiki_sections(title: str) -> list[dict]:
     """Plain-text sections of the species article, trimmed for the card. [] on failure."""
-    if _client is None or not title:
+    if _http.client is None or not title:
         return []
     try:
-        resp = await _client.get(_WIKI_EXTRACT, params={
+        resp = await _http.client.get(_WIKI_EXTRACT, params={
             "action": "query", "prop": "extracts", "explaintext": 1,
             "exsectionformat": "wiki", "redirects": 1, "format": "json",
             "formatversion": 2, "titles": title,
@@ -243,7 +229,7 @@ async def _wiki_sections(title: str) -> list[dict]:
 
 async def _inat(name: str) -> Optional[dict]:
     try:
-        resp = await _client.get(
+        resp = await _http.client.get(
             _INAT_SEARCH,
             params={
                 "q": name, "rank": "species", "per_page": 1, "locale": "en",
@@ -269,7 +255,7 @@ async def _inat(name: str) -> Optional[dict]:
         # Ancestors (family/order names) live on the taxon detail endpoint.
         tid = top.get("id")
         if tid:
-            det_resp = await _client.get(_INAT_TAXON.format(tid), params={"locale": "en"})
+            det_resp = await _http.client.get(_INAT_TAXON.format(tid), params={"locale": "en"})
             if det_resp.status_code == 200:
                 det = ((det_resp.json() or {}).get("results") or [{}])[0]
                 out["conservation"] = out["conservation"] or _conservation(

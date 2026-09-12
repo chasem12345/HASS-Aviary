@@ -43,7 +43,7 @@ from typing import Optional
 
 import httpx
 
-from . import crops, db, heroes, proxy, solar, species_info
+from . import crops, db, heroes, http, proxy, solar, species_info
 
 log = logging.getLogger("aviary.inat")
 
@@ -62,7 +62,10 @@ _JWT_REFRESH_MARGIN_S = 300
 _AUTO_DEBOUNCE_S = 60.0
 
 _settings = None
-_client: Optional[httpx.AsyncClient] = None
+_http = http.register(
+    "inat", timeout=httpx.Timeout(30.0), follow_redirects=True,
+    headers={"User-Agent": species_info.USER_AGENT, "Accept": "application/json"},
+)
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _pending: set[str] = set()
 _pending_lock = threading.Lock()
@@ -80,22 +83,6 @@ def configure(settings) -> None:
 
 def enabled() -> bool:
     return bool(_settings and getattr(_settings, "inat_enabled", False))
-
-
-def init_client() -> None:
-    global _client
-    if _client is None:
-        _client = httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0), follow_redirects=True,
-            headers={"User-Agent": species_info.USER_AGENT, "Accept": "application/json"},
-        )
-
-
-async def close_client() -> None:
-    global _client
-    if _client is not None:
-        await _client.aclose()
-        _client = None
 
 
 def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -236,8 +223,8 @@ def _jwt_expiry(token: str, now: float) -> float:
 
 
 async def _oauth_access_token() -> str:
-    assert _client is not None and _settings is not None
-    resp = await _client.post(OAUTH_TOKEN_URL, data={
+    assert _http.client is not None and _settings is not None
+    resp = await _http.client.post(OAUTH_TOKEN_URL, data={
         "client_id": _settings.inat_app_id, "client_secret": _settings.inat_app_secret,
         "grant_type": "password", "username": _settings.inat_username,
         "password": _settings.inat_password,
@@ -251,8 +238,8 @@ async def _oauth_access_token() -> str:
 
 
 async def _api_token(access_token: str) -> str:
-    assert _client is not None
-    resp = await _client.get(API_TOKEN_URL, headers={"Authorization": f"Bearer {access_token}"})
+    assert _http.client is not None
+    resp = await _http.client.get(API_TOKEN_URL, headers={"Authorization": f"Bearer {access_token}"})
     if resp.status_code != 200 or not resp.json().get("api_token"):
         raise RuntimeError(f"iNaturalist API token request failed ({resp.status_code})")
     return resp.json()["api_token"]
@@ -261,7 +248,7 @@ async def _api_token(access_token: str) -> str:
 async def jwt(force: bool = False) -> str:
     """The cached v1 API token, refreshed when near expiry (or on ``force`` after a 401)."""
     global _jwt, _jwt_exp
-    if _client is None:
+    if _http.client is None:
         raise RuntimeError("iNaturalist client not initialized")
     now = time.time()
     if force or not _jwt or now > _jwt_exp - _JWT_REFRESH_MARGIN_S:
@@ -272,11 +259,11 @@ async def jwt(force: bool = False) -> str:
 
 async def _v1(method: str, path: str, **kwargs) -> httpx.Response:
     """One v1 API call with the JWT; a 401 refreshes the token and retries once."""
-    assert _client is not None
+    assert _http.client is not None
     for attempt in (0, 1):
         token = await jwt(force=bool(attempt))
         headers = {"Authorization": f"Bearer {token}", **kwargs.pop("headers", {})}
-        resp = await _client.request(method, f"{API_V1}{path}", headers=headers, **kwargs)
+        resp = await _http.client.request(method, f"{API_V1}{path}", headers=headers, **kwargs)
         if resp.status_code != 401:
             return resp
     return resp
