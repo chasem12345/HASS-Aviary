@@ -1,0 +1,4 @@
+# Test-only dependencies. The suite is pure logic (no broker, no Frigate):
+#   pip install -r requirements-dev.txt && python -m pytest -q
+-r requirements.txt
+pytest
