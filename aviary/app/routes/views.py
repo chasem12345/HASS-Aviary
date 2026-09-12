@@ -658,6 +658,8 @@ def species_index(
         "since": since,
         "heroes": heroes.for_species([s["common_name"] for s in species]),
         "registry": db.registry_stats(only_confirmed=gated),
+        # Species already on the user's iNaturalist life list (lowercased names).
+        "inat_names": set(db.inat_all()),
     }
     return render("species_index.html", ctx)
 
@@ -708,6 +710,10 @@ def species_detail(
         "gated": gated,
         "confirmed": (not gated) or db.is_species_confirmed(name),
         "hero": heroes.for_species([name]).get(name),
+        # Life list: the posted observation (or last failure), and whether posting is
+        # possible at all — the button only appears when it could work.
+        "inat": db.inat_get(name),
+        "inat_enabled": request.app.state.settings.inat_enabled,
         "groups": _day_groups(detections),
         "next_before": next_before,
         "older_url": older_url,
@@ -759,5 +765,12 @@ def settings_page(request: Request):
         # The URL is shown so a misconfigured host is obvious at a glance. The token is
         # deliberately never exposed here — it is a credential.
         "identify_url": settings.identify_url,
+        # iNaturalist: configured or not, the account name (public on iNaturalist anyway)
+        # and the posting policy. The app secret and password are never exposed.
+        "inat_configured": settings.inat_enabled,
+        "inat_username": settings.inat_username,
+        "inat_auto_post": settings.inat_auto_post,
+        "inat_geoprivacy": settings.inat_geoprivacy,
+        "inat_posted": len(db.inat_all()),
     }
     return render("settings.html", ctx)

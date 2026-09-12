@@ -95,6 +95,16 @@ def _zoom_map(pairs: tuple[str, ...]) -> dict:
     return mapping
 
 
+GEOPRIVACY = ("open", "obscured", "private")
+
+
+def _geoprivacy(value: str) -> str:
+    """One of iNaturalist's geoprivacy values; anything else falls back to obscured, the
+    safe choice for a home location."""
+    value = (value or "").strip().lower()
+    return value if value in GEOPRIVACY else "obscured"
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: str
@@ -171,6 +181,25 @@ class Settings:
     # construction in older callers/tests keeps working.
     keepsakes: bool = True
     keepsake_video: bool = True
+
+    # --- Life list on iNaturalist --------------------------------------------------
+    # OAuth application + account for the password grant (the add-on has no browser for
+    # the interactive flow). All four are credentials — never log them or return them
+    # from a route. Defaulted so older positional constructions keep working.
+    inat_app_id: str = ""
+    inat_app_secret: str = ""
+    inat_username: str = ""
+    inat_password: str = ""
+    # Post on first confirmation without asking. Off: the species page has a button.
+    inat_auto_post: bool = False
+    # open | obscured | private — the coordinates are the user's home.
+    inat_geoprivacy: str = "obscured"
+    inat_positional_accuracy_m: int = 30
+
+    @property
+    def inat_enabled(self) -> bool:
+        """Whether posting to iNaturalist is possible: all four credentials present."""
+        return all((self.inat_app_id, self.inat_app_secret, self.inat_username, self.inat_password))
 
     @property
     def mqtt_enabled(self) -> bool:
@@ -254,4 +283,12 @@ def load_settings() -> Settings:
         log_level=_pick("LOG_LEVEL", opts, "log_level", "info").lower(),
         keepsakes=_as_bool(_pick("KEEPSAKES", opts, "keepsakes", "true")),
         keepsake_video=_as_bool(_pick("KEEPSAKE_VIDEO", opts, "keepsake_video", "true")),
+        inat_app_id=_pick("INAT_APP_ID", opts, "inat_app_id", "").strip(),
+        inat_app_secret=_pick("INAT_APP_SECRET", opts, "inat_app_secret", "").strip(),
+        inat_username=_pick("INAT_USERNAME", opts, "inat_username", "").strip(),
+        inat_password=_pick("INAT_PASSWORD", opts, "inat_password", ""),
+        inat_auto_post=_as_bool(_pick("INAT_AUTO_POST", opts, "inat_auto_post", "false")),
+        inat_geoprivacy=_geoprivacy(_pick("INAT_GEOPRIVACY", opts, "inat_geoprivacy", "obscured")),
+        inat_positional_accuracy_m=max(1, _pick_int(
+            "INAT_POSITIONAL_ACCURACY_M", opts, "inat_positional_accuracy_m", 30)),
     )

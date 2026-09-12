@@ -71,7 +71,7 @@
     {# Unconfirmed species have no registry number yet — they earn one on approval. #}
     <span class="dex-plate">No.{{ '%03d' | format(s.dex_no) if s.dex_no else '???' }}</span>
     <span class="dex-reg-name">
-      {{ s.common_name }}{% if is_new %} <span class="new-badge">NEW</span>{% endif %}
+      {{ s.common_name }}{% if is_new %} <span class="new-badge">NEW</span>{% endif %}{% if s.common_name | lower in inat_names %} <span class="badge badge-inat badge-sm" title="On your iNaturalist life list">✓ iNat</span>{% endif %}
       {% if s.scientific_name %}<span class="sci">{{ s.scientific_name }}</span>{% endif %}
     </span>
     <span class="dex-count">

@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.30.1"
+version: "0.31.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -60,6 +60,13 @@ options:
   clip_pad_seconds: 10.0
   keepsakes: true
   keepsake_video: true
+  inat_app_id: ""
+  inat_app_secret: ""
+  inat_username: ""
+  inat_password: ""
+  inat_auto_post: false
+  inat_geoprivacy: "obscured"
+  inat_positional_accuracy_m: 30
   log_level: "info"
 schema:
   frigate_url: "url"
@@ -159,4 +166,28 @@ schema:
   # recording behind a clip — only an export survives retention. A few MB per keepsake;
   # released exports are deleted. Needs Frigate 0.18+.
   keepsake_video: "bool"
+  # --- Life list on iNaturalist ---------------------------------------------------
+  # Post each species' first sighting to your iNaturalist account, so iNaturalist's Life
+  # List is the one place your list lives. Create an application at
+  # https://www.inaturalist.org/oauth/applications (tick "Confidential"; the redirect URI
+  # can be urn:ietf:wg:oauth:2.0:oob) and fill in all four: iNaturalist's password grant
+  # trades your login for a 24-hour API token, and an add-on has no browser to run the
+  # interactive flow instead. Never shown in the UI or written to the log. Leave any of
+  # them blank to keep the feature off.
+  inat_app_id: "str?"
+  inat_app_secret: "password?"
+  inat_username: "str?"
+  inat_password: "password?"
+  # Post a species the moment it is confirmed (or first detected, with
+  # require_species_confirmation off). Off by default: an observation goes out under YOUR
+  # name, and a misidentified bird on iNaturalist is worse than a late one — the species
+  # page has a Post button for when you have looked.
+  inat_auto_post: "bool"
+  # The coordinates are your Home Assistant location, i.e. your house. "obscured" makes
+  # iNaturalist show a ~20 km cell instead of the point; observations still count for
+  # your life list and can still reach Research Grade. "private" hides the location
+  # entirely (and from range maps).
+  inat_geoprivacy: "list(open|obscured|private)"
+  # Radius in metres iNaturalist records around the coordinates — a yard, not a GPS fix.
+  inat_positional_accuracy_m: "int(1,10000)"
   log_level: "list(debug|info|warning|error)"

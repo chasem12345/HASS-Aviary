@@ -78,6 +78,7 @@
         <span class="tile-count">{{ s.count }}</span>
         {% if s.frigate_total %}<span class="badge badge-frigate badge-sm" title="On camera (Frigate) × {{ s.frigate_total }}">seen</span>{% endif %}
         {% if s.birdnet_total %}<span class="badge badge-birdnet badge-sm" title="Audio (BirdNET-Go) × {{ s.birdnet_total }}">heard</span>{% endif %}
+        {% if s.common_name | lower in inat_names %}<span class="badge badge-inat badge-sm" title="On your iNaturalist life list">✓ iNat</span>{% endif %}
         <span title="{{ (s.first_seen if only_new else s.last_seen) | fmt_time }}">
           {{ 'first ' if only_new else '' }}{{ (s.first_seen if only_new else s.last_seen) | fmt_rel }}
         </span>

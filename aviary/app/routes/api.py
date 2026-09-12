@@ -13,7 +13,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from .. import (
-    backfill, bootstrap, crops, db, identify, ingest, keepsakes, kept, notify, probe, proxy,
+    backfill, bootstrap, crops, db, identify, inat, ingest, keepsakes, kept, notify, probe, proxy,
     seasonality, species_audio, species_info, species_photos, traits,
 )
 from . import ingress_url, norm_source, set_theme
@@ -193,11 +193,15 @@ async def delete_species(name: str, request: Request, source_action: Optional[st
     ingest.forget_species(name)
     # Its embeddings and its confirmation are gone; the probe must unlearn them now.
     await _refresh_probe()
+    # The local link to its iNaturalist observation goes too — the observation itself is
+    # the user's, and stays until they delete it there; the URL is handed back for that.
+    inat_row = await run_in_threadpool(db.inat_forget, name)
     return {
         "ok": True,
         "deleted": len(rows),
         "source_errors": source_errors[:5],
         "source_error_count": len(source_errors),
+        "inat_url": (inat_row or {}).get("observation_url"),
     }
 
 
@@ -625,6 +629,7 @@ async def confirm_species(species: str = Query(..., min_length=1)):
     await run_in_threadpool(db.confirm_species, species)
     await _refresh_probe()
     keepsakes.schedule(species)  # now in the registry: keep its first and latest
+    inat.on_confirmed(species)   # and, with inat_auto_post, onto the life list
     return {"ok": True, "species": species, "confirmed": True}
 
 
@@ -638,6 +643,39 @@ async def unconfirm_species(name: str):
     await _refresh_probe()
     keepsakes.schedule(name)  # back out of the registry: its keepsakes are released
     return {"ok": True, "species": name, "confirmed": False}
+
+
+# ---------------------------------------------------------------- iNaturalist life list
+# Top-level like the blacklist routes: `DELETE /species/{name:path}` above would swallow
+# a nested "/species/<name>/inat" and delete the species instead.
+
+@router.get("/species-inat")
+async def inat_preview(species: str = Query(..., min_length=1)):
+    """What posting this species would send — shown to the user before they agree."""
+    return await inat.preview(species)
+
+
+@router.post("/species-inat")
+async def inat_post(species: str = Query(..., min_length=1)):
+    """Create the species' observation on iNaturalist now (once; never a duplicate)."""
+    return await inat.post_species(species)
+
+
+@router.delete("/species-inat/{name:path}")
+async def inat_forget(name: str):
+    """Forget the local link only. The observation on iNaturalist is untouched."""
+    row = await run_in_threadpool(db.inat_forget, name)
+    return {
+        "ok": bool(row), "species": name,
+        "observation_url": (row or {}).get("observation_url"),
+        "note": "The observation on iNaturalist was not touched; delete it there if you want it gone.",
+    }
+
+
+@router.get("/inat/status")
+async def inat_status():
+    """Configured / account reachable / how many posted — never any credential."""
+    return await inat.status()
 
 
 # ------------------------------------------------------------------------- blacklist
@@ -681,6 +719,7 @@ async def add_blacklist(
     ingest.add_blacklist(species, scientific)
     # The purge above deleted the species' detections and confirmation; unlearn them.
     await _refresh_probe()
+    inat_row = await run_in_threadpool(db.inat_forget, species)
     return {
         "ok": True,
         "species": species,
@@ -688,6 +727,7 @@ async def add_blacklist(
         "deleted": len(rows),
         "source_errors": source_errors[:5],
         "source_error_count": len(source_errors),
+        "inat_url": (inat_row or {}).get("observation_url"),
     }
 
 

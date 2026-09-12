@@ -121,6 +121,40 @@ async def fetch_to_file(url: str, dest: str) -> bool:
         return False
 
 
+# Largest media body fetch_bytes will hold in memory — a Frigate snapshot is ~100 KB, a
+# BirdNET-Go clip a few MB; anything bigger is not something we want to re-upload anyway.
+_FETCH_BYTES_MAX = 15 * 1024 * 1024
+
+
+async def fetch_bytes(url: str, fallbacks: tuple[str, ...] = ()
+                      ) -> Optional[tuple[bytes, str]]:
+    """GET a media file whole: (body, content-type), or None if every candidate failed.
+
+    Same fallback semantics as ``stream_upstream`` — used where the bytes are needed in
+    hand rather than relayed (re-uploading a snapshot or an audio clip elsewhere).
+    """
+    if _client is None:
+        return None
+    for candidate in (url, *fallbacks):
+        try:
+            async with _client.stream("GET", candidate) as resp:
+                if resp.status_code >= 400:
+                    continue
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in resp.aiter_bytes():
+                    size += len(chunk)
+                    if size > _FETCH_BYTES_MAX:
+                        log.warning("Media at %s exceeds %d bytes; skipped", candidate, _FETCH_BYTES_MAX)
+                        break
+                    chunks.append(chunk)
+                else:
+                    return b"".join(chunks), resp.headers.get("content-type", "application/octet-stream")
+        except httpx.HTTPError as exc:
+            log.warning("Fetch of %s failed: %s", candidate, exc)
+    return None
+
+
 async def call_upstream(method: str, url: str, json: Optional[dict] = None,
                         headers: Optional[dict[str, str]] = None) -> tuple[int, str]:
     """One-off upstream API call (e.g. deleting an event). Returns (status, body[:200]).

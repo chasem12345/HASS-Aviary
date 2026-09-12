@@ -317,6 +317,24 @@ CREATE TABLE IF NOT EXISTS species_keepsakes (
 );
 CREATE INDEX IF NOT EXISTS idx_keepsakes_detection ON species_keepsakes (detection_id);
 
+-- Life list on iNaturalist: the ONE observation posted per species, built from its first
+-- sighting. No row = not posted. A 'failed' row keeps the last error for the species page
+-- and is simply overwritten by the next attempt. "Forget link" deletes the row only — the
+-- observation on iNaturalist is the user's to delete there. NOCASE like every species key.
+CREATE TABLE IF NOT EXISTS species_inat (
+    common_name     TEXT PRIMARY KEY COLLATE NOCASE,
+    observation_id  INTEGER,
+    observation_url TEXT,
+    taxon_id        INTEGER,
+    detection_id    INTEGER,                 -- the sighting the observation was built from
+    subject_idx     INTEGER NOT NULL DEFAULT 0,
+    observed_at     REAL,                    -- that sighting's start_time
+    media           TEXT,                    -- 'photo' | 'sound' | 'photo,sound' | ''
+    status          TEXT NOT NULL,           -- 'posted' | 'failed'
+    error           TEXT,
+    posted_at       REAL
+);
+
 """
 
 # Split out of _SCHEMA so the kind-column migration below can recreate just this table.
@@ -2985,6 +3003,73 @@ def set_pref(key: str, value: str) -> None:
             """,
             (key, value),
         )
+
+
+# ------------------------------------------------------------------ iNaturalist
+
+def inat_get(common_name: str) -> Optional[dict]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM species_inat WHERE common_name = ? COLLATE NOCASE", (common_name,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def inat_set(row: dict) -> None:
+    """Upsert the species' iNaturalist state. Missing keys are stored as NULL — a
+    'failed' row deliberately carries no observation."""
+    data = {k: row.get(k) for k in (
+        "common_name", "observation_id", "observation_url", "taxon_id", "detection_id",
+        "subject_idx", "observed_at", "media", "status", "error", "posted_at")}
+    data["subject_idx"] = int(data.get("subject_idx") or 0)
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO species_inat (common_name, observation_id, observation_url, taxon_id,
+                detection_id, subject_idx, observed_at, media, status, error, posted_at)
+            VALUES (:common_name, :observation_id, :observation_url, :taxon_id, :detection_id,
+                :subject_idx, :observed_at, :media, :status, :error, :posted_at)
+            ON CONFLICT(common_name) DO UPDATE SET
+                observation_id = excluded.observation_id, observation_url = excluded.observation_url,
+                taxon_id = excluded.taxon_id, detection_id = excluded.detection_id,
+                subject_idx = excluded.subject_idx, observed_at = excluded.observed_at,
+                media = excluded.media, status = excluded.status, error = excluded.error,
+                posted_at = excluded.posted_at
+            """,
+            data,
+        )
+
+
+def inat_forget(common_name: str) -> Optional[dict]:
+    """Drop the local link (never the observation). Returns the row that was there."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM species_inat WHERE common_name = ? COLLATE NOCASE", (common_name,),
+        ).fetchone()
+        conn.execute("DELETE FROM species_inat WHERE common_name = ? COLLATE NOCASE", (common_name,))
+    return dict(row) if row else None
+
+
+def inat_all() -> dict[str, dict]:
+    """Every POSTED species, keyed by lowercased common name (index markers, counts)."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM species_inat WHERE status = 'posted'").fetchall()
+    return {r["common_name"].lower(): dict(r) for r in rows}
+
+
+def oldest_detection(common_name: str, source: str) -> Optional[dict]:
+    """The species' earliest detections row from one source — the audio fallback for a
+    species never seen on camera (``oldest_sighting`` is camera-only by design)."""
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM detections
+            WHERE source = ? AND common_name = ? COLLATE NOCASE
+            ORDER BY start_time ASC LIMIT 1
+            """,
+            (source, common_name),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def canonical_species(name: str) -> Optional[dict]:

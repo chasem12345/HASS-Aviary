@@ -642,6 +642,28 @@
   // are the ones that actually go wrong: running on CPU when a GPU was expected (a bad
   // torch wheel or a missing container toolkit), and a species count that reveals the
   // eBird region silently fell back to the bundled list.
+  async function loadInatStatus() {
+    const el = document.getElementById("inat-status");
+    if (!el) return;
+    try {
+      const data = await getJson("/inat/status");
+      const acct = data.account || {};
+      if (!data.configured) { el.className = "id-health"; el.textContent = "Not configured"; return; }
+      if (!acct.ok) {
+        el.className = "id-health bad";
+        el.textContent = "Account check failed" + (acct.error ? " — " + acct.error : "");
+        return;
+      }
+      el.className = "id-health good";
+      el.textContent = "Signed in as " + (acct.login || "?") +
+        (data.location_known ? "" : " — Home Assistant location unknown, posting will fail") +
+        (data.last_error ? " · last error: " + data.last_error : "");
+    } catch (err) {
+      el.className = "id-health bad";
+      el.textContent = "Account check failed — " + err;
+    }
+  }
+
   async function loadIdentifyHealth() {
     const el = document.getElementById("identify-health");
     if (!el) return;
@@ -726,6 +748,7 @@
 
   window.aviaryInitSettings = function () {
     loadIdentifyHealth();
+    loadInatStatus();
     loadProbeStats();
     const evalBtn = document.getElementById("probe-evaluate");
     if (evalBtn) evalBtn.addEventListener("click", evaluateProbe);
@@ -1227,6 +1250,53 @@
       window.location.reload();  // dex number, stats and banner all change at once
     } catch (err) {
       alert("Confirm failed: " + err);
+      btn.disabled = false;
+    }
+  });
+
+  // Life list on iNaturalist. Post shows exactly what will be sent (from /species-inat)
+  // and asks first — the observation goes out under the user's name. Forget only drops
+  // the local link; the note in the response says so.
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".inat-post");
+    if (!btn) return;
+    e.preventDefault();
+    const species = btn.dataset.species;
+    btn.disabled = true;
+    try {
+      const p = await getJson("/species-inat", { species });
+      if (p.error) { alert("Can't post to iNaturalist: " + p.error); btn.disabled = false; return; }
+      const media = (p.media && p.media.length) ? p.media.join(", ") : "none — it will be a casual-grade record";
+      if (!confirm("Post " + species + " to iNaturalist?\n\nObserved: " + p.observed +
+                   "\nLocation: " + p.location + "\nMedia: " + media + "\nTaxon: " + p.taxon +
+                   "\n\nThis creates an observation on your account.")) {
+        btn.disabled = false;
+        return;
+      }
+      const res = await fetch(API + "/species-inat?species=" + encodeURIComponent(species), { method: "POST" });
+      const data = await res.json();
+      if (!data.ok) { alert("Post failed: " + (data.error || res.status)); btn.disabled = false; return; }
+      window.location.reload();
+    } catch (err) {
+      alert("Post failed: " + err);
+      btn.disabled = false;
+    }
+  });
+
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".inat-forget");
+    if (!btn) return;
+    e.preventDefault();
+    const species = btn.dataset.species;
+    if (!confirm("Forget the iNaturalist link for " + species + "?\n\nThe observation on iNaturalist is not deleted — do that there if you want it gone.")) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch(API + "/species-inat/" + encodeURIComponent(species), { method: "DELETE" });
+      const data = await res.json();
+      if (!data.ok) { alert("Couldn't forget: " + (data.error || res.status)); btn.disabled = false; return; }
+      window.location.reload();
+    } catch (err) {
+      alert("Couldn't forget: " + err);
       btn.disabled = false;
     }
   });

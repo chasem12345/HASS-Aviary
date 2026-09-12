@@ -46,6 +46,19 @@
     <div class="meta">
       {% if stats.frigate_total %}<span class="badge badge-frigate" title="On camera (Frigate)">Seen × {{ stats.frigate_total }}</span>{% endif %}
       {% if stats.birdnet_total %}<span class="badge badge-birdnet" title="Audio (BirdNET-Go)">Heard × {{ stats.birdnet_total }}</span>{% endif %}
+      {# Life list: the species' observation on iNaturalist, or the button that creates it.
+         Only offered once the species is confirmed and posting is configured. #}
+      {% if inat and inat.status == 'posted' %}
+      <a class="badge badge-inat" href="{{ inat.observation_url }}" target="_blank" rel="noopener noreferrer"
+         title="Posted {{ inat.posted_at | fmt_rel }} · media: {{ inat.media or 'none' }}{% if inat.error %} · {{ inat.error }}{% endif %}">On iNaturalist ↗</a>
+      <button type="button" class="btn btn-sm inat-forget" data-species="{{ species }}"
+              title="Forget the link here. Nothing is deleted on iNaturalist.">Forget link</button>
+      {% elif inat_enabled and confirmed %}
+      <button type="button" class="btn btn-sm inat-post" data-species="{{ species }}"
+              title="Create an observation of this species' first sighting on your iNaturalist account">
+        Post to iNaturalist</button>
+      {% if inat and inat.error %}<span class="idbadge idbadge-low" title="{{ inat.error }}">last post failed</span>{% endif %}
+      {% endif %}
       <button type="button" class="btn btn-sm species-delete" data-species="{{ species }}"
               title="Remove this species and all {{ stats.total or 0 }} of its detections (e.g. a misclassification)">
         Remove species…</button>

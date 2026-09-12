@@ -917,6 +917,57 @@ Cardinal that sang on its way to the feeder is genuinely more likely to be the b
 picture. Turn it off with `identify_use_audio_priors` if you would rather the two sources
 stay independent.
 
+## Life list on iNaturalist
+
+Aviary keeps a registry of every species it has recorded, but a *life list* usually lives
+somewhere with more birders than your back yard. eBird is the obvious home and has no way
+to receive anything from software — its public API is read-only and media is dragged onto
+a checklist by hand. iNaturalist does: its API creates observations and attaches photos
+and sounds, and its **Life List** is computed from your observations. So Aviary can put
+each species there, once, with evidence, and iNaturalist becomes the one place your list
+is maintained.
+
+**What gets posted.** One observation per species, built from its **first sighting** Aviary
+can still show: the kept *first* keepsake when there is one (its media survives Frigate's
+retention), else the oldest camera sighting that still has media, else the oldest event
+with a stored crop, else the oldest BirdNET-Go detection for a species you have only heard.
+The observation's date and time are that sighting's — the evidence and the record never
+disagree. Location is your Home Assistant location with `inat_geoprivacy` applied (default
+**obscured**: iNaturalist shows a ~20 km cell instead of your house; the observation still
+counts for your life list and can still reach Research Grade) and a yard-sized
+`inat_positional_accuracy_m`. Media is the bird's own stored crop, else Frigate's snapshot,
+and/or the BirdNET-Go clip; iNaturalist takes photos and sounds, not video, so a still
+stands in for the clip. The description says plainly that it is a camera-trap record posted
+by you after review.
+
+**Posting is manual by default.** The observation goes out under *your* name, and
+iNaturalist welcomes reviewed camera-trap records, not unattended automation. On a
+confirmed species' page, **Post to iNaturalist** shows exactly what will be sent — date,
+location mode, media, taxon — and asks first. Afterwards the page carries an **On
+iNaturalist ↗** link, the species index a ✓ iNat marker, and the button never appears
+again for that species. Set `inat_auto_post` to post automatically the moment a species is
+confirmed (or first recorded, with `require_species_confirmation` off); it waits a minute
+so the identifier's result and the keepsake pin can land first.
+
+**Forget link** drops Aviary's record of the observation and nothing else — the observation
+on iNaturalist is yours to delete there. Removing or blacklisting a species does the same
+and hands back the URL so you can. Post again after forgetting and a new observation is
+created, so forget → delete on iNaturalist → post is the way to redo one.
+
+**Setting it up.** Create an application at
+[inaturalist.org/oauth/applications](https://www.inaturalist.org/oauth/applications) —
+any name, tick *Confidential*, redirect URI `urn:ietf:wg:oauth:2.0:oob` — then fill in
+`inat_app_id`, `inat_app_secret`, `inat_username` and `inat_password` in the add-on options
+and restart. The **Settings** page confirms the account signs in. iNaturalist's password
+grant is the only OAuth flow an add-on without a browser can run; it trades your login for
+a 24-hour API token that Aviary refreshes as needed. Like `mqtt_password`, the four values
+are stored in the add-on's options and never logged or shown. Revoke the application on
+iNaturalist at any time to cut Aviary off.
+
+A failed post is remembered on the species page (*last post failed*, with the reason) and
+simply tried again next time; a failed media upload keeps the observation and records the
+upload error instead.
+
 ## Configuration
 
 | Option | Description |
@@ -949,6 +1000,10 @@ stay independent.
 | `clip_pad_seconds` | Seconds of recordings played before and after a detection when viewing it — the ⤢ player and the ⇄ other-camera button — and either side of a kept export (default `10.0`, 0–300). Birds arrive before tracking starts and linger after it ends. Needs the camera's recordings to cover the padding; falls back to the bare event clip when they don't. See *Padded clips* under [Species keepsakes](#species-keepsakes). |
 | `keepsakes` | Keep each species' first and latest camera sighting at Frigate (`retain_indefinitely`; "latest" moves at most once a day, the previous one is released) (default `true`). See [Species keepsakes](#species-keepsakes). |
 | `keepsake_video` | Also export the padded clip of each keepsake — the event's camera and the paired PTZ camera — the only footage Frigate never expires (default `true`). Needs Frigate 0.18+. |
+| `inat_app_id` / `inat_app_secret` / `inat_username` / `inat_password` | Credentials for posting to iNaturalist — an OAuth application of your own plus your login. All four are needed; blank keeps the feature off. See [Life list on iNaturalist](#life-list-on-inaturalist). |
+| `inat_auto_post` | Post a species automatically once it is confirmed (default `false`: the species page has a button that shows what will be sent and asks). |
+| `inat_geoprivacy` | `open`, `obscured` (default) or `private` for the observations' coordinates — they are your Home Assistant location, i.e. your house. |
+| `inat_positional_accuracy_m` | Radius in metres recorded around the coordinates (default `30`). |
 | `log_level` | Logging verbosity. |
 
 Changing any of these needs an add-on restart. The **Settings** page inside Aviary holds

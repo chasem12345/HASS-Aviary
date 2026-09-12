@@ -56,6 +56,11 @@ _identify_hook: Optional[Callable[[dict], bool]] = None
 # pass reconciles history in one sweep instead.
 _keepsake_hook: Optional[Callable[[str], None]] = None
 
+# Set by main() to inat.on_new_species when inat_auto_post is on and the confirmation
+# gate is off: called with a species name the first time Aviary ever records it live.
+# With the gate on, confirmation (the API) is the moment instead. Same injection reasoning.
+_new_species_hook: Optional[Callable[[str], None]] = None
+
 
 def configure(ignore_unclassified: bool, ignore_cameras: tuple[str, ...] = ()) -> None:
     global _ignore_unclassified, _ignore_cameras
@@ -75,6 +80,12 @@ def set_keepsake_hook(hook: Optional[Callable[[str], None]]) -> None:
     """Tell the keepsakes module when a species gained a finished camera sighting."""
     global _keepsake_hook
     _keepsake_hook = hook
+
+
+def set_new_species_hook(hook: Optional[Callable[[str], None]]) -> None:
+    """Tell the life-list module when a species is recorded for the very first time."""
+    global _new_species_hook
+    _new_species_hook = hook
 
 
 def touch_keepsake(common_name: Optional[str]) -> None:
@@ -284,6 +295,11 @@ def _announce(row: dict, live: bool) -> None:
     # species/ref the backfill was about to import — genuinely first-seen by Aviary.
     if live and _loop is not None and notify.enabled():
         asyncio.run_coroutine_threadsafe(notify.send_detection(dict(row), is_new=is_new), _loop)
+    if live and is_new and _new_species_hook is not None:
+        try:
+            _new_species_hook(row["common_name"])  # queues only; must never break ingest
+        except Exception:  # noqa: BLE001
+            log.exception("New-species hook failed for %s", row["common_name"])
 
 
 def _now() -> float:

@@ -273,6 +273,9 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
 /* The dashboard's seen + heard cards stacked in one grid column; align-content keeps
    them together at the top instead of spreading to match a tall leaderboard. */
 .latest-col { display: grid; gap: 18px; align-content: start; }
+/* iNaturalist life-list marker: a link styled as a badge in the accent colour. */
+.badge-inat { background: var(--accent); color: var(--bg); text-decoration: none; }
+a.badge-inat:hover { filter: brightness(1.1); }
 .muted { color: var(--muted); }
 
 /* ----------------------------------------------------------------------- visits */

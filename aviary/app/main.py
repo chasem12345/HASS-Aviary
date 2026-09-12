@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    backfill, bootstrap, crops, db, identify, ingest, keepsakes, kept, media_audit, notify,
+    backfill, bootstrap, crops, db, identify, inat, ingest, keepsakes, kept, media_audit, notify,
     probe, proxy, seasonality, solar, species_audio, species_info, species_photos,
 )
 from .mqtt_client import MqttIngestor
@@ -163,6 +163,10 @@ def create_app() -> FastAPI:
     if keepsakes.enabled():
         ingest.set_keepsake_hook(keepsakes.schedule)
     media_audit.configure(settings)
+    inat.configure(settings)
+    if inat.enabled() and settings.inat_auto_post and not settings.require_species_confirmation:
+        # No review queue: the first live detection of a species IS its confirmation.
+        ingest.set_new_species_hook(inat.on_new_species)
     # One-time catch-up for the has_crop column: rows from before it existed learn
     # whether their crop file is on disk (one directory listing, one UPDATE).
     if not db.get_pref("has_crop_scan_done"):
@@ -206,9 +210,11 @@ def create_app() -> FastAPI:
         identify.init_client()
         solar.init_client()
         seasonality.init_client()
+        inat.init_client()
         loop = asyncio.get_running_loop()
         ingest.set_event_loop(loop)
         keepsakes.set_event_loop(loop)
+        inat.set_event_loop(loop)
         notify.install_blueprint()
         await identify.start(loop)
         ingestor.start()
@@ -250,6 +256,7 @@ def create_app() -> FastAPI:
             await notify.close_client()
             await solar.close_client()
             await seasonality.close_client()
+            await inat.close_client()
             log.info("Aviary stopped.")
 
     app = FastAPI(title="Aviary", lifespan=lifespan)
