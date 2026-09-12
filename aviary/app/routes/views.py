@@ -14,7 +14,7 @@ from .. import db, heroes, solar, visits
 from .. import recap as recap_vm
 # The helper, not the module: this file's /kept route is itself named `kept`.
 from ..kept import view_pad
-from . import THEMES, get_theme, ingress_url, render
+from . import THEMES, get_theme, ingress_url, norm_source, render
 
 router = APIRouter()
 
@@ -35,10 +35,6 @@ def _since(range_key: str) -> Optional[float]:
         return time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
     secs = _RANGE_SECONDS.get(range_key)
     return time.time() - secs if secs else None
-
-
-def _norm_source(source: Optional[str]) -> Optional[str]:
-    return source if source in ("frigate", "birdnet") else None
 
 
 def _day_groups(detections: list[dict]) -> list[dict]:
@@ -124,7 +120,7 @@ def dashboard(
     source: Optional[str] = Query(None),
     range_key: str = Query("7d", alias="range"),
 ):
-    src = _norm_source(source)
+    src = norm_source(source)
     range_key = _norm_range(range_key)
     since = _since(range_key)
     gated = request.app.state.settings.require_species_confirmation
@@ -165,7 +161,7 @@ def _recent_ctx(
     before: Optional[float],
     zone: Optional[str] = None,
 ) -> dict:
-    src = _norm_source(source)
+    src = norm_source(source)
     range_key = _norm_range(range_key, default="all")
     since = _since(range_key)
     detections, next_before = _feed_page(request, src, species, before, since, zone)
@@ -609,7 +605,7 @@ def species_index(
     new: int = Query(0),
     state: Optional[str] = Query(None),
 ):
-    src = _norm_source(source)
+    src = norm_source(source)
     range_key = _norm_range(range_key, default="all")
     since = _since(range_key)
     only_new = bool(new)
@@ -675,7 +671,7 @@ def species_detail(
     if has_both:
         raw = source if source in ("frigate", "birdnet", "all") else None
         sel = raw or "frigate"
-    src = _norm_source(sel)  # 'all' -> None (both streams)
+    src = norm_source(sel)  # 'all' -> None (both streams)
 
     detections, next_before = _feed_page(request, src, name, before, None)
     older_url = None

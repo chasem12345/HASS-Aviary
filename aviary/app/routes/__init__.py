@@ -17,6 +17,7 @@ import json
 import os
 import time
 from datetime import datetime
+from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.templating import Jinja2Templates
@@ -71,6 +72,15 @@ def _asset_version() -> str:
 
 
 ASSET_VER = _asset_version()
+
+
+def norm_source(source: Optional[str]) -> Optional[str]:
+    """The ``?source=`` query value narrowed to a known source, else None (= all).
+
+    Shared by the HTML views and the JSON API so a page and the endpoints backing it can
+    never disagree about what "frigate" or "birdnet" means.
+    """
+    return source if source in ("frigate", "birdnet") else None
 
 
 def ingress_url(request: Request, endpoint: str, /, **params) -> str:

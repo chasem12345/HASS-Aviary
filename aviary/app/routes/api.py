@@ -16,7 +16,7 @@ from .. import (
     backfill, bootstrap, crops, db, identify, ingest, keepsakes, kept, notify, probe, proxy,
     seasonality, species_audio, species_info, species_photos, traits,
 )
-from . import ingress_url, set_theme
+from . import ingress_url, norm_source, set_theme
 
 log = logging.getLogger("aviary.api")
 
@@ -26,14 +26,10 @@ router = APIRouter()
 _background_tasks: set = set()
 
 
-def _norm_source(source: Optional[str]) -> Optional[str]:
-    return source if source in ("frigate", "birdnet") else None
-
-
 @router.get("/summary")
 def summary(request: Request, source: Optional[str] = Query(None),
             days: int = Query(7, ge=1, le=3650)):
-    src = _norm_source(source)
+    src = norm_source(source)
     since = time.time() - days * 86400
     # Same confirmation filter as the dashboard view, or the JSON and the page it backs
     # would report different species counts.
@@ -52,7 +48,7 @@ def per_day(
     since: Optional[float] = Query(None, ge=0),
 ):
     data = db.detections_per_day(
-        days=days, source=_norm_source(source), species=species, since=since
+        days=days, source=norm_source(source), species=species, since=since
     )
     return {"data": data}
 
@@ -66,7 +62,7 @@ def hourly(
 ):
     effective_since = since if since is not None else time.time() - days * 86400
     data = db.hourly_activity(
-        source=_norm_source(source), since=effective_since, species=species
+        source=norm_source(source), since=effective_since, species=species
     )
     return {"data": data}
 
@@ -74,7 +70,7 @@ def hourly(
 @router.get("/latest")
 def latest(source: Optional[str] = Query(None), species: Optional[str] = Query(None)):
     """Cheap change marker polled by the Recent page for live refresh."""
-    return db.change_marker(source=_norm_source(source), species=species)
+    return db.change_marker(source=norm_source(source), species=species)
 
 
 def _norm_source_action(action: Optional[str]) -> str:
