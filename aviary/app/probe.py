@@ -20,8 +20,12 @@ Two properties are deliberate and worth preserving through any future change:
 * **It blends, never replaces.** A species with no examples scores purely zero-shot, so a
   bird you have never seen stays identifiable. A probe that quietly stopped finding new
   species would be worse than no probe at all.
-* **It learns only from confirmed labels.** Training on the model's own unreviewed guesses
-  is how a classifier teaches itself its own mistakes.
+* **It learns only from labels a person typed.** Training on the model's own unreviewed
+  guesses is how a classifier teaches itself its own mistakes; ``identify_learn_from_auto``
+  opts back in to learning from confident automatic answers.
+* **Every example is traceable.** The probe keeps which detection (and which bird in it)
+  each vector came from, so a bad match can be walked back to a card, and a single
+  example can be excluded from learning or re-embedded without deleting anything.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ import base64
 import logging
 import math
 import threading
+from dataclasses import asdict, dataclass, replace
 from typing import Optional
 
 import numpy as np
@@ -86,12 +91,59 @@ _TEMPERATURE = 25.0
 _MIN_SIMILARITY = 0.45
 _STRONG_SIMILARITY = 0.70
 
+# How alike two examples from ONE visit must be to count as the same frame twice. Frigate's
+# tracker splits a bird's stay into many event ids, and each of them stores a frame — so
+# a single 90-second bath visit can contribute twenty near-identical vectors, any three
+# of which fill a top-3 pool and make that one visit the species' whole definition.
+_DUP_SIMILARITY = 0.97
+# ...and after de-duplication, at most this many examples per (species, visit). One below
+# _TOP_K on purpose: one visit can never fill the pool by itself. Repeat visitors on other
+# days are independent evidence and are kept.
+_MAX_PER_VISIT = 2
+# An example is "suspicious" when it sits nearer another species' examples than its own
+# (leave-one-VISIT-out, so its own visit's clones cannot vouch for it) by more than this.
+_SUSPICIOUS_MARGIN = 0.0
+
 _lock = threading.Lock()
-_examples: dict[str, np.ndarray] = {}   # confirmed detections, one unit row each
+_examples: dict[str, np.ndarray] = {}   # examples in USE, one unit row each
 _refs: dict[str, np.ndarray] = {}       # reference photos, one unit row each
 _counts: dict[str, float] = {}          # effective (weighted) example count per species
-_raw_counts: dict[str, int] = {}        # confirmed detections only, for display
+_raw_counts: dict[str, int] = {}        # examples in use, for display
 _model: str = ""
+# Provenance. _meta[species] is row-aligned with _examples[species]; _all[species] holds
+# every labelled example (used or not) for the browser and the audit.
+_meta: dict[str, list["Example"]] = {}
+_all: dict[str, list[tuple["Example", np.ndarray]]] = {}
+_summary: dict = {}
+_learn_from_auto = False
+
+
+@dataclass(frozen=True)
+class Example:
+    """One learnable example and where it came from."""
+    species: str
+    detection_id: int
+    subject_idx: int                 # 0 = the detection itself; 1+ = another bird in view
+    visit_id: Optional[int]
+    start_time: Optional[float]
+    source_ref: Optional[str]
+    label_source: str                # manual | auto
+    target: Optional[str]            # species the frame was chosen for; None = legacy
+    excluded: bool
+    suspicious: Optional[dict]       # {margin, species, at} from the last audit, or None
+    used: bool = True
+    dropped_reason: Optional[str] = None   # excluded | duplicate | visit_cap
+
+    def as_dict(self) -> dict:
+        d = asdict(self)
+        d["untargeted"] = (self.target or "").lower() != self.species.lower()
+        return d
+
+
+def configure(learn_from_auto: bool = False) -> None:
+    """Whether the identifier's own passing answers count as examples (default: no)."""
+    global _learn_from_auto
+    _learn_from_auto = bool(learn_from_auto)
 
 
 def decode(embedding: str) -> Optional[np.ndarray]:
@@ -133,6 +185,123 @@ def _collect(rows: list[tuple[str, str]]) -> tuple[dict[str, list[np.ndarray]], 
     return out, skipped
 
 
+def _decode_examples(rows: list[dict]) -> tuple[list[tuple[Example, np.ndarray]], int]:
+    """db.learning_examples rows -> (Example, unit vector) pairs, same dimension guard."""
+    dim: Optional[int] = None
+    out: list[tuple[Example, np.ndarray]] = []
+    skipped = 0
+    for r in rows:
+        vec = decode(r.get("embedding") or "")
+        if vec is None or (dim is not None and vec.size != dim):
+            skipped += 1
+            continue
+        dim = dim or vec.size
+        suspicious = None
+        if r.get("suspicious_at"):
+            suspicious = {"margin": r.get("suspicious_margin"),
+                          "species": r.get("suspicious_species"), "at": r.get("suspicious_at")}
+        out.append((Example(
+            species=(r.get("species") or "").strip(), detection_id=int(r["detection_id"]),
+            subject_idx=int(r.get("subject_idx") or 0), visit_id=r.get("visit_id"),
+            start_time=r.get("start_time"), source_ref=r.get("source_ref"),
+            label_source=r.get("label_source") or "manual", target=r.get("target"),
+            excluded=bool(r.get("excluded_at")), suspicious=suspicious,
+        ), vec))
+    return out, skipped
+
+
+def _select(items: list[tuple[Example, np.ndarray]]) -> list[tuple[Example, np.ndarray]]:
+    """Decide which of one species' examples are USED: drop excluded ones, then within
+    each visit drop near-duplicate frames and cap what one visit may contribute."""
+    out: list[tuple[Example, np.ndarray]] = []
+    groups: dict[int, list[tuple[Example, np.ndarray]]] = {}
+    for ex, vec in items:
+        if ex.excluded:
+            out.append((replace(ex, used=False, dropped_reason="excluded"), vec))
+        elif ex.visit_id is None:
+            out.append((ex, vec))          # nothing says these are the same stay
+        else:
+            groups.setdefault(ex.visit_id, []).append((ex, vec))
+    for members in groups.values():
+        members.sort(key=lambda p: p[0].start_time or 0.0)
+        kept: list[tuple[Example, np.ndarray]] = []
+        for ex, vec in members:
+            if any(float(vec @ kv) >= _DUP_SIMILARITY for _, kv in kept):
+                out.append((replace(ex, used=False, dropped_reason="duplicate"), vec))
+            else:
+                kept.append((ex, vec))
+        if len(kept) > _MAX_PER_VISIT:
+            # Farthest-point pick: the first frame, then whichever is least like what is
+            # already kept — the two most different looks at the bird, not the two first.
+            chosen, rest = [kept[0]], kept[1:]
+            while len(chosen) < _MAX_PER_VISIT and rest:
+                pick = min(rest, key=lambda p: max(float(p[1] @ c[1]) for c in chosen))
+                rest.remove(pick)
+                chosen.append(pick)
+            out.extend((replace(ex, used=False, dropped_reason="visit_cap"), vec)
+                       for ex, vec in rest)
+            kept = chosen
+        out.extend(kept)
+    out.sort(key=lambda p: -(p[0].start_time or 0.0))
+    return out
+
+
+@dataclass
+class _Loaded:
+    examples: dict[str, np.ndarray]
+    meta: dict[str, list[Example]]
+    all_rows: dict[str, list[tuple[Example, np.ndarray]]]
+    refs: dict[str, np.ndarray]
+    counts: dict[str, float]
+    raw: dict[str, int]
+    summary: dict
+
+
+def _load(model: str) -> _Loaded:
+    """Everything a rebuild (or an evaluation) needs, without touching module state."""
+    rows = db.learning_examples(model, include_auto=_learn_from_auto)
+    pairs, skipped_c = _decode_examples(rows)
+    references, skipped_r = _collect(db.reference_embeddings(model))
+
+    by_species: dict[str, list[tuple[Example, np.ndarray]]] = {}
+    for ex, vec in pairs:
+        by_species.setdefault(ex.species, []).append((ex, vec))
+    examples: dict[str, np.ndarray] = {}
+    meta: dict[str, list[Example]] = {}
+    all_rows: dict[str, list[tuple[Example, np.ndarray]]] = {}
+    dropped: dict[str, int] = {"excluded": 0, "duplicate": 0, "visit_cap": 0}
+    for name, items in by_species.items():
+        chosen = _select(items)
+        all_rows[name] = chosen
+        used = [(ex, vec) for ex, vec in chosen if ex.used]
+        if used:
+            examples[name] = np.stack([vec for _, vec in used])
+            meta[name] = [ex for ex, _ in used]
+        for ex, _ in chosen:
+            if not ex.used:
+                dropped[ex.dropped_reason or "excluded"] += 1
+
+    refs = {name: np.stack(vecs) for name, vecs in references.items()}
+    raw = {name: len(m) for name, m in meta.items()}
+    counts: dict[str, float] = {}
+    for name in set(examples) | set(refs):
+        counts[name] = raw.get(name, 0) + _REFERENCE_WEIGHT * len(references.get(name, ()))
+    summary = {
+        "model": model,
+        "species": len(counts),
+        "labelled": len(pairs),
+        "examples": int(sum(raw.values())),
+        "excluded": dropped["excluded"],
+        "deduped": dropped["duplicate"],
+        "capped": dropped["visit_cap"],
+        "auto_ignored": 0 if _learn_from_auto else db.auto_example_count(model),
+        "learn_from_auto": _learn_from_auto,
+        "reference_only": sum(1 for n in counts if not raw.get(n)),
+        "skipped": skipped_c + skipped_r,
+    }
+    return _Loaded(examples, meta, all_rows, refs, counts, raw, summary)
+
+
 def rebuild(model: str) -> dict:
     """Reload every stored example from the database. Returns a summary.
 
@@ -143,36 +312,21 @@ def rebuild(model: str) -> dict:
     """
     if not model:
         return {"species": 0, "examples": 0}
-
-    confirmed, skipped_c = _collect(db.confirmed_embeddings(model))
-    references, skipped_r = _collect(db.reference_embeddings(model))
-
-    examples = {name: np.stack(vecs) for name, vecs in confirmed.items()}
-    refs = {name: np.stack(vecs) for name, vecs in references.items()}
-    raw = {name: len(vecs) for name, vecs in confirmed.items()}
-    counts: dict[str, float] = {}
-    for name in set(examples) | set(refs):
-        counts[name] = (len(confirmed.get(name, ()))
-                        + _REFERENCE_WEIGHT * len(references.get(name, ())))
-
+    loaded = _load(model)
     with _lock:
-        global _examples, _refs, _counts, _raw_counts, _model
+        global _examples, _refs, _counts, _raw_counts, _model, _meta, _all, _summary
         _examples, _refs, _counts, _raw_counts, _model = (
-            examples, refs, counts, raw, model)
-
-    summary = {
-        "model": model,
-        "species": len(counts),
-        "examples": int(sum(raw.values())),
-        "reference_only": sum(1 for n in counts if not raw.get(n)),
-        "skipped": skipped_c + skipped_r,
-    }
+            loaded.examples, loaded.refs, loaded.counts, loaded.raw, model)
+        _meta, _all, _summary = loaded.meta, loaded.all_rows, loaded.summary
+    s = loaded.summary
     log.info(
-        "Probe rebuilt: %d species from %d confirmed detection(s) "
-        "(%d species on reference photos alone).",
-        summary["species"], summary["examples"], summary["reference_only"],
+        "Probe rebuilt: %d species from %d example(s) in use (%d labelled; %d excluded, "
+        "%d duplicate, %d over the per-visit cap; %d automatic answer(s) not learned from; "
+        "%d species on reference photos alone).",
+        s["species"], s["examples"], s["labelled"], s["excluded"], s["deduped"],
+        s["capped"], s["auto_ignored"], s["reference_only"],
     )
-    return summary
+    return s
 
 
 def ready() -> bool:
@@ -189,6 +343,7 @@ def model() -> str:
 def stats() -> dict:
     with _lock:
         return {
+            **_summary,
             "model": _model,
             "species": len(set(_examples) | set(_refs)),
             "examples": int(sum(_raw_counts.values())),
@@ -376,30 +531,152 @@ def blend(embedding: str, zero_shot: list[dict], model: str,
     }
 
 
-def evaluate(model: str) -> dict:
-    """Leave-one-out accuracy over confirmed detections: zero-shot's peer, measured.
+# ------------------------------------------------------------------ browsing and audit
 
-    Each confirmed embedding is scored against the example pools *without* it, so a
-    species with a single example cannot trivially match itself. This deliberately touches
-    no clips, crops or ffmpeg — it measures the classifier alone, which is what makes it
-    comparable across pipeline changes rather than confounded by them. It is also the
-    regression gate for every constant in this file.
+def species_summary() -> list[dict]:
+    """Per species: how many examples it has, how many are in use, and what is flagged."""
+    with _lock:
+        all_rows, refs = dict(_all), dict(_refs)
+    out = []
+    for name in sorted(set(all_rows) | set(refs)):
+        rows = [ex for ex, _ in all_rows.get(name, [])]
+        out.append({
+            "species": name,
+            "labelled": len(rows),
+            "used": sum(1 for ex in rows if ex.used),
+            "excluded": sum(1 for ex in rows if ex.excluded),
+            "suspicious": sum(1 for ex in rows if ex.suspicious),
+            "untargeted": sum(1 for ex in rows if ex.used
+                              and (ex.target or "").lower() != name.lower()),
+            "manual": sum(1 for ex in rows if ex.label_source == "manual"),
+            "auto": sum(1 for ex in rows if ex.label_source != "manual"),
+            "reference": int(refs[name].shape[0]) if name in refs else 0,
+        })
+    out.sort(key=lambda s: (-s["labelled"], s["species"]))
+    return out
+
+
+def _outlier_scores(species: str) -> dict[tuple[int, int], dict]:
+    """How each example of one species would score as a QUERY: against its own species'
+    pool with its own visit held out, and against every other species' pool.
+
+    Scored the way the probe scores (mean of the top-k similarities, ``_score_pool``),
+    not by a single nearest neighbour: one mislabelled frame pulls its true species'
+    examples toward it just as hard, so nearest-neighbour flags both sides. Pool scores
+    are asymmetric — the two wren frames filed under cardinal look like wrens (the wren
+    pool is full of their kind), while a real wren still scores higher against the wren
+    pool than against a cardinal pool that holds only two look-alikes. Own visit held out
+    so a visit's near-clones cannot vouch for each other. Reference photos are left out:
+    they are the right species in the wrong domain and would flag every real frame.
     """
-    confirmed, _ = _collect(db.confirmed_embeddings(model))
-    references, _ = _collect(db.reference_embeddings(model))
+    with _lock:
+        rows = list(_all.get(species, []))
+        same_pool = _examples.get(species)
+        same_meta = list(_meta.get(species, []))
+        others = {n: m for n, m in _examples.items() if n != species}
+    if not rows:
+        return {}
 
-    conf_mats = {name: np.stack(vecs) for name, vecs in confirmed.items()}
-    ref_mats = {name: np.stack(vecs) for name, vecs in references.items()}
+    def pooled(sims: np.ndarray) -> Optional[float]:
+        if sims.size == 0:
+            return None
+        k = min(_TOP_K, sims.size)
+        return float(np.sort(sims)[-k:].mean())
+
+    out: dict[tuple[int, int], dict] = {}
+    for ex, vec in rows:
+        own = None
+        if same_pool is not None and same_meta:
+            mask = np.array([
+                not (m.detection_id == ex.detection_id and m.subject_idx == ex.subject_idx)
+                and not (ex.visit_id is not None and m.visit_id == ex.visit_id)
+                for m in same_meta])
+            own = pooled((same_pool @ vec)[mask])
+        other = other_species = None
+        for name, mat in others.items():
+            score = pooled(mat @ vec)
+            if score is not None and (other is None or score > other):
+                other, other_species = score, name
+        suspicious = False
+        if other is not None:
+            if own is None:
+                suspicious = other >= _STRONG_SIMILARITY
+            else:
+                suspicious = other - own > _SUSPICIOUS_MARGIN
+        out[(ex.detection_id, ex.subject_idx)] = {
+            "own_score": None if own is None else round(own, 3),
+            "other_score": None if other is None else round(other, 3),
+            "other_species": other_species,
+            "suspicious_now": suspicious,
+        }
+    return out
+
+
+def examples(species: str) -> list[dict]:
+    """Every labelled example of one species, newest first, with live outlier numbers.
+
+    ``suspicious`` is the persisted verdict of the last audit (or None); ``suspicious_now``
+    is recomputed against the pool as it stands.
+    """
+    scores = _outlier_scores(species)
+    with _lock:
+        rows = [ex for ex, _ in _all.get(species, [])]
+    return [{**ex.as_dict(), **scores.get((ex.detection_id, ex.subject_idx), {})}
+            for ex in rows]
+
+
+def flag_suspicious() -> dict:
+    """Audit every species and persist which examples look mislabelled. Returns a summary.
+
+    On demand, never on rebuild: it is N² in the number of examples. Rebuilds afterwards
+    so the flags show in the browser immediately.
+    """
+    with _lock:
+        names = sorted(_all)
+        model_key = _model
+    flagged: list[tuple[int, int, float, str]] = []
+    per_species: list[dict] = []
+    for name in names:
+        scores = _outlier_scores(name)
+        hits = []
+        for (det_id, idx), s in scores.items():
+            if s["suspicious_now"]:
+                margin = (s["other_score"] or 0.0) - (s["own_score"] or 0.0)
+                flagged.append((det_id, idx, round(margin, 3), s["other_species"] or ""))
+                hits.append({"detection_id": det_id, "subject_idx": idx, **s})
+        if hits:
+            per_species.append({"species": name, "flagged": len(hits), "examples": hits})
+    db.set_suspicious(flagged)
+    if model_key:
+        rebuild(model_key)
+    log.info("Learning audit: %d of the examples in use look mislabelled.", len(flagged))
+    return {"flagged": len(flagged), "species": per_species}
+
+
+def evaluate(model: str) -> dict:
+    """Leave-one-out accuracy over the examples in use: zero-shot's peer, measured.
+
+    Each example is scored against the pools *without* it, so a species with a single
+    example cannot trivially match itself. Uses exactly the pool a rebuild would (manual
+    labels only unless configured otherwise, de-duplicated and capped per visit), so the
+    number describes the probe as it runs. This deliberately touches no clips, crops or
+    ffmpeg — it measures the classifier alone, which is what makes it comparable across
+    pipeline changes rather than confounded by them. It is also the regression gate for
+    every constant in this file.
+    """
+    loaded = _load(model)
+    conf_mats, ref_mats = loaded.examples, loaded.refs
     species_names = set(conf_mats) | set(ref_mats)
 
     total = correct = 0
     per_species: dict[str, dict] = {}
-    for species, vecs in confirmed.items():
-        if len(vecs) < 2 and species not in ref_mats:
+    for species, pool_all in conf_mats.items():
+        if pool_all.shape[0] < 2 and species not in ref_mats:
             # Nothing to hold out against: with one example and no reference photos, the
             # only pool available IS the test vector.
             continue
-        for i, held in enumerate(vecs):
+        for i in range(pool_all.shape[0]):
+            held = pool_all[i]
             best_name, best_score = None, -math.inf
             for other in species_names:
                 pool = conf_mats.get(other)
@@ -422,10 +699,11 @@ def evaluate(model: str) -> dict:
         "evaluated": total,
         "correct": correct,
         "accuracy": round(correct / total, 4) if total else None,
+        "pool": "manual+auto" if _learn_from_auto else "manual-only",
         "species": sorted(
             ({"species": k, **v} for k, v in per_species.items()),
             key=lambda x: x["n"], reverse=True,
         ),
-        "note": ("Leave-one-out over confirmed detections. Species with a single example "
+        "note": ("Leave-one-out over the examples in use. Species with a single example "
                  "and no reference photos are skipped — there is nothing to hold out."),
     }

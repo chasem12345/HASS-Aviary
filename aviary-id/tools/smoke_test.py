@@ -106,6 +106,9 @@ def main() -> int:
     ap.add_argument("--verbose", action="store_true", help="show the per-frame breakdown")
     ap.add_argument("--subjects", action="store_true",
                     help="show every bird the service found in the event, not only the primary")
+    ap.add_argument("--target", default=None,
+                    help="ask for the embedding/best crop of this species (service 0.11.0+); "
+                         "shows whether it was honoured and from which frame")
     args = ap.parse_args()
 
     labels: dict[str, str] = {}
@@ -173,7 +176,10 @@ def main() -> int:
         eid = event["id"]
         started = time.monotonic()
         try:
-            res = post_json(f"{service}/identify", {"event_id": eid}, headers)
+            payload = {"event_id": eid}
+            if args.target:
+                payload["target"] = args.target
+            res = post_json(f"{service}/identify", payload, headers)
         except (urllib.error.URLError, OSError, ValueError) as exc:
             print(f"{eid:<26} {'':<14} {'':<22} ERROR: {exc}")
             continue
@@ -192,11 +198,35 @@ def main() -> int:
               f"{ours[:23]:<24} {pct(res.get('score')):>7} {pct(res.get('margin')):>7} "
               f"{res.get('frames_used', 0):>3} {elapsed:>6}   {when}")
 
-        if args.subjects and len(res.get("subjects") or []) > 1:
+        if args.target:
+            honoured = res.get("embedding_target")
+            print(f"    target {args.target!r}: "
+                  + (f"honoured (p={res.get('embedding_target_score')}, "
+                     f"frame {res.get('best_origin')})" if honoured
+                     else "NOT honoured (unknown name, excluded, or service < 0.11.0)"))
+        if args.subjects and res.get("subjects"):
+            prim = res["subjects"][0]
+            facts = []
+            if prim.get("purity") is not None:
+                facts.append(f"purity {prim['purity']:.2f}")
+            if prim.get("cohesion") is not None:
+                facts.append(f"cohesion {prim['cohesion']:.2f}")
+            if prim.get("best_origin"):
+                facts.append(f"best {prim['best_origin']}")
+            if facts:
+                print(f"    primary: {', '.join(facts)}")
             for sub in res["subjects"][1:]:
+                extra = ""
+                if sub.get("purity") is not None:
+                    extra += f", purity {sub['purity']:.2f}"
+                if sub.get("cohesion") is not None:
+                    extra += f", cohesion {sub['cohesion']:.2f}"
                 print(f"    also in view: {sub['common_name']} {pct(sub.get('score'))} "
                       f"(margin {pct(sub.get('margin'))}, {sub.get('n_frames', 0)} crop(s): "
-                      f"{', '.join(sub.get('origins') or [])})")
+                      f"{', '.join(sub.get('origins') or [])}{extra})")
+            for f in res.get("unassigned") or []:
+                print(f"    unassigned: {f['origin']} det={f['det_score']:.2f} "
+                      f"{f['top1']} {f['top1_score'] * 100:.0f}%")
         if args.verbose:
             for frame in res.get("per_frame", []):
                 trained = ""

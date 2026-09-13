@@ -21,6 +21,7 @@ from .subjects import *  # noqa: F401,F403
 from .species import *  # noqa: F401,F403
 from .recap import *  # noqa: F401,F403
 from .identification import *  # noqa: F401,F403
+from .learning import *  # noqa: F401,F403
 from .keepsakes import *  # noqa: F401,F403
 from .media_audit import *  # noqa: F401,F403
 from .blacklist import *  # noqa: F401,F403

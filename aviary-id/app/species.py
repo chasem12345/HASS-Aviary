@@ -18,7 +18,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Collection, Optional
 
 import httpx
 
@@ -93,6 +93,28 @@ class Species:
             "order": self.order,
             "family": self.family,
         }
+
+
+def find_species(species: list[Species], name: Optional[str],
+                 excluded: Collection[int] = ()) -> Optional[int]:
+    """Vocabulary index of a common or scientific name, or None.
+
+    Case- and whitespace-insensitive; the first match wins (the same rule as
+    ``Classifier._indices_for``). None when the name is blank, not in the vocabulary, or
+    sits in ``excluded`` — a caller asking for the best frame of a species it has also
+    ruled out gets nothing rather than a frame chosen over a zeroed column. Torch-free so
+    the lookup is unit-testable on any machine.
+    """
+    wanted = (name or "").strip().lower()
+    if not wanted:
+        return None
+    banned = set(excluded)
+    for i, sp in enumerate(species):
+        if i in banned:
+            continue
+        if sp.com_name.lower() == wanted or sp.sci_name.lower() == wanted:
+            return i
+    return None
 
 
 # --------------------------------------------------------------------------- disk cache

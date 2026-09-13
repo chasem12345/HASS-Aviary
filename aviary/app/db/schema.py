@@ -298,6 +298,22 @@ CREATE TABLE IF NOT EXISTS detection_subject_rejections (
     PRIMARY KEY (detection_id, idx, species)
 );
 
+-- Per-example learning flags (0.32.0): "do not learn from this one" (excluded_at) and
+-- the last audit's verdict (suspicious_*: it sat nearer another species' examples than
+-- its own). A side table rather than columns on the rows holding the embeddings:
+-- detection_subjects is replaced wholesale on re-identify (flags are remapped alongside
+-- rejections), and the primary has no subject row of its own to hang a flag on —
+-- subject_idx 0 means the detection itself.
+CREATE TABLE IF NOT EXISTS learning_flags (
+    detection_id       INTEGER NOT NULL,
+    subject_idx        INTEGER NOT NULL DEFAULT 0,
+    excluded_at        REAL,
+    suspicious_at      REAL,
+    suspicious_margin  REAL,
+    suspicious_species TEXT,
+    PRIMARY KEY (detection_id, subject_idx)
+);
+
 -- Species keepsakes: the FIRST and the LATEST camera sighting of each species, kept at
 -- Frigate automatically (retain_indefinitely on the event plus an export of the padded
 -- clip). One row per (species, role); "latest" moves to a newer sighting at most once
@@ -544,6 +560,20 @@ def init_db(db_path: str) -> None:
             # each species page fills them in, rather than waiting out a month-long TTL.
             conn.execute("ALTER TABLE species_info ADD COLUMN sections TEXT")
             conn.execute("UPDATE species_info SET fetched_at = 0 WHERE sections IS NULL")
+        # Which species an embedding's frame was chosen FOR (0.32.0): the service's winner
+        # on a normal identify, the person's label on a re-embed. NULL = a legacy row,
+        # chosen for whatever won at the time. This is what lets a relabel know the stored
+        # frame was picked for the wrong bird and must be replaced, not renamed.
+        emb_cols = {r[1] for r in conn.execute("PRAGMA table_info(identification_embeddings)")}
+        if "target" not in emb_cols:
+            conn.execute("ALTER TABLE identification_embeddings ADD COLUMN target TEXT")
+        sub_cols = {r[1] for r in conn.execute("PRAGMA table_info(detection_subjects)")}
+        if "embedding_target" not in sub_cols:
+            conn.execute("ALTER TABLE detection_subjects ADD COLUMN embedding_target TEXT")
+        if "purity" not in sub_cols:
+            # Share of the subject's crops that agreed with its answer (aviary-id 0.11.0+).
+            # 0.5 on a primary means two birds were fused into one answer. NULL = unknown.
+            conn.execute("ALTER TABLE detection_subjects ADD COLUMN purity REAL")
         # Everything already in the registry counts as approved: enabling the confirmation
         # gate must not dump an existing collection into the review queue. Guarded by a
         # marker rather than "is species_confirmed empty", which would re-stamp for someone

@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.32.0
+
+- **Correcting a name no longer teaches the wrong picture.** The example the probe keeps
+  for a detection is one frame — the one that best backed the identifier's *winner*. When
+  you corrected a wrong answer with ✎, that frame (chosen precisely because it looked most
+  like the mistake) was simply renamed and learned under the right species: every
+  correction ever made planted a look-alike of the wrong bird in the right bird's examples.
+  A relabel now drops that example and asks aviary-id **0.11.0+** to choose the frame for
+  the species you named (`target`), so what is learned is a picture of that bird. Existing
+  hand-named rows are re-embedded the same way at startup, fifty per start. With an older
+  service the 0.31 behaviour stands: a missing example is filled, an existing one is never
+  replaced — the Settings page marks those *untargeted*.
+- **It learns only from names you typed.** The probe was quietly learning from the
+  identifier's own passing answers too, which is how a classifier reinforces its mistakes.
+  Automatic answers are no longer examples unless `identify_learn_from_auto` is on; the
+  Settings page says how many are being left out. Species whose examples were mostly
+  automatic will lean on the probe less until you name a few by hand.
+- **One visit, two frames at most.** Frigate splits a bird's stay into many event ids and
+  each stored a frame, so a minute at the bath could contribute twenty near-identical
+  vectors — any three of which filled a species' top-3 pool. Within a visit, frames alike
+  above 0.97 are one, and at most two survive (the two most different looks).
+- **See what it learned, and fix it.** Settings gains an example browser: pick a species,
+  see every example with its crop, when and where it came from, whether you or the
+  identifier named it, whether it is in use, and how it sits against the other species'
+  examples. *Flag suspicious examples* audits them all — one nearer another species than
+  its own is the shape a mislabel takes — and each can be **excluded** from learning (the
+  detection and its name stay) or **re-embedded** for its label. Leave-one-out accuracy
+  now measures the pool actually in use.
+- **Start over.** *Forget all learned examples* on the Settings page wipes the probe's
+  memory — every stored example, yours and the identifier's — and leaves the names on
+  your cards, the species list, the history and reference photos alone. Hand-named cards
+  whose media Frigate still has are then re-learned in the background, each with a frame
+  chosen for the name you gave, so the probe comes back small and clean.
+- **Re-identify refuses to discard a hand-given name.** ↻ on a detection you named would
+  overwrite the label with the service's answer; it now says so instead. ✗ wrong still
+  works (that *is* you saying the name was wrong), and `force=1` re-runs regardless.
+- **Two birds fused into one card are called out.** With aviary-id 0.11.0 each bird
+  reports how many of its frames agreed with its answer; a card whose tracked bird is
+  below 60% shows *mixed frames*, and cards with another bird in view say plainly that
+  naming the card names the bird in the still. The sidecar's partition was retuned on
+  real bath footage: two different birds seconds apart measured 0.85–0.91 cosine (above
+  the 0.75 that keeps one bird's frames together — same background, same light), so
+  each crop's own top-1 species now decides — a crop that disagrees with a subject on
+  the species must clear `SUBJECT_SIM_PRIMARY` (0.92) / `SUBJECT_SIM_SECONDARY` (0.90)
+  to join it — on-path crops are checked against Frigate's own crop one by one, and
+  crops that belonged to no bird are reported. See the aviary-id README and
+  `tools/tune_subjects.py --replay` for tuning on your own footage.
+
 ## 0.31.0
 
 - **Long visits start playing immediately.** ▶ play visit, ⤢ scrub with padding and ⇄ view

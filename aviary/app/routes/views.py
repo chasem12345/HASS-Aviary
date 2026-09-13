@@ -765,6 +765,7 @@ def settings_page(request: Request):
         # The URL is shown so a misconfigured host is obvious at a glance. The token is
         # deliberately never exposed here — it is a credential.
         "identify_url": settings.identify_url,
+        "learn_from_auto": settings.identify_learn_from_auto,
         # iNaturalist: configured or not, the account name (public on iNaturalist anyway)
         # and the posting policy. The app secret and password are never exposed.
         "inat_configured": settings.inat_enabled,

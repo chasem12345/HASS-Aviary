@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 def _as_bool(value: str) -> bool:
@@ -28,6 +29,19 @@ def _as_int(key: str, default: int) -> int:
         return int(os.environ.get(key, "") or default)
     except (TypeError, ValueError):
         return default
+
+
+def _as_optional_unit(key: str, default: Optional[float]) -> Optional[float]:
+    """A 0–1 float; ``default`` when unset/blank; None for "off" (= same as SIM_MERGE)."""
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return default
+    if raw.lower() in ("off", "none", "merge"):
+        return None
+    try:
+        return min(1.0, max(0.0, float(raw)))
+    except (TypeError, ValueError):
+        return None
 
 
 def _as_list(key: str) -> tuple[str, ...]:
@@ -145,19 +159,31 @@ class Settings:
 
     # --- subjects (which crops are the same bird) ---------------------------------
     # See subjects.py. Cosine similarity between BioCLIP image embeddings at or above
-    # which two crops (or two clusters) are the same individual seen twice. The same bird
-    # seconds apart on one camera sits around 0.8–0.95; two different species around
-    # 0.3–0.6; two individuals of one species in between — merging those is harmless.
+    # which two crops (or two clusters) that AGREE on the species are the same individual
+    # seen twice. Measured on a feeder camera: the same bird seconds apart ≥ 0.93 wide,
+    # ≥ 0.84 zoomed — but two different species at one bath 0.85–0.91 as well (shared
+    # background and light), which is why disagreeing crops face the stricter bars below.
     subject_sim_merge: float = 0.75
-    # Below this, Frigate's own crop (thumbnail/snapshot) and the boxes on its tracked
-    # path disagree so badly that the path estimate is not trusted for this event.
-    subject_sim_split: float = 0.55
+    # An on-path box less like Frigate's own crop (thumbnail/snapshot) than this is not
+    # taken as the tracked bird on the path's say-so; it earns a place by similarity
+    # like any other crop. Judged per box: at a bath two birds sit within the anchor
+    # radius of the same path point. Measured same-bird cosines are ≥ 0.84.
+    subject_sim_split: float = 0.80
     # A second bird needs this many crops to be reported — or one crop the detector was
     # at least SUBJECT_SINGLE_DET sure of. Keeps a stray reflection from becoming a bird.
     subject_min_crops: int = 2
     subject_single_det: float = 0.5
     # Primary plus at most this many others per event.
     subject_max: int = 3
+    # The stricter bars a crop (or cluster) must clear to join a subject whose species it
+    # DISAGREES with — its own top-1 against the subject's. Crops that agree need only
+    # SUBJECT_SIM_MERGE. On a feeder camera two different birds share background, light
+    # and perch, and their cosines sit 0.85–0.91 (measured), above the merge bar; species
+    # agreement is what separates "same bird, odd angle" from "other bird, same bath".
+    # The primary's bar is the stricter: a wrong crop there corrupts the answer and the
+    # embedding kept for learning. Tune with tools/tune_subjects.py --replay.
+    subject_sim_primary: Optional[float] = 0.92
+    subject_sim_secondary: Optional[float] = 0.90
 
     # --- species vocabulary -------------------------------------------------------
     # Free key from https://ebird.org/api/keygen. Without it the service falls back to
@@ -222,10 +248,12 @@ def load_settings() -> Settings:
         fetch_timeout=_as_float("FETCH_TIMEOUT", 30.0),
         ffmpeg_timeout=_as_float("FFMPEG_TIMEOUT", 60.0),
         subject_sim_merge=min(1.0, max(0.0, _as_float("SUBJECT_SIM_MERGE", 0.75))),
-        subject_sim_split=min(1.0, max(0.0, _as_float("SUBJECT_SIM_SPLIT", 0.55))),
+        subject_sim_split=min(1.0, max(0.0, _as_float("SUBJECT_SIM_SPLIT", 0.80))),
         subject_min_crops=max(1, _as_int("SUBJECT_MIN_CROPS", 2)),
         subject_single_det=min(1.0, max(0.0, _as_float("SUBJECT_SINGLE_DET", 0.5))),
         subject_max=max(1, _as_int("SUBJECT_MAX", 3)),
+        subject_sim_primary=_as_optional_unit("SUBJECT_SIM_PRIMARY", 0.92),
+        subject_sim_secondary=_as_optional_unit("SUBJECT_SIM_SECONDARY", 0.90),
         ebird_api_key=os.environ.get("EBIRD_API_KEY", "").strip(),
         ebird_region=os.environ.get("EBIRD_REGION", "").strip(),
         ebird_refresh_days=_as_int("EBIRD_REFRESH_DAYS", 30),

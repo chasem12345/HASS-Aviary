@@ -47,6 +47,10 @@ class CropMeta:
     center: Optional[tuple[float, float]] = None   # box bottom-center, normalized
     anchor_dist: Optional[float] = None            # distance to the tracked path, if known
     t: Optional[float] = None                      # clip offset in seconds, if a clip frame
+    # Vocabulary index of this crop's own top-1 species, when the caller has classified
+    # it. A crop at the merge bar may join the PRIMARY only if it also agrees on what the
+    # bird is; None means "unknown" and similarity alone decides.
+    top1: Optional[int] = None
 
 
 @dataclass
@@ -58,6 +62,12 @@ class Subject:
     anchored: bool = True
     # Why each crop landed here, for the debug output.
     notes: list[str] = field(default_factory=list)
+    # Minimum pairwise cosine inside the subject; None for a single crop. Low cohesion on
+    # a primary is the "two birds were fused into one answer" signal.
+    cohesion: Optional[float] = None
+    # False for a cluster that failed the evidence gate or the SUBJECT_MAX cap. Reported
+    # only with ``include_dropped``; never classified as a bird of its own.
+    kept: bool = True
 
 
 def _same_origin(meta: list[CropMeta], i: int, cluster: list[int]) -> bool:
@@ -70,6 +80,21 @@ def _mean_sim(sims: np.ndarray, i: int, cluster: list[int]) -> float:
 
 def _cluster_sim(sims: np.ndarray, a: list[int], b: list[int]) -> float:
     return float(sims[np.ix_(a, b)].mean()) if a and b else -1.0
+
+
+def _cohesion(sims: np.ndarray, cluster: list[int]) -> Optional[float]:
+    if len(cluster) < 2:
+        return None
+    block = sims[np.ix_(cluster, cluster)]
+    return float(block[np.triu_indices(len(cluster), k=1)].min())
+
+
+def _modal_top1(meta: list[CropMeta], cluster: list[int]) -> Optional[int]:
+    """The species most of a cluster's classified crops voted for; None if none were."""
+    votes = [meta[j].top1 for j in cluster if meta[j].top1 is not None]
+    if not votes:
+        return None
+    return max(sorted(set(votes)), key=votes.count)
 
 
 def _spatial_pick(meta: list[CropMeta], i: int, options: list[tuple[int, float]],
@@ -101,12 +126,31 @@ def partition(
     min_secondary_crops: int = 2,
     single_crop_det: float = 0.5,
     max_subjects: int = 3,
+    sim_primary: Optional[float] = None,
+    sim_secondary: Optional[float] = None,
+    include_dropped: bool = False,
 ) -> list[Subject]:
     """Group crops into subjects. The primary is always first; secondaries follow in
-    order of evidence (summed rank). Crops that fail the evidence gate are in no subject.
+    order of evidence (summed rank). Crops that fail the evidence gate are in no subject
+    unless ``include_dropped`` is set, in which case they trail the list as ``kept=False``.
 
     ``features`` are L2-normalized image embeddings, one row per crop, so the dot product
     is cosine similarity.
+
+    Two stricter bars apply when a crop (or a whole cluster) DISAGREES with a cluster
+    about what the bird is — its own top-1 species against the cluster's modal top-1:
+    ``sim_primary`` to join the primary, ``sim_secondary`` to join or merge a secondary.
+    Crops that agree, or carry no opinion (``top1`` None), need only ``sim_merge``. Both
+    default to ``sim_merge`` (the 0.10.0 behaviour) and are never lower than it.
+
+    Why species agreement rather than similarity alone: on a feeder camera two different
+    birds seconds apart share the background, the light and the perch, and their BioCLIP
+    cosines land around 0.85–0.91 — above the 0.75 that keeps one bird's frames together
+    (measured: same bird ≥ 0.93 on the wide camera, ≥ 0.84 on zoomed footage; different
+    species ≤ 0.91). Similarity cannot tell the two cases apart; what the classifier
+    thinks each crop is can. The primary's bar is the stricter of the two: a wrong crop
+    in a secondary is a wrong "also in view" chip, but a wrong crop in the primary
+    corrupts the event's answer AND the embedding kept for learning.
     """
     n = len(meta)
     if n == 0:
@@ -115,6 +159,16 @@ def partition(
     if feats.ndim != 2 or feats.shape[0] != n:
         raise ValueError("features must be [n_crops, dim]")
     sims = feats @ feats.T
+    primary_bar = sim_merge if sim_primary is None else max(sim_merge, sim_primary)
+    secondary_bar = sim_merge if sim_secondary is None else max(sim_merge, sim_secondary)
+
+    def agrees(a: Optional[int], b: Optional[int]) -> bool:
+        return a is None or b is None or a == b
+
+    def bar(is_primary: bool, agreed: bool) -> float:
+        if agreed:
+            return sim_merge
+        return primary_bar if is_primary else secondary_bar
 
     seeds = [i for i in range(n) if meta[i].pre_cropped]
     anchored = [i for i in range(n) if not meta[i].pre_cropped
@@ -129,13 +183,20 @@ def partition(
         notes[i] = f"{notes[i]}; {text}" if i in notes else text
 
     # Frigate's crop IS the tracked bird; the path is an estimate (the clip's start time
-    # is inferred from padding). When the two disagree outright, trust the crop and let
-    # the on-path boxes earn their place by similarity like everything else.
-    if seeds and anchored and _cluster_sim(sims, seeds, anchored) < sim_split:
+    # is inferred from padding), and at a bath two birds sit inside the anchor radius of
+    # the same path point. So every on-path box is checked against the seed on its own:
+    # one that does not look like Frigate's crop is not the tracked bird and must earn a
+    # place by similarity like everything else. Judging the on-path crops as one cluster
+    # (their mean against the seed) let two wren boxes hide behind two cardinal boxes.
+    if seeds and anchored:
+        still = []
         for i in anchored:
-            notes[i] = "on path, but unlike the seed — reassessed"
-        unknown = anchored + unknown
-        anchored = []
+            if _mean_sim(sims, i, seeds) < sim_split:
+                notes[i] = "on path, but unlike the seed — reassessed"
+                unknown.append(i)
+            else:
+                still.append(i)
+        anchored = still
 
     primary: list[int] = seeds + anchored
     clusters: list[list[int]] = []       # secondary clusters, keyed by list index
@@ -145,12 +206,18 @@ def partition(
 
     for i in order:
         options: list[tuple[int, float]] = []   # (key, mean sim); key -1 = primary
+        same_species: dict[int, bool] = {}
         if primary and i not in far_set and not _same_origin(meta, i, primary):
-            options.append((-1, _mean_sim(sims, i, primary)))
+            s = _mean_sim(sims, i, primary)
+            same_species[-1] = agrees(meta[i].top1, _modal_top1(meta, primary))
+            if s >= bar(True, same_species[-1]):
+                options.append((-1, s))
         for ci, c in enumerate(clusters):
             if not _same_origin(meta, i, c):
-                options.append((ci, _mean_sim(sims, i, c)))
-        options = [o for o in options if o[1] >= sim_merge]
+                s = _mean_sim(sims, i, c)
+                same_species[ci] = agrees(meta[i].top1, _modal_top1(meta, c))
+                if s >= bar(False, same_species[ci]):
+                    options.append((ci, s))
         if not options:
             clusters.append([i])
             note(i, "off path" if i in far_set else "new cluster")
@@ -160,17 +227,20 @@ def partition(
         lookup = {ci: c for ci, c in enumerate(clusters)}
         lookup[-1] = primary
         key = ties[0][0] if len(ties) == 1 else _spatial_pick(meta, i, ties, lookup)
+        strict = primary_bar if key == -1 else secondary_bar
+        how = ", same species" if same_species.get(key) and top < strict else ""
         if key == -1:
             primary.append(i)
-            note(i, f"joined primary (sim {top:.2f})")
+            note(i, f"joined primary (sim {top:.2f}{how})")
         else:
             clusters[key].append(i)
-            note(i, f"joined cluster {key} (sim {top:.2f})")
+            note(i, f"joined cluster {key} (sim {top:.2f}{how})")
 
     # Merge pass: clusters that look alike and never share a frame are one bird seen in
     # different frames. A cluster that looks like the primary IS the primary — the path
     # estimate was off, or it is a second bird of the same species, which is harmless
-    # (same label, no poison). Greedy, best pair first, until nothing merges.
+    # (same label, no poison). Same bars as above: the ordinary one when the two agree
+    # on the species, the strict one when they do not. Greedy, best pair first.
     def try_merge() -> bool:
         groups = [primary] + clusters if primary else list(clusters)
         best: Optional[tuple[float, int, int]] = None
@@ -179,7 +249,8 @@ def partition(
                 if any(meta[x].origin == meta[y].origin for x in groups[a] for y in groups[b]):
                     continue
                 s = _cluster_sim(sims, groups[a], groups[b])
-                if s >= sim_merge and (best is None or s > best[0]):
+                agreed = agrees(_modal_top1(meta, groups[a]), _modal_top1(meta, groups[b]))
+                if s >= bar(bool(primary) and a == 0, agreed) and (best is None or s > best[0]):
                     best = (s, a, b)
         if best is None:
             return False
@@ -208,18 +279,35 @@ def partition(
         for i in primary:
             notes[i] += "; primary by weight"
 
-    def keep(c: list[int]) -> bool:
-        if len(c) >= min_secondary_crops:
-            return True
-        return len(c) == 1 and meta[c[0]].det_score >= single_crop_det
-
-    secondaries = [c for c in clusters if keep(c)]
+    # Evidence gate: a second bird needs a few crops, or one the detector was sure of.
+    # What fails it is reported (when asked) rather than vanishing, so a "what was that
+    # third thing?" has an answer — and so the tuning tool can see the knob's cost.
+    secondaries: list[list[int]] = []
+    dropped: list[list[int]] = []
+    for c in clusters:
+        det = max(meta[i].det_score for i in c)
+        if len(c) >= min_secondary_crops or (len(c) == 1 and det >= single_crop_det):
+            secondaries.append(c)
+        else:
+            for i in c:
+                note(i, f"dropped: {len(c)} crop(s) < {min_secondary_crops}, "
+                        f"det {det:.2f} < {single_crop_det:.2f}")
+            dropped.append(c)
     secondaries.sort(key=lambda c: -sum(meta[i].rank for i in c))
+    for c in secondaries[max(0, max_subjects - 1):]:
+        for i in c:
+            note(i, "dropped: over SUBJECT_MAX")
+        dropped.append(c)
     secondaries = secondaries[: max(0, max_subjects - 1)]
 
-    out = [Subject(indices=sorted(primary), primary=True, anchored=anchored_primary,
-                   notes=[notes.get(i, "") for i in sorted(primary)])]
-    for c in secondaries:
-        out.append(Subject(indices=sorted(c), primary=False, anchored=True,
-                           notes=[notes.get(i, "") for i in sorted(c)]))
+    def build(c: list[int], *, is_primary: bool, anchored: bool, kept: bool) -> Subject:
+        idx = sorted(c)
+        return Subject(indices=idx, primary=is_primary, anchored=anchored,
+                       notes=[notes.get(i, "") for i in idx],
+                       cohesion=_cohesion(sims, idx), kept=kept)
+
+    out = [build(primary, is_primary=True, anchored=anchored_primary, kept=True)]
+    out += [build(c, is_primary=False, anchored=True, kept=True) for c in secondaries]
+    if include_dropped:
+        out += [build(c, is_primary=False, anchored=True, kept=False) for c in dropped]
     return out

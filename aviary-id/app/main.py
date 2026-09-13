@@ -25,7 +25,7 @@ from typing import Optional
 
 import httpx
 import torch
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -93,6 +93,14 @@ class IdentifyRequest(BaseModel):
     # Return per-crop diagnostics (geometry, embedding, top-1) under ``debug`` so the
     # subject partition can be re-run and tuned offline (tools/tune_subjects.py).
     debug: bool = False
+    # Which species the returned ``embedding``/``best_crop`` should be chosen FOR (common
+    # or scientific name, as in /species), on subject ``target_subject`` (0 = primary).
+    # A human relabelling a card names the bird; this makes the example Aviary keeps a
+    # frame of THAT bird, not the frame that looked most like the classifier's wrong
+    # guess. Never changes the species answer. ``embedding_target`` on the response says
+    # whether it was honoured (null: unknown name, excluded, or no such subject).
+    target: Optional[str] = None
+    target_subject: int = Field(default=0, ge=0)
 
 
 class SpeciesGuess(BaseModel):
@@ -142,6 +150,17 @@ class SubjectOut(BaseModel):
     embedding: Optional[str] = None
     best_crop: Optional[str] = None
     per_frame: list[FrameOut] = Field(default_factory=list)
+    # Which species ``embedding``/``best_crop`` were chosen for (request ``target``), and
+    # its probability on that frame. Null when chosen for the fused winner as usual.
+    embedding_target: Optional[str] = None
+    embedding_target_score: Optional[float] = None
+    # Share of this bird's crops whose own top-1 is its answer (null with one crop) and
+    # the minimum cosine among them. Low purity on the primary means two birds were
+    # fused into one answer — flag it rather than trust the score.
+    purity: Optional[float] = None
+    cohesion: Optional[float] = None
+    # Origin of the crop behind ``best_crop``/``embedding`` (e.g. "clip@2.50s").
+    best_origin: Optional[str] = None
 
 
 class DebugCrop(BaseModel):
@@ -155,6 +174,7 @@ class DebugCrop(BaseModel):
     t: Optional[float] = None
     subject: Optional[int] = None   # which subjects[] entry took it; None = dropped
     note: str = ""
+    best_for: Optional[int] = None  # the subjects[] entry whose best_crop/embedding this is
     top1: str = ""
     top1_score: float = 0.0
     embedding: str = ""             # base64 float16, same encoding as the response's
@@ -203,9 +223,24 @@ class IdentifyResponse(BaseModel):
     # matters most when the classified footage (e.g. a zoomed PTZ recording) is not the
     # event's own media.
     best_crop: Optional[str] = None
+    # See SubjectOut. Mirrored here for the primary: ``embedding_target`` is the species
+    # the embedding/best_crop were chosen for when the request named a ``target`` (null
+    # otherwise — and null on purpose when ``target_subject`` was not 0, since the
+    # targeted frame then lives on that subjects[] entry). A pre-0.11 service omits the
+    # key entirely; a caller should treat both as "not chosen for my label".
+    embedding_target: Optional[str] = None
+    embedding_target_score: Optional[float] = None
+    purity: Optional[float] = None
+    cohesion: Optional[float] = None
+    best_origin: Optional[str] = None
     # Every bird in the event, primary first. The top-level fields above are exactly
-    # subjects[0]; older callers can ignore this list entirely.
+    # subjects[0] — including embedding_target; older callers can ignore this list.
     subjects: list[SubjectOut] = Field(default_factory=list)
+    # Crops the classifier looked at that belong to no reported bird: a cluster that
+    # failed the evidence gate (SUBJECT_MIN_CROPS / SUBJECT_SINGLE_DET) or the
+    # SUBJECT_MAX cap. Their per-frame verdicts, so "what was that third thing?" has an
+    # answer without pretending it was a bird worth naming.
+    unassigned: list[FrameOut] = Field(default_factory=list)
     # Only with ``debug: true`` on the request.
     debug: Optional[dict] = None
     elapsed_ms: int = 0
@@ -309,7 +344,7 @@ async def lifespan(_: FastAPI):
             await _client.aclose()
 
 
-app = FastAPI(title="aviary-id", version="0.10.0", lifespan=lifespan)
+app = FastAPI(title="aviary-id", version="0.11.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -321,6 +356,9 @@ async def healthz() -> dict:
     """
     return {
         "ok": _ready,
+        # The service version, so a caller can tell which request fields (``target``,
+        # 0.11.0+) this instance honours without probing for them.
+        "version": app.version,
         "cuda": torch.cuda.is_available(),
         "device": _classifier.device_name() if _classifier else "not loaded",
         "cpu_only": settings.cpu_only,
@@ -410,7 +448,7 @@ async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
         try:
             result, crops, rounds = await _pipeline.run(
                 media, req.priors, req.exclude, req.min_score, req.min_margin,
-                timings, _release_vram,
+                timings, _release_vram, req.target, req.target_subject,
             )
         except torch.cuda.OutOfMemoryError:
             # Never let this surface as a 500. The caller can only record that as a generic
@@ -471,11 +509,21 @@ async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
         embedding_key=_classifier.embedding_key,
         best_crop=(_encode_crop(crops[result.best_frame].image)
                    if 0 <= result.best_frame < len(crops) else None),
+        embedding_target=result.embedding_target,
+        embedding_target_score=result.embedding_target_score,
+        purity=result.purity,
+        cohesion=result.cohesion,
+        best_origin=_origin_of(result, crops),
         subjects=[_subject_out(i, r, crops) for i, r in enumerate([result, *result.others])],
+        unassigned=[FrameOut(**vars(f)) for f in result.unassigned],
         debug=_debug_out(result, crops) if req.debug else None,
         elapsed_ms=_ms(started),
         timings=timings.stages,
     )
+
+
+def _origin_of(r, crops) -> Optional[str]:
+    return crops[r.best_frame].origin if 0 <= r.best_frame < len(crops) else None
 
 
 def _subject_out(idx: int, r, crops) -> SubjectOut:
@@ -502,26 +550,38 @@ def _subject_out(idx: int, r, crops) -> SubjectOut:
         best_crop=(_encode_crop(crops[r.best_frame].image)
                    if 0 <= r.best_frame < len(crops) else None),
         per_frame=[FrameOut(**vars(f)) for f in r.per_frame],
+        embedding_target=r.embedding_target,
+        embedding_target_score=r.embedding_target_score,
+        purity=r.purity,
+        cohesion=r.cohesion,
+        best_origin=_origin_of(r, crops),
     )
 
 
 def _debug_out(result, crops) -> dict:
     """Per-crop geometry + embeddings, so tools/tune_subjects.py can re-partition offline."""
     owner: dict[int, int] = {}
+    notes: dict[int, str] = {}
+    best_for: dict[int, int] = {}
     for s_idx, r in enumerate([result, *result.others]):
-        for i in r.indices:
+        best_for[r.best_frame] = s_idx
+        for k, i in enumerate(r.indices):
             owner[i] = s_idx
+            if k < len(r.notes):
+                notes[i] = r.notes[k]
     per_frame = {}
     for r in [result, *result.others]:
         for i, f in zip(r.indices, r.per_frame):
             per_frame[i] = f
+    # Unassigned crops were classified too; their verdicts ride along with subject=None.
+    unassigned = {f.origin: f for f in result.unassigned}
     out = []
     for i, c in enumerate(crops):
-        f = per_frame.get(i)
+        f = per_frame.get(i) or (unassigned.get(c.origin) if i not in owner else None)
         out.append(DebugCrop(
             origin=c.origin, det_score=float(c.score), rank=float(c.rank),
             pre_cropped=bool(c.pre_cropped), center=c.center, anchor_dist=c.anchor_dist,
-            t=c.t, subject=owner.get(i),
+            t=c.t, subject=owner.get(i), note=notes.get(i, ""), best_for=best_for.get(i),
             top1=f.top1 if f else "", top1_score=f.top1_score if f else 0.0,
             embedding=_classifier.crop_embedding(i) if _classifier else "",
         ).model_dump())
@@ -529,16 +589,22 @@ def _debug_out(result, crops) -> dict:
         "sim_merge": settings.subject_sim_merge, "sim_split": settings.subject_sim_split,
         "min_crops": settings.subject_min_crops, "single_det": settings.subject_single_det,
         "max_subjects": settings.subject_max,
+        "sim_primary": settings.subject_sim_primary,
+        "sim_secondary": settings.subject_sim_secondary,
     }}
 
 
 @app.post("/identify/image", response_model=IdentifyResponse,
           dependencies=[Depends(require_auth)])
-async def identify_image(file: UploadFile = File(...)) -> IdentifyResponse:
+async def identify_image(file: UploadFile = File(...),
+                         target: Optional[str] = Form(default=None)) -> IdentifyResponse:
     """Identify a single uploaded image.
 
     Two jobs: it backs Aviary's "re-identify from this still" action, and it is how you
     sanity-check the model against reference photos without needing a Frigate event.
+    ``target`` (form field) works as on /identify; with one crop it cannot change which
+    frame is used, but ``embedding_target`` then tells the caller whether the name it is
+    about to file the embedding under exists in this vocabulary.
     """
     started = time.monotonic()
     if not _ready:
@@ -557,5 +623,5 @@ async def identify_image(file: UploadFile = File(...)) -> IdentifyResponse:
     media = frames.EventMedia("upload", "", settings)
     media.candidates = [frames.Candidate(image=image, origin=file.filename or "upload",
                                          pre_cropped=True)]
-    req = IdentifyRequest(event_id="upload")
+    req = IdentifyRequest(event_id="upload", target=target)
     return await _run_pipeline(media, req, frames.Timings(), started)

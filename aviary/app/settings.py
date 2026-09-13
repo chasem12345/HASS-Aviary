@@ -181,6 +181,10 @@ class Settings:
     # construction in older callers/tests keeps working.
     keepsakes: bool = True
     keepsake_video: bool = True
+    # Whether the learning probe also learns from the identifier's own confident answers,
+    # not only from labels a person typed. Off by default: that is how a classifier
+    # reinforces its own mistakes.
+    identify_learn_from_auto: bool = False
 
     # --- Life list on iNaturalist --------------------------------------------------
     # OAuth application + account for the password grant (the add-on has no browser for
@@ -271,6 +275,8 @@ def load_settings() -> Settings:
             _pick("IDENTIFY_USE_AUDIO_PRIORS", opts, "identify_use_audio_priors", "true")),
         identify_exclude_blacklisted=_as_bool(
             _pick("IDENTIFY_EXCLUDE_BLACKLISTED", opts, "identify_exclude_blacklisted", "true")),
+        identify_learn_from_auto=_as_bool(
+            _pick("IDENTIFY_LEARN_FROM_AUTO", opts, "identify_learn_from_auto", "false")),
         identify_zoom_map=_zoom_map(_pick_list("IDENTIFY_ZOOM_MAP", opts, "identify_zoom_map")),
         identify_zoom_start_offset=max(0.0, _pick_float(
             "IDENTIFY_ZOOM_START_OFFSET", opts, "identify_zoom_start_offset", 2.0)),

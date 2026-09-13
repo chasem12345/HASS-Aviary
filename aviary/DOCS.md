@@ -894,8 +894,9 @@ Four properties are deliberate:
 - **It abstains when the match is not close.** Being the *nearest* example is not the same
   as being a good match, so a bird it has never seen does not get assigned to whichever
   species it happens to sit closest to.
-- **It only learns from confirmed labels.** Learning from its own unreviewed guesses is how
-  a classifier reinforces its own mistakes.
+- **It only learns from names you typed.** Learning from its own unreviewed guesses is how
+  a classifier reinforces its own mistakes, so the identifier's own answers are not
+  examples unless `identify_learn_from_auto` is on.
 - **It matches your actual examples, not an average of them.** Many feeder species look
   wildly different by sex and age — a male Northern Cardinal is crimson, the female warm
   brown. A shaded female matches your stored female frames directly instead of being
@@ -908,6 +909,52 @@ and are displaced by your own detections over time.
 
 `GET /api/probe/evaluate` gives leave-one-out accuracy on **your** birds, which is the only
 number that really matters — the benchmark figures above are someone else's dataset.
+
+#### What one example is, and why correcting a name re-chooses it
+
+An example is **one frame of one bird**: the frame that best backed the answer, the same
+one shown as the card's still. That is exactly the wrong frame to keep when the answer was
+wrong — it is the frame that looked most like the mistake — so when you correct a name with
+✎, Aviary drops that example and asks the identifier (aviary-id 0.11.0+) to choose the frame
+for the species you named. The label itself is never touched. With an older identifier a
+missing example is filled but an existing one is never replaced; the Settings page marks
+those *untargeted*. Rows you named before this existed are re-embedded the same way at
+startup, fifty per start (older events whose media Frigate no longer has are skipped).
+
+Two birds in one clip are two examples, never one: each bird in view gets its own frame and
+its own name (see *Other birds in view*). A card whose tracked bird shows **mixed frames**
+had fewer than 60% of its frames agree with its answer — two birds fused into one — and
+naming such a card names **the bird in the still**.
+
+#### One visit, two frames
+
+Frigate splits a bird's stay into many event ids and each of them stores a frame, so a
+minute at the bath could contribute twenty near-identical vectors — any three of which fill
+a species' top-3 match. Within one visit, frames alike above 0.97 count once, and at most
+two survive (the two most different looks at the bird). Visits on other days are
+independent evidence and all count.
+
+#### Reviewing what it learned
+
+Settings → *Examples of* lists every example of a species: its crop, when and where it was
+seen, whether you or the identifier named it, whether it is in use (and if not, why —
+excluded, a duplicate frame, over the visit cap), and how it scores against its own species'
+examples versus the nearest other species'. **Flag suspicious examples** audits all of
+them: an example that scores higher against another species' pool than its own (with its
+own visit held out) is the shape a wrong label takes — a wren frame filed under cardinal
+sits among the wrens. Each example can be **excluded** from learning (the detection and its
+name stay; only the probe forgets) or **re-embedded** to pick a fresh frame for its label.
+*Evaluate accuracy* measures the pool actually in use.
+
+**Forget all learned examples** starts the probe over: every stored example is wiped, and
+the names on your cards, the species list, the history, reference-photo embeddings and any
+*exclude* marks stay. Hand-named cards whose media Frigate still has are re-learned in the
+background, each with a frame chosen for its name. Use it when you suspect the examples
+from before 0.32.0 are doing more harm than good.
+
+↻ re-identify refuses on a detection you named by hand, because it would overwrite your
+label with the identifier's answer; ✗ wrong still works (that *is* you saying the name was
+wrong), and `POST /api/detections/{id}/identify?force=1` re-runs regardless.
 
 ### Sound helping sight
 
@@ -992,6 +1039,7 @@ upload error instead.
 | `identify_workers` | Concurrent identification requests (default `2`). The service serializes GPU work anyway. |
 | `identify_timeout` | Seconds to wait for an identification (default `60`). |
 | `identify_retain_days` | Days to keep unidentified detections before purging them (default `14`; `0` keeps forever). |
+| `identify_learn_from_auto` | Let the learning probe also learn from the identifier's own confident answers, not only from species you named by hand (default `false`). See *Learning from your own birds*. |
 | `identify_use_audio_priors` | Bias identification toward species BirdNET-Go heard around the same time (default `true`). |
 | `identify_exclude_blacklisted` | Rule blacklisted species out of the identifier's candidate list (default `true`). Turn off if you blacklisted a species that genuinely visits. |
 | `identify_zoom_map` | `"detect_camera:ptz_camera"` pairs (default empty). Events from the detect camera are classified from the PTZ camera's recordings for the event's time window instead of the event clip — see *Cross-camera zoom* below. Needs aviary-id 0.8.0+. |

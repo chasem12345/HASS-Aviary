@@ -63,6 +63,17 @@ birds — using, strongest first:
    look just like the primary is merged back into it (the path estimate was off, or it
    is a second bird of the same species — harmless either way).
 
+The path is checked crop by crop against Frigate's own crop: at a bath two birds sit
+within the anchor radius of the same path point, so an on-path box that does not look
+like the seed (`SUBJECT_SIM_SPLIT`) is reassessed by similarity rather than waved into
+the primary. And similarity alone is not enough on a feeder camera — two different birds
+seconds apart share background, light and perch, and their cosines measure 0.85–0.91,
+above the bar that keeps one bird's frames together — so each crop's own top-1 species
+is consulted: a crop that **agrees** with a subject joins at `SUBJECT_SIM_MERGE`; one
+that **disagrees** must clear `SUBJECT_SIM_PRIMARY` (the primary) or
+`SUBJECT_SIM_SECONDARY` (another bird). Crops that belong to no reported bird are listed
+under `unassigned`.
+
 Each subject is then classified on **its own crops only**, with its own consensus, best
 crop and embedding. The response's top-level fields describe the primary; `subjects[]`
 carries all of them. A second bird needs `SUBJECT_MIN_CROPS` crops (or one crop the
@@ -203,11 +214,13 @@ All configuration is environment variables.
 | `DETECTOR_IMGSZ` | `640` | `yolo` inference resolution. 960/1280 materially helps feeder-distance birds that are tens of pixels across in a full frame. |
 | `DETECTOR_THRESHOLD` | `0.3` | Minimum detector score for a usable bird box. Permissive on purpose: ranking, score-weighted fusion and the consensus vote suppress junk boxes downstream. |
 | `CROP_PADDING` | `0.15` | Context added around the bird before cropping. |
-| `SUBJECT_SIM_MERGE` | `0.75` | Embedding cosine at or above which two crops (or clusters) are the same bird. Same bird seconds apart ≈ 0.8–0.95, different species ≈ 0.3–0.6. Tune with `tools/tune_subjects.py`. |
-| `SUBJECT_SIM_SPLIT` | `0.55` | Below this, Frigate's crop and the boxes on its tracked path disagree so badly that the path is not trusted for the event. |
+| `SUBJECT_SIM_MERGE` | `0.75` | Embedding cosine at or above which two crops (or clusters) that **agree on the species** (each crop's own top-1) are the same bird. Same bird seconds apart measures ≥ 0.93 on a wide camera, ≥ 0.84 zoomed. Tune with `tools/tune_subjects.py`. |
+| `SUBJECT_SIM_SPLIT` | `0.80` | An on-path box less like Frigate's own crop than this is not taken as the tracked bird on the path's say-so; judged per box. |
 | `SUBJECT_MIN_CROPS` | `2` | Crops a second bird needs to be reported — or one crop with detector score ≥ `SUBJECT_SINGLE_DET`. |
 | `SUBJECT_SINGLE_DET` | `0.5` | See above. |
 | `SUBJECT_MAX` | `3` | Primary plus at most this many other birds per event. |
+| `SUBJECT_SIM_PRIMARY` | `0.92` | Cosine a crop or cluster needs to join the **primary** when it **disagrees** with it on the species. Two different birds at one bath measure 0.85–0.91 — above the merge bar — so agreement, not similarity, tells them apart. `off` = same as the merge bar. |
+| `SUBJECT_SIM_SECONDARY` | `0.90` | The same, for joining or merging a **secondary** cluster. Slightly looser than the primary's: a wrong crop there is a wrong chip, not a wrong answer. `off` = same as the merge bar. |
 | `CPU_ONLY` | — | Force CPU. ~5 s/event instead of ~0.3 s; useful for testing without a GPU. |
 | `LABEL_FORMAT` | `common` | How species are described to the model: `common`, `binomial`, `binomial_common`, `taxonomy`. See below. |
 | `NO_PROMPT_ENSEMBLE` | — | Single prompt instead of averaging 80 templates. |
@@ -223,8 +236,8 @@ string would degrade that species' embedding.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /identify` | yes | `{event_id, frigate_url?, priors?, zoom?, exclude?, min_score?, min_margin?, debug?}` → species (+ every other bird in view) |
-| `POST /identify/image` | yes | multipart upload of a single image |
+| `POST /identify` | yes | `{event_id, frigate_url?, priors?, zoom?, exclude?, min_score?, min_margin?, debug?, target?, target_subject?}` → species (+ every other bird in view) |
+| `POST /identify/image` | yes | multipart upload of a single image (+ optional `target` form field) |
 | `GET /species` | yes | the active candidate list |
 | `GET /healthz` | no | liveness + device + vocabulary facts |
 
@@ -258,9 +271,25 @@ is this event about*. Each entry has its own `common_name`, `score`, `margin`,
 `anchored: false` on the primary means Frigate's crop/path could not pin it down and the
 biggest cluster stood in. The top-level fields are exactly `subjects[0]`, so a caller that
 predates the field loses nothing. `debug: true` on the request adds `debug.crops` — every
-crop's geometry, embedding and top-1, plus which subject took it — which is what
-`tools/tune_subjects.py` re-partitions offline to tune `SUBJECT_*` against real
+crop's geometry, embedding, top-1, partition note and which subject took it — which is
+what `tools/tune_subjects.py` re-partitions offline to tune `SUBJECT_*` against real
 two-bird events.
+
+Since 0.11.0 each subject also reports `purity` (share of its crops whose own top-1 is
+its answer — 0.5 on the primary means two birds were fused, whatever the score says),
+`cohesion` (minimum cosine among its crops) and `best_origin` (which frame `best_crop`
+and `embedding` came from). `unassigned` lists the per-frame verdicts of crops that
+belonged to no reported bird, and `/healthz` carries `version`.
+
+**Choosing the frame for a label (`target`).** The embedding and `best_crop` are, by
+default, the frame that best backed the *winner*. When a human corrects the answer, that
+is the wrong frame to learn from: it is the one that looked most like the classifier's
+mistake. `target` names the species (common or scientific) the caller wants the frame
+chosen for, on subject `target_subject` (0 = primary); the answer itself does not change.
+`embedding_target` echoes the name when it was honoured and is `null` when it could not
+be — unknown name, excluded species, or no such subject — so a caller can refuse to file
+that embedding under the label. `embedding_target_score` is the target's probability on
+the chosen frame.
 
 ```bash
 curl -s -X POST localhost:8100/identify \

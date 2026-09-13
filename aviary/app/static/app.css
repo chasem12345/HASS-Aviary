@@ -1180,3 +1180,21 @@ img.overlay-img {
   .dawn-list .first-call { display: none; }
   .ribbon-strip { height: 56px; }
 }
+
+/* Settings: the learning example browser. */
+.probe-browser { margin-top: 12px; }
+.probe-browser label { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+.probe-browser select { max-width: 100%; }
+.probe-browser table.leaders { margin-top: 10px; }
+.probe-browser td.thumb-cell { width: 64px; }
+.probe-browser .thumb { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; display: block; }
+.probe-browser .ex-meta { color: var(--muted); font-size: 12px; }
+.probe-browser .ex-badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 8px;
+  border: 1px solid var(--line); color: var(--muted); margin-right: 4px; }
+.probe-browser .ex-badge.warn { border-color: var(--warn); color: var(--warn); }
+.probe-browser .ex-badge.off { text-decoration: line-through; }
+.probe-browser .ex-actions { white-space: nowrap; }
+.probe-browser .ex-actions .btn { margin-right: 4px; }
+.probe-browser tr.excluded td { opacity: .55; }
+.probe-browser tr.suspicious td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+.guesses .guesses-hint { display: block; width: 100%; font-size: 11px; color: var(--muted); margin-top: 4px; }

@@ -82,6 +82,37 @@
   </p>
   <button type="button" id="probe-evaluate" class="btn btn-sm">Evaluate accuracy</button>
   <div id="probe-evaluate-result" class="id-health" hidden></div>
+  <p class="setting-help" style="margin-top:14px">
+    <strong>What it learns from.</strong> Only species you named by hand
+    {%- if learn_from_auto %}, <em>and</em> the identifier's own confident answers
+    (<code>identify_learn_from_auto</code> is on){% else %} — the identifier's own
+    answers are not examples unless <code>identify_learn_from_auto</code> is on{% endif %}.
+    Each example is one frame of one bird; when you correct a name, the frame is
+    re-chosen for the bird you named. One visit contributes at most two frames, so a
+    bird that sat at the bath for a minute does not define its species by itself.
+  </p>
+  <p class="setting-help">
+    <strong>Is anything mislabelled?</strong> The audit checks every example against the
+    others: one that sits nearer <em>another</em> species' examples than its own is the
+    shape a wrong label takes — a wren frame filed under cardinal sits among the wrens.
+    Flagged examples are marked below; exclude one to stop learning from it (the
+    detection and its name stay), or re-embed it to pick a fresh frame for its label.
+  </p>
+  <button type="button" id="probe-flag" class="btn btn-sm">Flag suspicious examples</button>
+  <button type="button" id="probe-forget" class="btn btn-sm">Forget all learned examples</button>
+  <div id="probe-flag-result" class="id-health" hidden></div>
+  <p class="setting-help">
+    <em>Forget</em> wipes the probe's memory and starts over: every stored example goes,
+    the names on your cards, the species list and the history stay. Cards you named by
+    hand are then re-learned from — each with a frame chosen for the name you gave — as
+    long as Frigate still has their media, so the probe comes back small and clean.
+  </p>
+  <div class="probe-browser">
+    <label>Examples of
+      <select id="probe-species"><option value="">choose a species…</option></select>
+    </label>
+    <div id="probe-examples"></div>
+  </div>
 </section>
 {% endif %}
 

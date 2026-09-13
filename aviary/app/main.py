@@ -122,21 +122,11 @@ async def _identify_maintenance(settings) -> None:
     # no-op once the registry has been covered.
     bootstrap.start(settings, model)
 
-    # Manually-labelled detections whose identification failed have no embedding, so
-    # their labels have been teaching the probe nothing. Harvest embeddings for the
-    # recent ones (older events' media is usually past Frigate's retention; those fail
-    # fast as no_media and are retried — cheaply — next start). Sequential on purpose:
-    # this shares one GPU with live identifications and has no deadline.
-    rows = await asyncio.to_thread(db.manual_rows_missing_embeddings, 50)
-    recovered = 0
-    for row in rows:
-        try:
-            recovered += bool(await identify.backfill_embedding(row))
-        except Exception:
-            log.exception("Embedding backfill failed for %s", row.get("source_ref"))
-    if recovered:
-        log.info("Recovered embeddings for %d manually-labelled detection(s); "
-                 "their labels now teach the probe.", recovered)
+    # Hand-named detections whose example is missing, or was chosen for a different
+    # species (a relabel from before 0.32.0), get one chosen for their label — see
+    # identify.reharvest_manual. Recent rows only: older media is past Frigate's retention.
+    counts = await identify.reharvest_manual(50)
+    if counts["recovered"] or counts["retargeted"]:
         await asyncio.to_thread(probe.rebuild, model)
 
 
@@ -158,6 +148,7 @@ def create_app() -> FastAPI:
     notify.configure(settings)
     species_audio.configure(settings)
     identify.configure(settings)
+    probe.configure(settings.identify_learn_from_auto)
     keepsakes.configure(settings)
     if keepsakes.enabled():
         ingest.set_keepsake_hook(keepsakes.schedule)

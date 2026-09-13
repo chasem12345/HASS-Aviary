@@ -30,7 +30,7 @@ from PIL import Image
 from . import subjects as subjects_mod
 from .prompts import OPENAI_IMAGENET_TEMPLATES
 from .settings import Settings
-from .species import Species
+from .species import Species, find_species
 from .trained import TrainedClassifier
 
 log = logging.getLogger("aviary_id.model")
@@ -117,6 +117,27 @@ class ClassifyResult:
     anchored: bool = True
     # Other birds in the same event, each classified on its own crops. Primary only.
     others: list = field(default_factory=list)
+    # Which species best_frame (hence the embedding and thumbnail) was chosen FOR: None
+    # for the fused winner, or the caller's ``target`` when this subject could honour
+    # it. Stays None when a target was asked for but could not be used — unknown name,
+    # excluded species, or a subject index that does not exist — so the caller can tell
+    # "chosen for my label" from "chosen for whatever won" and refuse to learn the latter
+    # under the label.
+    embedding_target: Optional[str] = None
+    # The target's probability on the chosen frame. A caller can decline to learn from a
+    # frame where the bird it named barely appears.
+    embedding_target_score: Optional[float] = None
+    # Share of this subject's crops whose own top-1 is the fused winner; None with one
+    # crop. 0.5 on a primary means two birds were fused, whatever the score says.
+    purity: Optional[float] = None
+    # Minimum pairwise cosine among this subject's crops (subjects.py); None with one.
+    cohesion: Optional[float] = None
+    # Per-crop partition notes, aligned with ``indices`` (debug output).
+    notes: list = field(default_factory=list)
+    # Classified crops that belong to no reported bird — a cluster that failed the
+    # evidence gate or the SUBJECT_MAX cap. Primary only. Answers "what was that third
+    # thing?" without pretending it was a bird worth naming.
+    unassigned: list = field(default_factory=list)
 
 
 @dataclass
@@ -128,6 +149,8 @@ class Encoded:
     trained_frames: Optional[list[tuple[str, float]]]
     trained_used: bool
     excluded: int
+    # Vocabulary indices actually masked (empty when exclusions were ignored).
+    excluded_indices: list = field(default_factory=list)
 
 
 class Classifier:
@@ -340,6 +363,8 @@ class Classifier:
         crops: list,
         priors: Optional[dict[str, float]] = None,
         exclude: Optional[list[str]] = None,
+        target: Optional[str] = None,
+        target_subject: int = 0,
     ) -> Optional[ClassifyResult]:
         """Classify one event's crops: one answer per BIRD, the tracked bird's first.
 
@@ -355,35 +380,67 @@ class Classifier:
         excluded species would have taken is redistributed across the remaining
         candidates. Suppressing it after the fact would leave the runner-up looking
         artificially weak and make every reroll read as low confidence.
+
+        ``target`` names the species (common or scientific) the caller wants the
+        embedding and best frame chosen FOR, on subject ``target_subject`` (0 = primary).
+        It is how a human's relabel gets an example of the bird they named rather than
+        the frame that looked most like the classifier's wrong guess. It never changes
+        the species answer; see ``_fuse``. ``embedding_target`` on the result reports
+        whether it was honoured.
         """
         if self._text_features is None or not self.species or not crops:
             return None
 
         enc = self._encode([c.image for c in crops], priors, exclude)
+        top1 = enc.probs.argmax(dim=-1).tolist()
         meta = [subjects_mod.CropMeta(
             origin=c.origin, det_score=float(c.score), rank=float(c.rank),
             pre_cropped=bool(c.pre_cropped), center=c.center,
-            anchor_dist=c.anchor_dist, t=c.t) for c in crops]
+            anchor_dist=c.anchor_dist, t=c.t, top1=int(top1[k]))
+            for k, c in enumerate(crops)]
         s = self.settings
         parts = subjects_mod.partition(
             meta, enc.image_features.float().cpu().numpy(),
             sim_merge=s.subject_sim_merge, sim_split=s.subject_sim_split,
             min_secondary_crops=s.subject_min_crops, single_crop_det=s.subject_single_det,
-            max_subjects=s.subject_max,
+            max_subjects=s.subject_max, sim_primary=s.subject_sim_primary,
+            sim_secondary=s.subject_sim_secondary, include_dropped=True,
         )
-        if not parts:
+        kept = [p for p in parts if p.kept]
+        if not kept:
             return None
+
+        # Resolve the caller's target against the vocabulary minus this call's
+        # exclusions. A subject index that does not exist means NO targeting rather than
+        # "the primary, then": a stale index from a re-run partition must never silently
+        # re-target the wrong bird.
+        target_idx = find_species(self.species, target, enc.excluded_indices)
+        if target_idx is not None and not 0 <= target_subject < len(kept):
+            log.info("target %r asked for subject %d but this event has %d; ignoring it.",
+                     target, target_subject, len(kept))
+            target_idx = None
+
         det_scores = [float(c.score) for c in crops]
         origins = [c.origin for c in crops]
-        results = [self._fuse(enc, sub.indices, det_scores, origins, sub.primary, sub.anchored)
-                   for sub in parts]
+        results = [self._fuse(enc, sub.indices, det_scores, origins, sub.primary, sub.anchored,
+                              target_idx=target_idx if k == target_subject else None,
+                              cohesion=sub.cohesion, notes=sub.notes)
+                   for k, sub in enumerate(kept)]
         primary = results[0]
         primary.others = results[1:]
-        if primary.others:
-            log.debug("Subjects: primary %s on %d crop(s); others: %s",
-                      primary.species.com_name, len(primary.indices),
+        leftovers = [i for p in parts if not p.kept for i in p.indices]
+        if leftovers:
+            rows = torch.as_tensor(leftovers, device=enc.probs.device, dtype=torch.long)
+            primary.unassigned = self._per_frame(
+                enc.probs[rows], [det_scores[i] for i in leftovers],
+                [origins[i] for i in leftovers],
+                [enc.trained_frames[i] for i in leftovers] if enc.trained_frames else None)
+        if primary.others or leftovers:
+            log.debug("Subjects: primary %s on %d crop(s) (purity %s); others: %s; "
+                      "unassigned: %d crop(s)",
+                      primary.species.com_name, len(primary.indices), primary.purity,
                       ", ".join(f"{o.species.com_name} {o.score:.2f} ({len(o.indices)})"
-                                for o in primary.others))
+                                for o in primary.others) or "none", len(leftovers))
         return primary
 
     def _encode(self, crops: list[Image.Image], priors: Optional[dict[str, float]],
@@ -438,12 +495,15 @@ class Classifier:
         if priors:
             probs = self._apply_priors(probs, priors)
 
+        masked = list(excluded) if excluded and len(excluded) < len(self.species) else []
         return Encoded(image_features=image_features, probs=probs, supervised=supervised,
                        trained_frames=trained_frames, trained_used=trained_used,
-                       excluded=len(excluded))
+                       excluded=len(excluded), excluded_indices=masked)
 
     def _fuse(self, enc: Encoded, idx: list[int], all_det_scores: list[float],
-              all_origins: list[str], primary: bool, anchored: bool) -> ClassifyResult:
+              all_origins: list[str], primary: bool, anchored: bool, *,
+              target_idx: Optional[int] = None, cohesion: Optional[float] = None,
+              notes: Optional[list[str]] = None) -> ClassifyResult:
         """Fuse ONE subject's rows into an answer. ``idx`` indexes the full crop list."""
         rows = torch.as_tensor(idx, device=enc.probs.device, dtype=torch.long)
         probs = enc.probs[rows]
@@ -496,7 +556,23 @@ class Classifier:
         # The frame that best backed the winner — shared by the embedding (below) and,
         # via best_frame, the caller's crop-thumbnail. One argmax, one definition. An
         # index into the FULL crop list, so the caller's crops[best_frame] still holds.
-        best_frame = idx[int(torch.argmax(probs[:, best_idx]))]
+        #
+        # With a target, the same argmax runs down THAT species' column instead: the
+        # answer above stays the classifier's, only the frame the embedding and thumbnail
+        # come from is chosen for the bird the caller named. Deliberately over the
+        # zero-shot/mixed rows and never the trained matrix: the embedding is a BioCLIP
+        # vector, so the frame where BioCLIP puts the most mass on the target is the one
+        # most target-like in the space the caller's probe compares in — and these rows
+        # exist for every frame, where the trained rows may be None (backend off, or it
+        # saw nothing) or an all-zero column (species outside its coverage), whose argmax
+        # would silently be row 0.
+        pick = best_idx if target_idx is None else target_idx
+        row = int(torch.argmax(probs[:, pick]))
+        best_frame = idx[row]
+        # Share of crops whose own top-1 is the winner: 0.5 is two birds fused, whatever
+        # the fused score claims. One crop has nothing to disagree with.
+        purity = (round(float((probs.argmax(dim=-1) == best_idx).float().mean()), 3)
+                  if len(idx) >= 2 else None)
 
         return ClassifyResult(
             species=self.species[best_idx],
@@ -517,6 +593,13 @@ class Classifier:
             indices=list(idx),
             primary=primary,
             anchored=anchored,
+            embedding_target=(self.species[target_idx].com_name
+                              if target_idx is not None else None),
+            embedding_target_score=(round(float(probs[row, pick]), 4)
+                                    if target_idx is not None else None),
+            purity=purity,
+            cohesion=None if cohesion is None else round(float(cohesion), 3),
+            notes=list(notes or []),
         )
 
     def _apply_priors(self, probs: torch.Tensor, priors: dict[str, float]) -> torch.Tensor:

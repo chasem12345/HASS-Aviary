@@ -212,6 +212,7 @@ async def reidentify(
     det_id: int,
     reject: int = Query(0, description="record the current species as wrong, then re-run"),
     reset: int = Query(0, description="clear this detection's rejections first"),
+    force: int = Query(0, description="re-run even on a detection named by hand"),
 ):
     """Re-run identification for one detection, waiting for the answer.
 
@@ -232,6 +233,13 @@ async def reidentify(
     if det["source"] != "frigate":
         # BirdNET rows are audio; there is no image to identify.
         return {"ok": False, "error": "only Frigate detections can be identified"}
+    if det.get("id_status") == "manual" and not (force or reject):
+        # A plain re-run would overwrite the person's label with the service's answer —
+        # the one thing labelling by hand exists to override. Rejecting it is different:
+        # that IS the person saying the label was wrong.
+        return {"ok": False, "error": "this detection was named by hand; re-identifying "
+                                      "would discard that label. Use ✗ wrong to reject "
+                                      "the name, or force=1 to re-run anyway"}
 
     if reset:
         await run_in_threadpool(db.clear_rejections, det_id)
@@ -438,13 +446,11 @@ async def set_species(det_id: int, species: str = Query(..., min_length=1),
     # inflating the registry, which is not what this is.
     await run_in_threadpool(db.confirm_species, name)
     await _refresh_probe()
-    # If this detection has no stored embedding (its identification failed, or predates
-    # embeddings), the label just given teaches the probe nothing. Harvest one in the
-    # background — it costs a GPU round-trip, and the user shouldn't wait on it.
-    task = asyncio.create_task(_backfill_then_refresh(dict(det)))
-    # The loop only holds weak references to tasks; keep one or it can be GC'd mid-run.
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    # Make the stored example a frame of the bird just NAMED. A missing embedding (the
+    # identification failed, or predates embeddings) is harvested; one chosen for a
+    # different species is replaced — see _reembed_then_refresh. In the background: it
+    # costs a GPU round-trip, and the user shouldn't wait on it.
+    _spawn(_reembed_then_refresh(dict(det), name, 0))
     previous = det.get("common_name")
     if previous and previous != name:
         await run_in_threadpool(_forget_if_gone, previous)
@@ -490,6 +496,7 @@ async def set_subject_species(det_id: int, idx: int, species: str = Query(..., m
     # A person naming it is the strongest signal there is — same reasoning as set_species.
     await run_in_threadpool(db.confirm_species, name)
     await _refresh_probe()
+    _spawn(_reembed_then_refresh(dict(det), name, idx))
     keepsakes.schedule(name)
     return {"ok": True, "common_name": name, "scientific_name": sci}
 
@@ -510,12 +517,55 @@ async def reject_subject_species(det_id: int, idx: int, species: str = Query(...
     return {"ok": True, "subject": remaining[0] if remaining else None}
 
 
-async def _backfill_then_refresh(det: dict) -> None:
+def _spawn(coro) -> None:
+    """Fire-and-forget on the event loop, which only holds weak references to tasks."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _reembed_then_refresh(det: dict, name: str, subject_idx: int = 0) -> None:
+    """After a label: make the stored example a frame of the bird that was NAMED.
+
+    Nothing to do when the stored frame was already chosen for this species. Otherwise,
+    with a service that honours ``target`` (aviary-id 0.11.0+), the old example is
+    dropped — a frame picked because it looked most like the WRONG answer must not be
+    learned under the right one — and a fresh one is harvested for the label. With an
+    older service the 0.31 behaviour stands: fill a missing embedding, never replace one.
+    """
     try:
-        if await identify.backfill_embedding(det):
+        det_id = det["id"]
+        if subject_idx == 0:
+            has, target = await run_in_threadpool(db.embedding_target_for, det_id)
+        else:
+            subs = await run_in_threadpool(db.subjects_for, det_id)
+            mine = next((s for s in subs if s["idx"] == subject_idx), None)
+            if mine is None:
+                return
+            has, target = bool(mine.get("embedding")), mine.get("embedding_target")
+        if has and (target or "").lower() == name.lower():
+            return
+        if not await identify.supports_target():
+            if subject_idx == 0:
+                out = await identify.reembed(det, name, only_if_missing=True)
+            else:
+                return
+        else:
+            if has:
+                if subject_idx == 0:
+                    await run_in_threadpool(db.delete_detection_embedding, det_id)
+                else:
+                    await run_in_threadpool(db.clear_subject_embedding, det_id, subject_idx)
+                await _refresh_probe()
+            out = await identify.reembed(det, name, subject_idx=subject_idx)
+        status = out.get("status")
+        if status in ("ok", "untargeted"):
             await _refresh_probe()
+        elif status != "kept":
+            log.info("Re-embed of detection %s%s for %r did not complete: %s", det_id,
+                     f" (other bird {subject_idx})" if subject_idx else "", name, out)
     except Exception:  # a background task's exception would otherwise vanish silently
-        log.exception("Embedding backfill failed for detection %s", det.get("id"))
+        log.exception("Re-embed failed for detection %s", det.get("id"))
 
 
 @router.get("/identify-species")
@@ -586,6 +636,96 @@ async def probe_evaluate():
     if not model:
         return {"ok": False, "error": "identification service unreachable"}
     return {"ok": True, **await run_in_threadpool(probe.evaluate, model)}
+
+
+@router.get("/probe/examples")
+async def probe_species_summary():
+    """Per species: how many examples the probe holds, uses, and has flagged."""
+    return {"ok": True, "species": probe.species_summary()}
+
+
+@router.get("/probe/examples/{species:path}")
+async def probe_examples(species: str):
+    """Every labelled example of one species, with which detection each came from and
+    how it sits against the other species' examples (the mislabel signal)."""
+    return {"ok": True, "species": species, "examples": await run_in_threadpool(
+        probe.examples, species)}
+
+
+@router.post("/probe/examples/{det_id}/{idx}/exclude")
+async def probe_exclude(det_id: int, idx: int):
+    """"Do not learn from this one." The detection and its label stay; only the probe forgets."""
+    await run_in_threadpool(db.set_learning_excluded, det_id, idx, True)
+    await _refresh_probe()
+    return {"ok": True, "excluded": True}
+
+
+@router.delete("/probe/examples/{det_id}/{idx}/exclude")
+async def probe_include(det_id: int, idx: int):
+    await run_in_threadpool(db.set_learning_excluded, det_id, idx, False)
+    await _refresh_probe()
+    return {"ok": True, "excluded": False}
+
+
+@router.post("/probe/examples/{det_id}/{idx}/reembed")
+async def probe_reembed(det_id: int, idx: int):
+    """Replace one example with a frame chosen for its label (aviary-id 0.11.0+).
+
+    Synchronous: the user pressed the button and is waiting to see the new crop.
+    """
+    det = await run_in_threadpool(db.detection_by_id, det_id)
+    if det is None:
+        return {"ok": False, "error": "detection not found"}
+    if idx == 0:
+        label = det.get("common_name")
+    else:
+        subs = await run_in_threadpool(db.subjects_for, det_id)
+        mine = next((s for s in subs if s["idx"] == idx), None)
+        label = (mine or {}).get("manual_name") or (mine or {}).get("common_name")
+    if not label or label.lower() == db.UNNAMED:
+        return {"ok": False, "error": "this example has no species to re-embed for"}
+    if not await identify.supports_target():
+        return {"ok": False, "error": "the identification service is older than 0.11.0 "
+                                      "and cannot choose a frame for a species"}
+    out = await identify.reembed(det, label, subject_idx=idx)
+    if out.get("status") == "ok":
+        await _refresh_probe()
+        return {"ok": True, **out}
+    return {"ok": False, "error": f"re-embed {out.get('status')}"
+                                  + (f" ({out['service']})" if out.get("service") else ""),
+            **out}
+
+
+@router.post("/probe/flag")
+async def probe_flag():
+    """Audit every example: flag those nearer another species' examples than their own."""
+    if not probe.ready():
+        return {"ok": False, "error": "the probe has no examples yet"}
+    return {"ok": True, **await run_in_threadpool(probe.flag_suspicious)}
+
+
+@router.post("/probe/forget")
+async def probe_forget():
+    """Wipe every learned example — the probe's whole memory of your birds.
+
+    Card names, the species registry and history all stay; so do reference-photo
+    embeddings and any "do not learn from this one" marks. The re-harvest then runs in
+    the background exactly as at startup, giving hand-named cards whose media Frigate
+    still has a fresh example chosen for their label.
+    """
+    counts = await run_in_threadpool(db.forget_learning)
+    await _refresh_probe()
+
+    async def _reharvest() -> None:
+        try:
+            out = await identify.reharvest_manual(50)
+            if out["recovered"] or out["retargeted"]:
+                await _refresh_probe()
+        except Exception:
+            log.exception("Re-harvest after forgetting learning failed")
+
+    _spawn(_reharvest())
+    return {"ok": True, "forgotten": counts, "reharvesting": identify.enabled()}
 
 
 @router.get("/identify-health")

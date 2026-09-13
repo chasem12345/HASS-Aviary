@@ -48,11 +48,13 @@ services:
       # DETECTOR_THRESHOLD: "0.3"     # min score for a box to count as a bird
       # CROP_PADDING: "0.15"          # context added around the bird before cropping
       # --- which crops are the same bird (a second bird in view gets its own answer) ---
-      # SUBJECT_SIM_MERGE: "0.75"     # embedding cosine at/above which two crops are one bird
-      # SUBJECT_SIM_SPLIT: "0.55"     # below this Frigate's crop and its path disagree; path distrusted
+      # SUBJECT_SIM_MERGE: "0.75"     # cosine at/above which two crops that AGREE on the species are one bird
+      # SUBJECT_SIM_SPLIT: "0.80"     # an on-path box less like Frigate's crop than this is reassessed
       # SUBJECT_MIN_CROPS: "2"        # crops a second bird needs to be reported...
       # SUBJECT_SINGLE_DET: "0.5"     # ...or one crop with at least this detector score
       # SUBJECT_MAX: "3"              # primary plus at most this many other birds
+      # SUBJECT_SIM_PRIMARY: "0.92"   # bar to join the PRIMARY when the crop DISAGREES on the species
+      # SUBJECT_SIM_SECONDARY: "0.90" # same, for joining/merging OTHER birds ("off" = SIM_MERGE)
       # EXTRA_SPECIES: "Painted Bunting,Bobolink"
       # EXCLUDE_SPECIES: "Rock Pigeon"
       # CPU_ONLY: "1"                 # skip the GPU entirely (~5s/event, useful for tests)

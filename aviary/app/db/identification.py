@@ -10,7 +10,8 @@ from typing import Any, Iterator, Optional
 from ._conn import _connect
 from ._sql import UNNAMED
 from .schema import embedding_key_from
-from .subjects import _delete_subjects, confirmed_subject_embeddings, unidentified_subject_count
+from .learning import learning_examples
+from .subjects import _delete_subjects, unidentified_subject_count
 from .visits import _settle_visits, _visit_ids_of
 
 __all__ = [
@@ -18,7 +19,10 @@ __all__ = [
     "_upsert_detection_embedding",
     "put_detection_embedding",
     "has_embedding",
+    "embedding_target_for",
+    "delete_detection_embedding",
     "manual_rows_missing_embeddings",
+    "manual_rows_untargeted",
     "set_species_manually",
     "reject_identification",
     "reset_species",
@@ -54,6 +58,7 @@ def set_identification(
     embedding_model: Optional[str] = None,
     probe_weight: Optional[float] = None,
     probe_examples: Optional[int] = None,
+    embedding_target: Optional[str] = None,
 ) -> None:
     """Record the outcome of an external identification attempt.
 
@@ -102,32 +107,58 @@ def set_identification(
                 (source, source_ref),
             ).fetchone()
             if row:
-                _upsert_detection_embedding(conn, row["id"], embedding_model, embedding)
+                _upsert_detection_embedding(conn, row["id"], embedding_model, embedding,
+                                            embedding_target)
 
 
-def _upsert_detection_embedding(conn, detection_id: int, model: str, embedding: str) -> None:
+def _upsert_detection_embedding(conn, detection_id: int, model: str, embedding: str,
+                                target: Optional[str] = None) -> None:
+    """One embedding per detection. ``target`` is the species the frame was chosen FOR
+    (the service winner on a normal identify, the person's label on a re-embed); a live
+    re-identify legitimately resets it."""
     conn.execute(
         """
         INSERT INTO identification_embeddings
-            (detection_id, model, embedding, created_at)
-        VALUES (?, ?, ?, ?)
+            (detection_id, model, embedding, created_at, target)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(detection_id) DO UPDATE SET
             model = excluded.model,
             embedding = excluded.embedding,
-            created_at = excluded.created_at
+            created_at = excluded.created_at,
+            target = excluded.target
         """,
-        (detection_id, model, embedding, time.time()),
+        (detection_id, model, embedding, time.time(), target),
     )
 
 
-def put_detection_embedding(detection_id: int, model: str, embedding: str) -> None:
+def put_detection_embedding(detection_id: int, model: str, embedding: str,
+                            target: Optional[str] = None) -> None:
     """Store an embedding for a detection outside the identification flow.
 
-    Backs the manual-label backfill: a detection whose identification failed has no
-    embedding row, so a manual label on it would teach the probe nothing without this.
+    Backs the manual-label backfill and re-embed: a detection whose identification failed
+    has no embedding row, so a manual label on it would teach the probe nothing without
+    this; a relabelled one has a frame chosen for the wrong species.
     """
     with _connect() as conn:
-        _upsert_detection_embedding(conn, detection_id, model, embedding)
+        _upsert_detection_embedding(conn, detection_id, model, embedding, target)
+
+
+def embedding_target_for(detection_id: int) -> tuple[bool, Optional[str]]:
+    """(has an embedding, which species its frame was chosen for — None for legacy rows)."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT target FROM identification_embeddings WHERE detection_id = ?",
+            (detection_id,),
+        ).fetchone()
+    return (row is not None, row["target"] if row else None)
+
+
+def delete_detection_embedding(detection_id: int) -> None:
+    """Drop a detection's stored example (its label stays). Used when a relabel makes the
+    stored frame — chosen for a different species — the wrong thing to learn from."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM identification_embeddings WHERE detection_id = ?",
+                     (detection_id,))
 
 
 def has_embedding(detection_id: int) -> bool:
@@ -153,6 +184,25 @@ def manual_rows_missing_embeddings(limit: int = 50) -> list[dict]:
             LEFT JOIN identification_embeddings e ON e.detection_id = d.id
             WHERE d.id_status = 'manual' AND d.source = 'frigate'
               AND e.detection_id IS NULL
+            ORDER BY d.start_time DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def manual_rows_untargeted(limit: int = 50) -> list[dict]:
+    """Manually-labelled Frigate detections whose stored frame was not chosen for their
+    label: legacy rows (target NULL) and rows whose target is a different species.
+    Newest first, for the same retention reason as ``manual_rows_missing_embeddings``.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT d.* FROM detections d
+            JOIN identification_embeddings e ON e.detection_id = d.id
+            WHERE d.id_status = 'manual' AND d.source = 'frigate'
+              AND (e.target IS NULL OR e.target != d.common_name COLLATE NOCASE)
             ORDER BY d.start_time DESC LIMIT ?
             """,
             (limit,),
@@ -272,27 +322,17 @@ def drop_detection(source: str, source_ref: str) -> None:
         _settle_visits(conn, visit_ids)
 
 
-def confirmed_embeddings(model: str) -> list[tuple[str, str]]:
-    """(species, embedding) for every confirmed detection identified by ``model``.
+def confirmed_embeddings(model: str, include_auto: bool = False) -> list[tuple[str, str]]:
+    """(species, embedding) for every example the probe learns from under ``model``.
 
-    Confirmed only: the whole point is to learn from labels a human stands behind. An
-    unreviewed automatic guess would teach the classifier its own mistakes, which is how a
-    feedback loop starts.
+    Thin wrapper over ``learning_examples`` (db/learning.py), which carries provenance
+    and flags; kept for callers and tests that only want the pairs. Manual labels only
+    unless ``include_auto``: the whole point is to learn from labels a person stands
+    behind, and an unreviewed automatic guess would teach the classifier its own
+    mistakes. Examples a person has excluded from learning are left out.
     """
-    with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT d.common_name AS name, e.embedding AS embedding
-            FROM identification_embeddings e
-            JOIN detections d ON d.id = e.detection_id
-            JOIN species_confirmed sc ON sc.common_name = d.common_name COLLATE NOCASE
-            WHERE e.model = ? AND d.common_name != 'bird' COLLATE NOCASE
-            """,
-            (model,),
-        ).fetchall()
-    # Plus the other birds found in events, each on its own embedding (see
-    # detection_subjects). Primaries never come from that table, so no double counting.
-    return [(r["name"], r["embedding"]) for r in rows] + confirmed_subject_embeddings(model)
+    return [(r["species"], r["embedding"])
+            for r in learning_examples(model, include_auto=include_auto, include_excluded=False)]
 
 
 def reference_embeddings(model: str) -> list[tuple[str, str]]:

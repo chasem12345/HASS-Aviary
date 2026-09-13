@@ -440,6 +440,10 @@ async def _process(row: dict[str, Any]) -> None:
             score, margin, model, embedding, False, shortlist,
             embedding_model=embed_key, probe_weight=probe_weight,
             probe_examples=probe_examples,
+            # The frame behind this embedding was chosen for the SERVICE's winner (the
+            # probe reranks names, not frames). Recorded so a later relabel to another
+            # species knows the stored frame is the wrong one to learn from.
+            embedding_target=result.get("embedding_target") or result.get("common_name"),
         )
         return
 
@@ -472,6 +476,7 @@ async def _process(row: dict[str, Any]) -> None:
         shortlist,
         embedding_model=embed_key, probe_weight=probe_weight,
         probe_examples=probe_examples,
+        embedding_target=result.get("embedding_target") or result.get("common_name"),
     )
     log.info(
         "Identified %s as %s (score=%.3f margin=%.3f, %d frames%s%s, %sms).",
@@ -591,6 +596,11 @@ async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str) -> 
                 "embedding": embedding,
                 "crop_file": crops.basename(ref, idx) if not primary else crops.basename(ref),
                 "anchored": sub.get("anchored", True), "n_frames": sub.get("n_frames"),
+                # Which species this subject's frame was chosen for: the service's own
+                # winner for it unless the request named a target it honoured.
+                "embedding_target": (sub.get("embedding_target") or sub.get("common_name")
+                                     if embedding else None),
+                "purity": sub.get("purity"),
             })
         dropped = [o for o in old if not o.get("is_primary") and (o.get("manual_name")
                    or old_rejections.get(o["idx"])) and o["idx"] not in {c[0] for c in carried}]
@@ -639,8 +649,10 @@ def _match_old_subject(embedding: Optional[str], old: list[dict],
 
 
 def _remap_rejections(det_id: int, carried: list[tuple[int, int]]) -> None:
-    """Move rejections from old subject idx to new; delete rejections nothing carried."""
+    """Move rejections (and learning flags) from old subject idx to new; delete those
+    nothing carried."""
     with db._connect() as conn:  # noqa: SLF001 — one transaction across the remap
+        db._remap_learning_flags(conn, det_id, carried)  # noqa: SLF001
         rows = conn.execute(
             "SELECT idx, species, rejected_at FROM detection_subject_rejections "
             "WHERE detection_id = ?", (det_id,)
@@ -702,8 +714,16 @@ async def _audio_priors(row: dict[str, Any]) -> dict[str, float]:
 
 async def _call_service(event_id: str, priors: dict[str, float],
                         exclude: Optional[list[str]] = None,
-                        zoom: Optional[dict] = None) -> Optional[dict]:
-    """POST to the service, retrying once. Returns the parsed body or None."""
+                        zoom: Optional[dict] = None,
+                        target: Optional[str] = None,
+                        target_subject: int = 0) -> Optional[dict]:
+    """POST to the service, retrying once. Returns the parsed body or None.
+
+    ``target`` asks the service (0.11.0+) to choose the returned embedding and best
+    crop for THAT species on subject ``target_subject`` rather than for its winner; an
+    older service ignores unknown fields, and one that rejects them (422) is retried
+    without.
+    """
     if _http.client is None:
         return None
     payload = {
@@ -722,6 +742,9 @@ async def _call_service(event_id: str, priors: dict[str, float],
         # see _zoom_for. The service falls back to the event clip on its own if the
         # recordings turn out not to exist.
         payload["zoom"] = zoom
+    if target:
+        payload["target"] = target
+        payload["target_subject"] = int(target_subject or 0)
     url = f"{_settings.identify_url}/identify"
 
     for attempt in (1, 2):
@@ -741,6 +764,12 @@ async def _call_service(event_id: str, priors: dict[str, float],
                 return None
             log.warning("Identification service returned %s for %s (attempt %d): %s",
                         resp.status_code, event_id, attempt, resp.text[:200])
+            if resp.status_code == 422 and "target" in payload:
+                # A strict older service that rejects fields it does not know: ask again
+                # the way it understands. The answer is then chosen for its own winner.
+                payload.pop("target", None)
+                payload.pop("target_subject", None)
+                continue
             # 4xx other than 401 is a bad request; a retry produces the same answer.
             if resp.status_code < 500:
                 return None
@@ -812,6 +841,34 @@ async def identify_one(row: dict[str, Any]) -> dict:
     return {"status": "ok", "detection": updated}
 
 
+_target_support: Optional[tuple[float, bool]] = None
+
+
+def _version_at_least(version: Any, floor: tuple[int, ...]) -> bool:
+    try:
+        parts = tuple(int(p) for p in str(version or "").strip().split(".")[:3])
+    except ValueError:
+        return False
+    return bool(parts) and parts >= floor
+
+
+async def supports_target() -> bool:
+    """Whether the service honours ``target`` (aviary-id 0.11.0+). From /healthz, cached.
+
+    Used to choose the SAFE behaviour on an older service — fill a missing embedding,
+    never replace one — not to block a user-initiated re-embed, which just reports
+    what happened.
+    """
+    global _target_support
+    now = time.monotonic()
+    if _target_support and now - _target_support[0] < _PROBE_HEAL_INTERVAL:
+        return _target_support[1]
+    data = await health()
+    ok = bool(data.get("ok")) and _version_at_least(data.get("version"), (0, 11, 0))
+    _target_support = (now, ok)
+    return ok
+
+
 async def probe_model() -> Optional[str]:
     """The key stored embeddings are compared under, from the service's health.
 
@@ -829,25 +886,43 @@ async def probe_model() -> Optional[str]:
     return db.embedding_key_from(version) if version else None
 
 
-async def backfill_embedding(row: dict[str, Any]) -> bool:
-    """Store an embedding for a detection that never got one. True if one was stored.
+async def reembed(row: dict[str, Any], target: str, subject_idx: int = 0,
+                  only_if_missing: bool = False) -> dict:
+    """Harvest an embedding of the bird the person NAMED, leaving the label alone.
 
-    A manual label on a detection whose identification failed (or predates embeddings)
-    teaches the probe nothing — there is no vector for the confirmed name to train. This
-    re-runs the event through the service purely to harvest the embedding of its best
-    frame; the label, status and confidence are deliberately left alone, because the
-    human's answer outranks anything the service would say.
+    The frame a normal identification keeps is the one that best backed the service's
+    winner. When a person corrects that answer, it is the wrong frame to learn from — it
+    is the one that looked most like the mistake — so this re-runs the event asking the
+    service (0.11.0+) to choose the frame for ``target`` instead. The label, status and
+    confidence are never touched: the human's answer outranks anything the service says.
+
+    Statuses: ``ok`` (stored, chosen for the target), ``untargeted`` (stored, but chosen
+    for the service's winner — an older service, or a name outside its vocabulary; only
+    when nothing was stored before), ``kept`` (``only_if_missing`` and one exists),
+    ``failed``, ``busy``, ``disabled``, ``not_frigate``, ``no_label``,
+    ``subject_not_found``.
     """
     if not enabled():
-        return False
-    ref = row.get("source_ref")
-    if not ref or row.get("source") != "frigate" or not row.get("id"):
-        return False
-    if await asyncio.to_thread(db.has_embedding, row["id"]):
-        return False
+        return {"status": "disabled"}
+    ref, det_id = row.get("source_ref"), row.get("id")
+    if not ref or row.get("source") != "frigate" or not det_id:
+        return {"status": "not_frigate"}
+    target = (target or "").strip()
+    if not target or target.lower() == db.UNNAMED:
+        return {"status": "no_label"}
+    if only_if_missing and subject_idx == 0:
+        has, _ = await asyncio.to_thread(db.embedding_target_for, det_id)
+        if has:
+            return {"status": "kept"}
+    mine = None
+    if subject_idx:
+        old = await asyncio.to_thread(db.subjects_for, det_id)
+        mine = next((o for o in old if o["idx"] == subject_idx and not o.get("is_primary")), None)
+        if mine is None:
+            return {"status": "subject_not_found"}
     with _inflight_lock:
         if ref in _inflight:
-            return False
+            return {"status": "busy"}
         _inflight.add(ref)
     # Same zoom decision as a live identification: the embedding should come from the
     # same footage a live run would have looked at.
@@ -855,25 +930,128 @@ async def backfill_embedding(row: dict[str, Any]) -> bool:
     if zoom is not None and not await _zoom_allowed(row):
         zoom = None
     try:
-        result = await _call_service(ref, {}, [], zoom)
+        result = await _call_service(ref, {}, [], zoom, target=target, target_subject=subject_idx)
+        if subject_idx and result and result.get("status") == "ok":
+            # The service numbers subjects afresh each run; the one we mean is found by
+            # its embedding. If it landed under another index, ask once more for THAT one.
+            match = _closest_subject(mine.get("embedding"), result.get("subjects"))
+            if match is not None and int(match.get("idx") or 0) != subject_idx:
+                again = await _call_service(ref, {}, [], zoom, target=target,
+                                            target_subject=int(match["idx"]))
+                if again and again.get("status") == "ok":
+                    result = again
     finally:
         _discard(ref)
     if not result or result.get("status") != "ok":
-        log.debug("Embedding backfill for %s returned %s.",
-                  ref, (result or {}).get("status", "no answer"))
-        return False
-    embedding = result.get("embedding")
+        service = (result or {}).get("status", "no answer")
+        log.debug("Re-embed for %s returned %s.", ref, service)
+        return {"status": "failed", "service": service}
     key = (result.get("embedding_key")
            or db.embedding_key_from(result.get("model_version") or ""))
-    if not embedding or not key:
-        return False
-    await asyncio.to_thread(db.put_detection_embedding, row["id"], key, embedding)
-    # The same run also found every other bird in the event; keep those too, if this
-    # detection has none yet (its label/status are untouched — see above).
-    if not await asyncio.to_thread(db.subjects_for, row["id"]):
-        await _store_subjects(dict(row), result, key)
-    log.info("Backfilled an embedding for %s so its manual label can teach the probe.", ref)
-    return True
+    if not key:
+        return {"status": "failed", "service": "no embedding key"}
+
+    if subject_idx == 0:
+        embedding = result.get("embedding")
+        if not embedding:
+            return {"status": "failed", "service": "no embedding"}
+        honoured = (result.get("embedding_target") or "").strip()
+        if honoured.lower() != target.lower():
+            has, _ = await asyncio.to_thread(db.embedding_target_for, det_id)
+            if has:
+                # Chosen for the service's winner — which is what is already stored.
+                return {"status": "untargeted"}
+            status, honoured = "untargeted", ""
+        else:
+            status = "ok"
+        await asyncio.to_thread(db.put_detection_embedding, det_id, key, embedding,
+                                honoured or None)
+        # The thumbnail should be the frame the example came from.
+        if await asyncio.to_thread(crops.save, ref, result.get("best_crop")):
+            await asyncio.to_thread(db.set_has_crop, ref, True)
+        # The same run also found every other bird in the event; keep those too, if this
+        # detection has none yet (its label/status are untouched — see above).
+        if not await asyncio.to_thread(db.subjects_for, det_id):
+            await _store_subjects(dict(row), result, key)
+        log.info("Re-embedded %s for %r (%s).", ref, target, status)
+        return {"status": status, "target": honoured or None,
+                "score": result.get("embedding_target_score")}
+
+    match = _closest_subject(mine.get("embedding"), result.get("subjects"))
+    if match is None or not match.get("embedding"):
+        return {"status": "subject_not_found"}
+    honoured = (match.get("embedding_target") or "").strip()
+    if honoured.lower() != target.lower():
+        return {"status": "untargeted"}
+    crop_file = None
+    if await asyncio.to_thread(crops.save, ref, match.get("best_crop"), subject_idx):
+        crop_file = crops.basename(ref, subject_idx)
+    await asyncio.to_thread(db.set_subject_embedding, det_id, subject_idx, key,
+                            match["embedding"], honoured, crop_file)
+    log.info("Re-embedded other bird %d of %s for %r.", subject_idx, ref, target)
+    return {"status": "ok", "target": honoured, "score": match.get("embedding_target_score")}
+
+
+def _closest_subject(embedding: Optional[str], subjects: Any) -> Optional[dict]:
+    """The service subject (not the primary) whose embedding is the same bird as ours."""
+    vec = probe.decode(embedding or "")
+    if vec is None:
+        return None
+    best, best_sim = None, _CARRY_SIMILARITY
+    for s in subjects or []:
+        if s.get("primary") or not s.get("embedding"):
+            continue
+        ov = probe.decode(s["embedding"])
+        if ov is None or ov.size != vec.size:
+            continue
+        sim = float(vec @ ov)
+        if sim >= best_sim:
+            best, best_sim = s, sim
+    return best
+
+
+async def backfill_embedding(row: dict[str, Any]) -> bool:
+    """Store an embedding for a manually-labelled detection that never got one.
+
+    Thin wrapper over ``reembed`` that never replaces an existing embedding. True when
+    one was stored (chosen for the label where the service can, else for its winner).
+    """
+    out = await reembed(row, row.get("common_name") or "", only_if_missing=True)
+    return out.get("status") in ("ok", "untargeted")
+
+
+async def reharvest_manual(limit: int = 50) -> dict:
+    """Give hand-named detections examples chosen for their label. Returns counts.
+
+    Two passes, newest first because recent events are the ones whose media Frigate
+    still has: rows with no embedding at all (an identification that failed, predates
+    embeddings, or was just forgotten), then rows whose stored frame was chosen for a
+    different species (a relabel from before 0.32.0, or a re-embed that failed) — the
+    second only with a service that can choose a frame for a named species. Sequential
+    on purpose: this shares one GPU with live identifications and has no deadline.
+    """
+    out = {"recovered": 0, "retargeted": 0, "tried": 0}
+    if not enabled():
+        return out
+    for row in await asyncio.to_thread(db.manual_rows_missing_embeddings, limit):
+        out["tried"] += 1
+        try:
+            out["recovered"] += bool(await backfill_embedding(row))
+        except Exception:
+            log.exception("Embedding backfill failed for %s", row.get("source_ref"))
+    if await supports_target():
+        for row in await asyncio.to_thread(db.manual_rows_untargeted, limit):
+            out["tried"] += 1
+            try:
+                res = await reembed(row, row.get("common_name") or "")
+                out["retargeted"] += res.get("status") == "ok"
+            except Exception:
+                log.exception("Re-embed failed for %s", row.get("source_ref"))
+    if out["recovered"] or out["retargeted"]:
+        log.info("Re-harvested examples for %d hand-named detection(s) (%d had none, %d were "
+                 "chosen for another species); their labels now teach the probe.",
+                 out["recovered"] + out["retargeted"], out["recovered"], out["retargeted"])
+    return out
 
 
 async def purge_old() -> int:

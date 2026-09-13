@@ -234,6 +234,9 @@ templates.env.globals["has_crop"] = crops.exists
 # query per Frigate card, the same cost class as has_crop). Empty for BirdNET rows, for
 # detections predating subjects, and for the common single-bird event.
 templates.env.globals["subjects_for"] = db.secondary_subjects_for
+# Share of the tracked bird's crops that agreed with its answer (aviary-id 0.11.0+); the
+# card flags a mixed primary so a 50/50 reads as "two birds" rather than "unsure".
+templates.env.globals["primary_purity"] = db.primary_purity
 # Which species keepsakes ('first' / 'latest' sighting) an event holds — one indexed
 # lookup per Frigate card, shown as a badge next to 📌 keep.
 templates.env.globals["keepsake_roles"] = db.keepsake_roles

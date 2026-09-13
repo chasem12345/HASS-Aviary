@@ -172,8 +172,13 @@
        shortlist is the difference between "it failed" and "it tried, and here is how close
        it got" — and the right bird is often sitting at number two. #}
     {% if d.id_candidates and d.common_name == 'bird' %}
+    {% set purity = primary_purity(d.id) if others else none %}
     <div class="guesses">
       <span class="guesses-label">It considered:</span>
+      {% if purity is not none and purity < 0.6 %}
+      <span class="idbadge idbadge-low"
+            title="Only {{ purity | fmt_pct }} of this bird's frames agreed with its answer — two birds were probably fused into it. Name the bird in the still; the other bird has its own chip above.">mixed frames</span>
+      {% endif %}
       {% for g in d.id_candidates | from_json %}
       <button type="button" class="guess" data-id="{{ d.id }}"
               data-species="{{ g.name }}" data-sci="{{ g.sci or '' }}"
@@ -183,6 +188,9 @@
       {% endfor %}
       <button type="button" class="guess guess-other" data-id="{{ d.id }}"
               title="Name this bird yourself">✎ something else…</button>
+      {% if others %}
+      <span class="guesses-hint" title="The example kept for learning is the still shown above, re-chosen for the species you pick. The other bird in view is named on its own chip.">Naming this card names the bird in the still.</span>
+      {% endif %}
     </div>
     {% elif identify_active and d.common_name == 'bird' and d.id_status in ('failed', 'low_confidence') %}
     <div class="guesses">

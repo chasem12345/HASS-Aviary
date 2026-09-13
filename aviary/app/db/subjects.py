@@ -9,6 +9,7 @@ from typing import Any, Iterator, Optional
 
 from ._conn import _connect
 from ._sql import _named_clause
+from .learning import _delete_learning_flags
 
 __all__ = [
     "_SUBJECT_COLS",
@@ -16,6 +17,9 @@ __all__ = [
     "subjects_for",
     "secondary_subjects_for",
     "set_subject_species_manually",
+    "set_subject_embedding",
+    "clear_subject_embedding",
+    "primary_purity",
     "_reject_subject_row",
     "reject_subject",
     "_reject_named_subjects",
@@ -34,6 +38,7 @@ _SUBJECT_COLS = (
     "detection_id", "idx", "is_primary", "common_name", "scientific_name", "species_code",
     "score", "margin", "candidates", "id_status", "manual_name", "manual_sci",
     "embedding_model", "embedding", "crop_file", "anchored", "n_frames", "created_at",
+    "embedding_target", "purity",
 )
 
 
@@ -115,6 +120,46 @@ def set_subject_species_manually(detection_id: int, idx: int, common_name: str,
         return cur.rowcount > 0
 
 
+def set_subject_embedding(detection_id: int, idx: int, model: str, embedding: str,
+                          target: Optional[str], crop_file: Optional[str] = None) -> bool:
+    """Replace one OTHER bird's stored example (a re-embed for its label). Its name,
+    status and rejections are untouched. False if there is no such subject."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE detection_subjects
+            SET embedding_model = ?, embedding = ?, embedding_target = ?,
+                crop_file = COALESCE(?, crop_file)
+            WHERE detection_id = ? AND idx = ? AND is_primary = 0
+            """,
+            (model, embedding, target, crop_file, detection_id, idx),
+        )
+        return cur.rowcount > 0
+
+
+def clear_subject_embedding(detection_id: int, idx: int) -> None:
+    """Drop one OTHER bird's stored example (its label stays) ahead of a re-embed."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE detection_subjects
+            SET embedding = NULL, embedding_model = NULL, embedding_target = NULL
+            WHERE detection_id = ? AND idx = ? AND is_primary = 0
+            """,
+            (detection_id, idx),
+        )
+
+
+def primary_purity(detection_id: int) -> Optional[float]:
+    """Share of the tracked bird's crops that agreed with its answer (None if unknown)."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT purity FROM detection_subjects WHERE detection_id = ? AND is_primary = 1",
+            (detection_id,),
+        ).fetchone()
+    return row["purity"] if row else None
+
+
 def _reject_subject_row(conn, detection_id: int, idx: int, species: str) -> None:
     """Record "not a <species>" for one other-bird and clear its name (status rejected)."""
     conn.execute(
@@ -191,6 +236,7 @@ def _delete_subjects(conn: sqlite3.Connection, det_ids: list[int]) -> None:
     ids = [(i,) for i in det_ids]
     conn.executemany("DELETE FROM detection_subjects WHERE detection_id = ?", ids)
     conn.executemany("DELETE FROM detection_subject_rejections WHERE detection_id = ?", ids)
+    _delete_learning_flags(conn, det_ids)
 
 
 def species_present(detection_ids: list[int]) -> dict[int, list[dict]]:

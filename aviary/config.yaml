@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.31.0"
+version: "0.32.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -54,6 +54,7 @@ options:
   identify_retain_days: 14
   identify_use_audio_priors: true
   identify_exclude_blacklisted: true
+  identify_learn_from_auto: false
   identify_zoom_map: []
   identify_zoom_start_offset: 2.0
   identify_zoom_zone_priority: []
@@ -131,6 +132,11 @@ schema:
   # blacklisted one that genuinely visits and you simply don't want recorded — every
   # visit would then be recorded as some other species. Turn off in that case.
   identify_exclude_blacklisted: "bool"
+  # Let the learning probe also learn from the identifier's own confident answers, not
+  # only from species you named by hand. Off by default: training on its own unreviewed
+  # guesses is how a classifier reinforces its mistakes. Turn on if you rarely label by
+  # hand and trust the automatic answers of confirmed species.
+  identify_learn_from_auto: "bool"
   # --- Cross-camera zoom --------------------------------------------------------
   # "detect_camera:ptz_camera" pairs. When an event's camera appears on the left, the
   # identification service classifies the RIGHT camera's recordings for the event's time

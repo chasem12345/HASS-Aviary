@@ -223,6 +223,8 @@ class Pipeline:
         min_margin: float,
         timings: frames.Timings,
         release_vram,
+        target: Optional[str] = None,
+        target_subject: int = 0,
     ) -> tuple[Optional[object], list[Crop], int]:
         """Classify, escalating while uncertain.
 
@@ -232,6 +234,10 @@ class Pipeline:
         classifying the whole uncropped frame, which on a 1080p frame leaves a
         feeder-distance bird about ten pixels across and only ever produced
         confidently-wrong answers. Escalation is gated on the primary alone.
+
+        ``target``/``target_subject`` pass straight through to the classifier: which
+        species the returned embedding and best frame are chosen for (see
+        Classifier.classify). They never affect the answer or the escalation.
         """
         loop = asyncio.get_running_loop()
         used: set[str] = set()
@@ -301,7 +307,7 @@ class Pipeline:
 
             t0 = loop.time()
             result = await asyncio.to_thread(
-                self.classifier.classify, crops, priors, exclude,
+                self.classifier.classify, crops, priors, exclude, target, target_subject,
             )
             timings.add(f"classify{rounds}", loop.time() - t0)
 
