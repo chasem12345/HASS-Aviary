@@ -243,9 +243,8 @@
     const out = document.getElementById("probe-flag-result");
     if (!btn || !out) return;
     if (!window.confirm(
-      "Forget every learned example?
-
-The probe's memory of your birds is wiped. Card " +
+      "Forget every learned example?\n\n" +
+      "The probe's memory of your birds is wiped. Card " +
       "names, the species list and history are kept. Hand-named cards whose media Frigate " +
       "still has are re-learned in the background, each with a frame chosen for its name.")) {
       return;

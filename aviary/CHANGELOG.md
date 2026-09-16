@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.32.1
+
+- **The Settings page checks in again.** In 0.32.0 the *Identification service* box, the
+  *Learning from your birds* counts and the iNaturalist account check all sat on
+  "Checking…" indefinitely, and *Evaluate accuracy*, *Flag suspicious examples*, *Forget
+  all learned examples* and the example browser did nothing. The identifier was fine — the
+  page never asked it. A line break inside the new *Forget* confirmation text was a syntax
+  error, and a browser drops the whole script on one of those, so nothing on the page
+  loaded. The text is fixed, and the test suite now parses every shipped script so a broken
+  file fails a build instead of a page. Nothing else changed; still pairs with aviary-id
+  0.11.0.
+
 ## 0.32.0
 
 - **Correcting a name no longer teaches the wrong picture.** The example the probe keeps

@@ -2,3 +2,4 @@
 #   pip install -r requirements-dev.txt && python -m pytest -q
 -r requirements.txt
 pytest
+esprima  # parses app/static/*.js in tests/test_static_js.py (no node in the toolchain)
