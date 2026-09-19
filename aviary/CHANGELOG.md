@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.34.0
+
+- **Bird statistics in Home Assistant, and a PTZ that follows the rarest bird.** Aviary now
+  publishes over MQTT discovery — on the broker it already listens to — one sensor per
+  confirmed species (`sensor.aviary_northern_cardinal`, …) whose state is a **rarity**
+  score from 0 (seen every day of the last `ha_stats_window_days`) to 100 (seldom or
+  never), with the all-time and `ha_stats_recent_days` counts, days active, tier and
+  first/last seen as attributes; and `sensor.aviary_ptz_target`, which scores every Frigate
+  zone by the rarest bird known to be in it. That second sensor exists because Frigate's own
+  zone occupancy sensors know that *a bird* is at a feeder, never which one — so a
+  zone-following PTZ automation could only rank feeders in a fixed order, and a feeder
+  swarmed by hummingbirds had to be demoted by hand. Now it can point at the occupied zone
+  with the highest score and keep the fixed order as the tie-break; the documented template
+  adds a hysteresis margin so the camera is not chased around by small differences.
+  `ha_stats` turns it off. See *Bird statistics in Home Assistant* in the docs.
+- **An unnamed bird scores its zone's usual visitors, not "rare".** Frigate's occupancy
+  turns on seconds before its classifier names the bird, so scoring an unnamed bird as rare
+  would swing the camera to every arrival and straight back. Instead a zone without a named
+  bird scores its *baseline* — the visit-weighted median rarity of what has visited it in
+  the window — and keeps its last named bird for `ha_stats_zone_memory_s` (90 s) after
+  Frigate's review item closes, since Frigate loses and refinds a perched bird as new
+  objects. The trade: a rare bird at a common feeder is scored by that feeder's regulars
+  until it is named. Lowering Frigate's `classification.bird.threshold` names it sooner.
+- **Entities come and go with your registry.** A species that is deleted, blacklisted or
+  unconfirmed has its sensor removed from Home Assistant within seconds, using the
+  discovery protocol's own removal step, so no ghost entities linger; every Aviary entity
+  reads *unavailable* while the add-on is down (the `aviary` MQTT client now publishes
+  `aviary/status` and carries a will) and comes back with the same entity ids. A quiet
+  feeder publishes nothing: states go out only when they change, and at least every
+  15 minutes so the day-based counters roll over.
+
 ## 0.33.0
 
 - **Frigate can classify again; aviary-id confirms.** Until now identification meant

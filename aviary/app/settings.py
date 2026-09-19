@@ -196,6 +196,22 @@ class Settings:
     # classifier reports through ``frigate/events`` itself; this is a safety net).
     frigate_object_update_topic: str = ""
 
+    # --- Bird statistics in Home Assistant (0.34.0) ---------------------------------
+    # One MQTT-discovery sensor per confirmed species (rarity 0–100 plus counts) and
+    # sensor.aviary_ptz_target scoring each Frigate zone by the rarest bird in it. Needs
+    # the broker Aviary already listens on; off silently without one.
+    ha_stats: bool = True
+    # Rarity = 100 × (1 − days active ÷ window). Recent counters cover recent_days.
+    ha_stats_window_days: int = 30
+    ha_stats_recent_days: int = 7
+    # How long a zone remembers its last named bird after its visit closed — covers
+    # Frigate losing and refinding the same bird past its review cutoff.
+    ha_stats_zone_memory_s: int = 90
+    # Home Assistant's MQTT discovery prefix.
+    mqtt_discovery_prefix: str = "homeassistant"
+    # This add-on's version, exported by run.sh from the Supervisor; "dev" outside it.
+    addon_version: str = "dev"
+
     # --- Life list on iNaturalist --------------------------------------------------
     # OAuth application + account for the password grant (the add-on has no browser for
     # the interactive flow). All four are credentials — never log them or return them
@@ -292,6 +308,16 @@ def load_settings() -> Settings:
         # Blank means "not subscribed" and must survive as blank (see frigate_review_topic).
         frigate_object_update_topic=_pick_optional(
             "FRIGATE_OBJECT_UPDATE_TOPIC", opts, "frigate_object_update_topic", ""),
+        ha_stats=_as_bool(_pick("HA_STATS", opts, "ha_stats", "true")),
+        ha_stats_window_days=max(7, min(365, _pick_int(
+            "HA_STATS_WINDOW_DAYS", opts, "ha_stats_window_days", 30))),
+        ha_stats_recent_days=max(1, min(90, _pick_int(
+            "HA_STATS_RECENT_DAYS", opts, "ha_stats_recent_days", 7))),
+        ha_stats_zone_memory_s=max(0, min(600, _pick_int(
+            "HA_STATS_ZONE_MEMORY_S", opts, "ha_stats_zone_memory_s", 90))),
+        mqtt_discovery_prefix=(_pick("MQTT_DISCOVERY_PREFIX", opts, "mqtt_discovery_prefix",
+                                     "homeassistant").strip().strip("/") or "homeassistant"),
+        addon_version=os.environ.get("ADDON_VERSION", "").strip() or "dev",
         identify_zoom_map=_zoom_map(_pick_list("IDENTIFY_ZOOM_MAP", opts, "identify_zoom_map")),
         identify_zoom_start_offset=max(0.0, _pick_float(
             "IDENTIFY_ZOOM_START_OFFSET", opts, "identify_zoom_start_offset", 2.0)),

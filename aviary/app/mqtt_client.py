@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import paho.mqtt.client as mqtt
 
@@ -22,6 +22,32 @@ class MqttIngestor:
         self.connected: bool = False
         self.last_message_at: Optional[float] = None
         self._last_fail_log: float = 0.0
+        # Publishing side (0.34.0, bird statistics). Nothing here is used unless a module
+        # attaches: with none, this stays the subscribe-only client it always was.
+        self.on_connect_hooks: list[Callable[[], None]] = []
+        self._extra: list[tuple[str, Callable[[bytes], None]]] = []
+        self._status_topic: Optional[str] = None
+
+    def enable_status(self, topic: str) -> None:
+        """Announce presence on ``topic``: ``online`` on connect, ``offline`` on stop and —
+        via the broker's will — on a crash. Must be called before ``start()``."""
+        self._status_topic = topic
+
+    def add_subscription(self, topic: str, handler: Callable[[bytes], None]) -> None:
+        """Subscribe to one more topic, handled before the ingest chain."""
+        self._extra.append((topic, handler))
+
+    def publish(self, topic: str, payload: str, retain: bool = False, qos: int = 0) -> bool:
+        """Publish best-effort. False when not connected or the client refused; never raises."""
+        client = self._client
+        if client is None or not self.connected:
+            return False
+        try:
+            info = client.publish(topic, payload, qos=qos, retain=retain)
+            return info.rc == mqtt.MQTT_ERR_SUCCESS
+        except Exception:  # noqa: BLE001 — a failed publish is a log line, not an outage
+            log.debug("MQTT publish to %s failed", topic, exc_info=True)
+            return False
 
     def start(self) -> None:
         s = self._settings
@@ -35,6 +61,8 @@ class MqttIngestor:
         )
         if s.mqtt_user:
             client.username_pw_set(s.mqtt_user, s.mqtt_password)
+        if self._status_topic:
+            client.will_set(self._status_topic, "offline", qos=0, retain=True)
         client.on_connect = self._on_connect
         client.on_connect_fail = self._on_connect_fail
         client.on_message = self._on_message
@@ -47,6 +75,9 @@ class MqttIngestor:
 
     def stop(self) -> None:
         if self._client is not None:
+            if self._status_topic:
+                # A clean stop says goodbye itself; the will is for the unclean one.
+                self.publish(self._status_topic, "offline", retain=True)
             self._client.loop_stop()
             try:
                 self._client.disconnect()
@@ -71,8 +102,14 @@ class MqttIngestor:
         # end message (see frigate_object_update_topic).
         if s.frigate_object_update_topic:
             topics.append((s.frigate_object_update_topic, 0))
+        topics.extend((t, 0) for t, _ in self._extra)
         client.subscribe(topics)
         log.info("Subscribed to %s", ", ".join(f"'{t}'" for t, _ in topics))
+        for hook in self.on_connect_hooks:
+            try:
+                hook()
+            except Exception:  # noqa: BLE001 — a publisher's hiccup must not stop ingest
+                log.exception("MQTT connect hook failed")
 
     def _on_connect_fail(self, client: mqtt.Client, userdata) -> None:
         # paho retries with backoff; throttle so a dead broker doesn't flood the log.
@@ -98,6 +135,10 @@ class MqttIngestor:
         s = self._settings
         self.last_message_at = time.time()
         try:
+            for extra_topic, handler in self._extra:
+                if _topic_matches(topic, extra_topic):
+                    handler(message.payload)
+                    return
             if _topic_matches(topic, s.frigate_topic):
                 ingest.handle_frigate(message.payload)
             elif s.frigate_review_topic and _topic_matches(topic, s.frigate_review_topic):

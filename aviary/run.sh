@@ -37,6 +37,22 @@ export INAT_AUTO_POST="$(bashio::config 'inat_auto_post')"
 export INAT_GEOPRIVACY="$(bashio::config 'inat_geoprivacy')"
 export INAT_POSITIONAL_ACCURACY_M="$(bashio::config 'inat_positional_accuracy_m')"
 export LOG_LEVEL="$(bashio::config 'log_level')"
+# --- Bird statistics in Home Assistant (MQTT discovery) -----------------------
+export HA_STATS="$(bashio::config 'ha_stats')"
+export HA_STATS_WINDOW_DAYS="$(bashio::config 'ha_stats_window_days')"
+export HA_STATS_RECENT_DAYS="$(bashio::config 'ha_stats_recent_days')"
+export HA_STATS_ZONE_MEMORY_S="$(bashio::config 'ha_stats_zone_memory_s')"
+export MQTT_DISCOVERY_PREFIX="$(bashio::config 'mqtt_discovery_prefix')"
+# Shown on the Aviary device in Home Assistant; config.yaml is not in the image.
+export ADDON_VERSION="$(bashio::addon.version)"
+# --- Frigate confirm safety net ------------------------------------------------
+update_topic="$(bashio::config 'frigate_object_update_topic')"
+if [ "${update_topic}" = "null" ]; then
+    update_topic=""
+fi
+export FRIGATE_OBJECT_UPDATE_TOPIC="${update_topic}"
+export IDENTIFY_CONFIRM_FRIGATE="$(bashio::config 'identify_confirm_frigate')"
+export IDENTIFY_LEARN_FROM_AUTO="$(bashio::config 'identify_learn_from_auto')"
 # --- External identification (aviary-id on the GPU host) ----------------------
 export IDENTIFY_URL="$(bashio::config 'identify_url')"
 export IDENTIFY_TOKEN="$(bashio::config 'identify_token')"

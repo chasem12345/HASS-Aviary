@@ -62,6 +62,11 @@ _confirm_capable: Optional[Callable[[], bool]] = None
 # a second GPU pass. Same injection reasoning as _identify_hook.
 _late_label_hook: Optional[Callable[[dict, str, Optional[float]], None]] = None
 
+# Set by main() to hastats.on_hook: nudged with "species" when a species' counts may have
+# changed and with "zones" when what is in a Frigate zone may have. The publisher
+# debounces; this side only says "something moved". Same injection reasoning.
+_stats_hook: Optional[Callable[[str], None]] = None
+
 # Set by main() to keepsakes.schedule: called with a species name whenever a live Frigate
 # event ends with that species on it, so its first/latest keepsakes can be reconsidered.
 # Same injection reasoning as _identify_hook. Never called during backfill — the startup
@@ -106,6 +111,22 @@ def set_keepsake_hook(hook: Optional[Callable[[str], None]]) -> None:
     _keepsake_hook = hook
 
 
+def set_stats_hook(hook: Optional[Callable[[str], None]]) -> None:
+    """Tell the Home Assistant statistics publisher when counts or zones may have moved."""
+    global _stats_hook
+    _stats_hook = hook
+
+
+def _stats(kind: str) -> None:
+    """Nudge the statistics publisher. Best-effort: it must never break ingest."""
+    if _stats_hook is None:
+        return
+    try:
+        _stats_hook(kind)
+    except Exception:  # noqa: BLE001
+        log.exception("Statistics hook failed (%s)", kind)
+
+
 def set_new_species_hook(hook: Optional[Callable[[str], None]]) -> None:
     """Tell the life-list module when a species is recorded for the very first time."""
     global _new_species_hook
@@ -115,7 +136,10 @@ def set_new_species_hook(hook: Optional[Callable[[str], None]]) -> None:
 def touch_keepsake(common_name: Optional[str]) -> None:
     """Fire the keepsake hook for a species named outside the normal ingest path (an
     other-bird subject the identifier named). Best-effort."""
-    if not common_name or _keepsake_hook is None:
+    if not common_name:
+        return
+    _stats("species")  # a named other-bird is a sighting of its species too
+    if _keepsake_hook is None:
         return
     try:
         _keepsake_hook(common_name)
@@ -255,6 +279,8 @@ def store_row(row: Optional[dict], live: bool = True, announce: bool = True,
             )
             return False
     db.upsert_detection(row, authoritative=authoritative)
+    if live and row.get("source") == "frigate":
+        _stats("zones")  # an event started, moved, was named or ended
     if announce:
         _announce(row, live)
         # A finished, named camera sighting may be the species' first or its newest.
@@ -320,6 +346,9 @@ def _announce(row: dict, live: bool) -> None:
         is_new = name not in _known_species
         if is_new:
             _known_species.add(name)
+    if live:
+        _stats("species")  # its counts moved
+        _stats("zones")    # and a visit's bird just became known
     # Accepted race: a live detection during a first-run backfill can announce a
     # species/ref the backfill was about to import — genuinely first-seen by Aviary.
     if live and _loop is not None and notify.enabled():
@@ -441,6 +470,7 @@ def handle_frigate(payload: bytes) -> None:
         db.drop_detection(row["source"], row["source_ref"])
         log.debug("Dropped Frigate event %s: ended with no media (Frigate keeps no "
                   "record of it either).", row["source_ref"])
+        _stats("zones")
         return
 
     if ended and not is_unclassified(row):
@@ -611,6 +641,7 @@ def handle_frigate_review(payload: bytes) -> None:
     if row is None:
         return
     visit_id = db.upsert_visit(row)
+    _stats("zones")  # a visit opened, grew or closed
     log.debug("Visit %s (%s) %s: review %s, %d member(s)%s", visit_id, row["camera"],
               msg.get("type"), row["review_id"], len(row["refs"]),
               "" if row["end_time"] is None else ", ended")

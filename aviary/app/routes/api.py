@@ -16,6 +16,7 @@ from .. import (
     backfill, bootstrap, crops, db, identify, inat, ingest, keepsakes, kept, notify, probe, proxy,
     seasonality, species_audio, species_info, species_photos, traits,
 )
+from .. import hastats
 from . import ingress_url, norm_source, set_theme
 
 log = logging.getLogger("aviary.api")
@@ -164,6 +165,7 @@ async def delete_detection(det_id: int, request: Request, source_action: Optiona
     # A deleted detection is usually a misclassification — the probe must stop learning
     # from its embedding immediately, not at the next restart.
     await _refresh_probe()
+    hastats.touch()
     return {"ok": True, "common_name": det["common_name"], "source_result": source_result}
 
 
@@ -193,6 +195,7 @@ async def delete_species(name: str, request: Request, source_action: Optional[st
     ingest.forget_species(name)
     # Its embeddings and its confirmation are gone; the probe must unlearn them now.
     await _refresh_probe()
+    hastats.touch()  # its sensor is removed from Home Assistant
     # The local link to its iNaturalist observation goes too — the observation itself is
     # the user's, and stays until they delete it there; the URL is handed back for that.
     inat_row = await run_in_threadpool(db.inat_forget, name)
@@ -456,6 +459,7 @@ async def set_species(det_id: int, species: str = Query(..., min_length=1),
         await run_in_threadpool(_forget_if_gone, previous)
         keepsakes.schedule(previous)  # it may have lost its first or latest
     keepsakes.schedule(name)
+    hastats.touch()
     return {"ok": True, "common_name": name, "scientific_name": sci}
 
 
@@ -498,6 +502,7 @@ async def set_subject_species(det_id: int, idx: int, species: str = Query(..., m
     await _refresh_probe()
     _spawn(_reembed_then_refresh(dict(det), name, idx))
     keepsakes.schedule(name)
+    hastats.touch()
     return {"ok": True, "common_name": name, "scientific_name": sci}
 
 
@@ -512,6 +517,7 @@ async def reject_subject_species(det_id: int, idx: int, species: str = Query(...
         return {"ok": False, "error": "no such bird in this detection"}
     await _refresh_probe()
     keepsakes.schedule(species.strip())  # this event may have been its first or latest
+    hastats.touch()
     remaining = [s for s in await run_in_threadpool(db.secondary_subjects_for, det_id)
                  if s["idx"] == idx]
     return {"ok": True, "subject": remaining[0] if remaining else None}
@@ -770,6 +776,7 @@ async def confirm_species(species: str = Query(..., min_length=1)):
     await _refresh_probe()
     keepsakes.schedule(species)  # now in the registry: keep its first and latest
     inat.on_confirmed(species)   # and, with inat_auto_post, onto the life list
+    hastats.touch()              # and it gets its sensor in Home Assistant
     return {"ok": True, "species": species, "confirmed": True}
 
 
@@ -782,6 +789,7 @@ async def unconfirm_species(name: str):
     # Unconfirmed means its detections are no longer trusted labels; unlearn them now.
     await _refresh_probe()
     keepsakes.schedule(name)  # back out of the registry: its keepsakes are released
+    hastats.touch()           # and its sensor leaves Home Assistant
     return {"ok": True, "species": name, "confirmed": False}
 
 
@@ -859,6 +867,7 @@ async def add_blacklist(
     ingest.add_blacklist(species, scientific)
     # The purge above deleted the species' detections and confirmation; unlearn them.
     await _refresh_probe()
+    hastats.touch()
     inat_row = await run_in_threadpool(db.inat_forget, species)
     return {
         "ok": True,

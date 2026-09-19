@@ -1057,6 +1057,110 @@ A failed post is remembered on the species page (*last post failed*, with the re
 simply tried again next time; a failed media upload keeps the observation and records the
 upload error instead.
 
+## Bird statistics in Home Assistant
+
+Aviary publishes what it knows about your birds to Home Assistant over **MQTT discovery**
+(`ha_stats`, on by default) — real entities under one *Aviary* device, on the broker
+Aviary already listens to. Two kinds:
+
+**One sensor per confirmed species**, `sensor.aviary_<species>` (e.g.
+`sensor.aviary_northern_cardinal`, `sensor.aviary_bewicks_wren`). Its **state is a rarity
+score**: `100 × (1 − days active ÷ window)`, so a bird seen on every one of the last 30 days
+(`ha_stats_window_days`) scores 0 and one seen on 3 of them scores 90; a bird not seen in
+the window scores 100. Sorting an entities card by state gives you the rarity leaderboard.
+The counts ride along as attributes:
+
+```json
+{"common_name": "Northern Cardinal", "scientific_name": "Cardinalis cardinalis",
+ "rarity": 13, "tier": "daily",
+ "seen_all_time": 412, "heard_all_time": 97,
+ "seen_7d": 19, "heard_7d": 4, "count_7d": 23, "days_active_30d": 26,
+ "window_days": 30, "recent_days": 7,
+ "first_seen": "2026-03-14T08:02:11-05:00", "last_seen": "2026-09-19T07:41:03-05:00",
+ "confirmed": true}
+```
+
+"Seen" is one visit (Frigate review item), the same unit as everywhere else here; "heard"
+is BirdNET-Go detections. The `7d` counters follow `ha_stats_recent_days`; `tier` is the
+recap's daily / regular / occasional / rare, computed over the window. Only confirmed
+species get a sensor (with the confirmation gate on); deleting, blacklisting or
+unconfirming a species removes its sensor within a few seconds. Renaming a detection to
+another species is a remove-and-add of two entity ids.
+
+**`sensor.aviary_ptz_target`** answers the question Frigate's own zone occupancy sensors
+cannot: *which bird* is in each zone, and how rare it is. Its state is the zone with the
+rarest bird Aviary currently knows to be there (or `none`); the attributes are the point:
+
+```json
+{"target": "bath",
+ "zone_scores": {"bath": 87, "finch": 41, "hummer": 3, "pecker": 66, "platform": 22, "platformtop": 22},
+ "zones": {"bath":   {"species": "Rose-breasted Grosbeak", "rarity": 87, "since": "…", "source": "frigate",  "baseline": 35},
+           "hummer": {"species": "Ruby-throated Hummingbird", "rarity": 3, "since": "…", "source": "visit", "baseline": 3},
+           "pecker": {"species": null, "rarity": 66, "since": null, "source": "baseline", "baseline": 66}},
+ "baselines": {"bath": 35, "hummer": 3, "pecker": 66, …}, "neutral": 50, "memory_s": 90, "window_days": 30}
+```
+
+Every zone Aviary has ever seen is in `zone_scores`. A zone with a **named bird** in it
+scores that bird's rarity — the name comes from Frigate's own classifier on the event in
+progress (`source: frigate`), or from the species already settled for the visit the event
+belongs to (`source: visit`), which is how aviary-id's answer, landing after one fragment
+ended, still names the zone for the fragments that follow. A zone whose bird **has not been
+named** scores its **baseline**: the visit-weighted median rarity of that zone's confirmed
+visitors over the window — a feeder that mostly gets hummingbirds stays low until something
+else is named there. A zone keeps its last named bird for `ha_stats_zone_memory_s` after
+its visit closes (`source: memory`), because Frigate loses and refinds a perched bird as new
+objects. A zone with no history at all scores `neutral` (50).
+
+### Pointing a PTZ camera at the rarest bird
+
+A zone-following automation normally picks the first occupied zone in a fixed order. With
+`sensor.aviary_ptz_target` it can pick the occupied zone with the highest score instead,
+keeping the fixed order only as the tie-break. The template below is the one shape that
+worked well: occupancy stays with Frigate's `binary_sensor.<zone>_bird_occupancy` sensors
+(with a 5 s "sticky" grace so a one-second dropout cannot flip the decision), scores come
+from Aviary, and a **hysteresis margin** keeps the camera where it is unless a challenger
+leads by more than 15 points or the current zone empties — a camera that needs seconds to
+move and focus should not chase every point.
+
+```jinja
+{% set zones = [('Pecker','binary_sensor.pecker_bird_occupancy'),('Finch','binary_sensor.finch_bird_occupancy'),
+                ('Bath','binary_sensor.bath_bird_occupancy'),('PlatformTop','binary_sensor.platformtop_bird_occupancy'),
+                ('Platform','binary_sensor.platform_bird_occupancy'),('Hummer','binary_sensor.hummer_bird_occupancy')] %}
+{% set scores = state_attr('sensor.aviary_ptz_target','zone_scores') or {} %}
+{% set margin = 15 %}
+{% set ns = namespace(d='none', best=-1, cur_on=false, cur_score=0) %}
+{% set cur = states('input_select.bird_camera_target') %}
+{% for name, ent in zones %}
+  {% set occ = is_state(ent,'on') or (states[ent] is not none and states[ent].state == 'off'
+               and (now() - states[ent].last_changed).total_seconds() < 5) %}
+  {% if occ %}
+    {% set s = scores.get(name|lower, 50) | int(50) %}
+    {% if s > ns.best %}{% set ns.d = name %}{% set ns.best = s %}{% endif %}
+    {% if name == cur %}{% set ns.cur_on = true %}{% set ns.cur_score = s %}{% endif %}
+  {% endif %}
+{% endfor %}
+{% if ns.d != 'none' and ns.cur_on and cur != ns.d and ns.cur_score >= ns.best - margin %}{% set ns.d = cur %}{% endif %}
+{{ ns.d }}
+```
+
+Add `sensor.aviary_ptz_target` (attribute `zone_scores`) to the automation's triggers so a
+bird being named re-evaluates the decision. Preset names and Frigate zone names differ only
+in case here, hence `name|lower`. If Aviary is down, its entities are `unavailable`,
+`scores` is empty, every occupied zone gets the same 50, and the template behaves exactly
+like the fixed order it replaced.
+
+Two things to know. Frigate's occupancy sensor turns on seconds before its classifier
+names the bird, so a rare bird at a common feeder is scored by that feeder's usual visitors
+for its first seconds — the deliberate trade for a camera that never swings to a new
+arrival and straight back. Lowering Frigate's `classification.bird.threshold` (default
+0.9) names birds sooner; with identification on, aviary-id confirms the label anyway. And
+species-in-zone needs a name to come from somewhere: Frigate's classifier, or aviary-id
+with visits enabled.
+
+To start over, publish an empty retained message to
+`<mqtt_discovery_prefix>/device/aviary/config`; Aviary republishes everything on its next
+refresh (at most 15 minutes, or immediately after a restart).
+
 ## Configuration
 
 | Option | Description |
@@ -1078,6 +1182,11 @@ upload error instead.
 | `identify_enabled` | Send Frigate detections to that service (default `false`). Frigate's own bird classification may be on or off: unnamed events get a full identification; named ones are confirmed from Frigate's crop (aviary-id 0.12.0+, see `identify_confirm_frigate`). |
 | `identify_confirm_frigate` | With Frigate's classifier on, hold its label until aviary-id has looked at Frigate's crop of the same bird; the birds you confirmed by hand may override it (default `true`). `false` announces Frigate's label at event end. See *How it changes the flow*. |
 | `frigate_object_update_topic` | Frigate's `frigate/tracked_object_update` topic, for a classification Frigate publishes after an event's end (default blank = not subscribed). Same `topic_prefix` as `frigate_topic`. |
+| `ha_stats` | Publish one sensor per confirmed species (rarity 0–100 plus counts) and `sensor.aviary_ptz_target` to Home Assistant over MQTT discovery (default `true`). See [Bird statistics in Home Assistant](#bird-statistics-in-home-assistant). |
+| `ha_stats_window_days` | Days behind the rarity score: 100 × (1 − days active ÷ window) (default `30`, 7–365). |
+| `ha_stats_recent_days` | Days behind each species sensor's recent counters, `seen_7d` / `heard_7d` (default `7`, 1–90). |
+| `ha_stats_zone_memory_s` | Seconds a zone keeps its last named bird after Frigate's review item closed, covering Frigate losing and refinding the same bird (default `90`, 0–600). |
+| `mqtt_discovery_prefix` | Home Assistant's MQTT discovery prefix (default `homeassistant`). Only change it if you changed it in HA. |
 | `identify_min_score` | Minimum species probability to accept a result (default `0.35`). Below it, the detection goes to the review queue. |
 | `identify_min_margin` | Minimum gap between the top two species (default `0.08`). A high score with a tiny margin means two confusable birds, not a confident answer. |
 | `identify_workers` | Concurrent identification requests (default `2`). The service serializes GPU work anyway. |

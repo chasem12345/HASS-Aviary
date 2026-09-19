@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.33.0"
+version: "0.34.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -70,6 +70,11 @@ options:
   inat_auto_post: false
   inat_geoprivacy: "obscured"
   inat_positional_accuracy_m: 30
+  ha_stats: true
+  ha_stats_window_days: 30
+  ha_stats_recent_days: 7
+  ha_stats_zone_memory_s: 90
+  mqtt_discovery_prefix: "homeassistant"
   log_level: "info"
 schema:
   frigate_url: "url"
@@ -216,4 +221,24 @@ schema:
   inat_geoprivacy: "list(open|obscured|private)"
   # Radius in metres iNaturalist records around the coordinates — a yard, not a GPS fix.
   inat_positional_accuracy_m: "int(1,10000)"
+  # --- Bird statistics in Home Assistant --------------------------------------------
+  # Publish one sensor per confirmed species to Home Assistant over MQTT discovery
+  # (state: rarity 0–100; attributes: all-time and recent counts, days active, tier,
+  # first/last seen) plus sensor.aviary_ptz_target, which scores every Frigate zone by
+  # how rare the bird in it is — so a PTZ automation can point at the rarest bird instead
+  # of a fixed zone order. Needs only the MQTT broker Aviary already listens on.
+  ha_stats: "bool"
+  # Rarity is 100 × (1 − days active ÷ window). A bird seen on 3 of the last 30 days
+  # scores 90; one seen every day scores 0. A zone whose bird is not (yet) named scores
+  # what its usual visitors score, so a feeder that mostly gets hummingbirds stays low
+  # until something else is named there.
+  ha_stats_window_days: "int(7,365)"
+  # Days behind the "recent" counters on each species sensor (seen_7d, heard_7d, ...).
+  ha_stats_recent_days: "int(1,90)"
+  # Seconds a zone keeps its last named bird after Frigate's review item closed. Frigate
+  # loses and refinds a perched bird as new objects; this keeps the zone scored by that
+  # bird across the gap instead of dropping back to the zone's usual visitors.
+  ha_stats_zone_memory_s: "int(0,600)"
+  # Home Assistant's MQTT discovery prefix. Only change it if you changed it in HA.
+  mqtt_discovery_prefix: "str"
   log_level: "list(debug|info|warning|error)"

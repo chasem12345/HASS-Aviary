@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from . import (
     backfill, bootstrap, crops, db, http, identify, inat, ingest, keepsakes, kept, media_audit, notify, probe, proxy, seasonality, solar, species_audio, species_info, species_photos,
 )
+from . import hastats
 from .mqtt_client import MqttIngestor
 from .routes import ASSET_VER, register_routes
 from .settings import load_settings
@@ -193,6 +194,13 @@ def create_app() -> FastAPI:
         )
 
     ingestor = MqttIngestor(settings)
+    # Bird statistics for Home Assistant ride the same MQTT client, publishing. Off
+    # silently without a broker; with one, every species gets a sensor and every Frigate
+    # zone a rarity score (see hastats).
+    hastats.configure(settings)
+    if hastats.enabled():
+        hastats.attach(ingestor)
+        ingest.set_stats_hook(hastats.on_hook)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -201,6 +209,7 @@ def create_app() -> FastAPI:
         ingest.set_event_loop(loop)
         keepsakes.set_event_loop(loop)
         inat.set_event_loop(loop)
+        hastats.set_event_loop(loop)
         notify.install_blueprint()
         await identify.start(loop)
         ingestor.start()
@@ -221,12 +230,16 @@ def create_app() -> FastAPI:
         # feeds stop offering players for video that is gone. Keepsakes wait for its
         # first pass.
         audit_task = asyncio.create_task(media_audit.run(after=backfill_task))
+        # Statistics to Home Assistant: after the backfill (imported history changes
+        # every count), then every 15 minutes, plus the debounced nudges from ingest.
+        stats_task = asyncio.create_task(hastats.run(after=backfill_task))
         # Charts and the "today" boundary use OS localtime; make misconfiguration visible.
         log.info("Aviary started (timezone: %s, TZ=%s).", time.strftime("%Z"), os.environ.get("TZ", "unset"))
         try:
             yield
         finally:
-            for task in (backfill_task, identify_maint_task, solar_task, keepsake_task, audit_task):
+            for task in (backfill_task, identify_maint_task, solar_task, keepsake_task,
+                         audit_task, stats_task):
                 if task is not None:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
