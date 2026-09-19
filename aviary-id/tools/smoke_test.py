@@ -109,6 +109,11 @@ def main() -> int:
     ap.add_argument("--target", default=None,
                     help="ask for the embedding/best crop of this species (service 0.11.0+); "
                          "shows whether it was honoured and from which frame")
+    ap.add_argument("--confirm", action="store_true",
+                    help="confirm mode (service 0.12.0+): classify only Frigate's own crops "
+                         "of each event, no clip — what Aviary sends for events Frigate "
+                         "already named. Passes Frigate's sub_label along and shows whether "
+                         "the service agrees, and how much faster it is")
     args = ap.parse_args()
 
     labels: dict[str, str] = {}
@@ -166,8 +171,9 @@ def main() -> int:
     print(f"Testing {len(events)} event(s). Frigate's own label is shown for comparison;\n"
           f"'—' means Frigate's classifier produced nothing (expected once it is off).\n")
 
+    agree_col = f" {'agrees':>6}" if args.confirm else ""
     header = (f"{'event':<26} {'camera':<14} {'frigate':<22} {'aviary-id':<24} "
-              f"{'score':>7} {'margin':>7} {'fr':>3} {'ms':>6}")
+              f"{'score':>7} {'margin':>7} {'fr':>3} {'ms':>6}{agree_col}")
     print(header)
     print("-" * len(header))
 
@@ -175,10 +181,25 @@ def main() -> int:
     for event in events:
         eid = event["id"]
         started = time.monotonic()
+        # Frigate's own label: a plain string over the HTTP API (with the classification
+        # score under data.sub_label_score), a [name, score] pair over MQTT.
+        theirs = event.get("sub_label") or None
+        their_score = None
+        if isinstance(theirs, (list, tuple)):
+            their_score = theirs[1] if len(theirs) > 1 else None
+            theirs = theirs[0] if theirs else None
+        if their_score is None and isinstance(event.get("data"), dict):
+            their_score = event["data"].get("sub_label_score")
         try:
             payload = {"event_id": eid}
             if args.target:
                 payload["target"] = args.target
+            if args.confirm:
+                payload["mode"] = "confirm"
+                if theirs:
+                    payload["frigate_label"] = theirs
+                    if their_score is not None:
+                        payload["frigate_label_score"] = their_score
             res = post_json(f"{service}/identify", payload, headers)
         except (urllib.error.URLError, OSError, ValueError) as exc:
             print(f"{eid:<26} {'':<14} {'':<22} ERROR: {exc}")
@@ -187,16 +208,20 @@ def main() -> int:
         res["_event_id"] = eid
         results.append(res)
 
-        theirs = event.get("sub_label") or "—"
-        if isinstance(theirs, (list, tuple)):
-            theirs = theirs[0] if theirs else "—"
         ours = res.get("common_name") or f"({res.get('status')})"
         if not res.get("localized", True):
             ours += " ~"  # classified uncropped; the detector found no bird
         when = time.strftime("%m-%d %H:%M", time.localtime(event.get("start_time", 0)))
-        print(f"{eid[:24]:<26} {(event.get('camera') or '')[:13]:<14} {str(theirs)[:21]:<22} "
+        agrees = ""
+        if args.confirm:
+            verdict = res.get("frigate_agrees")
+            agrees = f" {'yes' if verdict else ('no' if verdict is False else '—'):>6}"
+        print(f"{eid[:24]:<26} {(event.get('camera') or '')[:13]:<14} {str(theirs or '—')[:21]:<22} "
               f"{ours[:23]:<24} {pct(res.get('score')):>7} {pct(res.get('margin')):>7} "
-              f"{res.get('frames_used', 0):>3} {elapsed:>6}   {when}")
+              f"{res.get('frames_used', 0):>3} {elapsed:>6}{agrees}   {when}")
+        if args.confirm and res.get("mode") != "confirm":
+            print("    !! the service ran a FULL identification: it predates 0.12.0 "
+                  "(no confirm mode).")
 
         if args.target:
             honoured = res.get("embedding_target")
@@ -248,6 +273,15 @@ def main() -> int:
     print(f"{len(ok)}/{len(events)} events identified. "
           f"{sum(1 for r in ok if not r.get('localized', True))} were classified uncropped "
           f"(detector found no bird).")
+    if args.confirm:
+        judged = [r for r in ok if r.get("frigate_agrees") is not None]
+        if judged:
+            agreed = sum(1 for r in judged if r["frigate_agrees"])
+            print(f"Agreed with Frigate's label on {agreed}/{len(judged)} event(s) that had one.")
+        times = sorted(r.get("elapsed_ms") or 0 for r in ok)
+        if times:
+            print(f"Confirm-mode median {times[len(times) // 2]} ms per event "
+                  f"(run again without --confirm to compare against the full pipeline).")
 
     # --- accuracy against hand labels ---------------------------------------------------
     def top1_correct(r) -> bool:

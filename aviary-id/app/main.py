@@ -21,7 +21,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 import torch
@@ -101,6 +101,20 @@ class IdentifyRequest(BaseModel):
     # whether it was honoured (null: unknown name, excluded, or no such subject).
     target: Optional[str] = None
     target_subject: int = Field(default=0, ge=0)
+    # "confirm" (0.12.0+): Frigate's own classifier has already named this bird and the
+    # caller wants a second opinion, fast. Only Frigate's crops of the tracked object
+    # (thumbnail, snapshot cut to its box) are classified — no clip download, no ffmpeg,
+    # no detector, no zoom — so the answer is about THAT bird and arrives in a fraction
+    # of the time. Escalation has nothing to escalate into; priors/exclude/target keep
+    # their meaning. "full" is every earlier behaviour, unchanged.
+    mode: Literal["full", "confirm"] = "full"
+    # Frigate's label and its classification score, echoed back on the response with
+    # ``frigate_agrees``. Provenance only: deliberately NOT applied as a prior, because
+    # the default supervised backend here (AIY) is the very model behind Frigate's
+    # classifier — feeding its answer back in would count one observation twice and
+    # inflate exactly the species the caller is trying to check.
+    frigate_label: Optional[str] = None
+    frigate_label_score: Optional[float] = None
 
 
 class SpeciesGuess(BaseModel):
@@ -244,6 +258,16 @@ class IdentifyResponse(BaseModel):
     # Only with ``debug: true`` on the request.
     debug: Optional[dict] = None
     elapsed_ms: int = 0
+    # Which request ``mode`` produced this answer, and whether the clip was skipped. A
+    # pre-0.12 service omits both; a caller should read that as a full run.
+    mode: str = "full"
+    clip_skipped: bool = False
+    # The request's Frigate label echoed back, and whether this answer names the same
+    # species (common or scientific name, case-insensitive). None without a label. The
+    # caller decides what disagreement means; this only reports it.
+    frigate_label: Optional[str] = None
+    frigate_label_score: Optional[float] = None
+    frigate_agrees: Optional[bool] = None
 
 
 # -------------------------------------------------------------------------------- auth
@@ -344,7 +368,7 @@ async def lifespan(_: FastAPI):
             await _client.aclose()
 
 
-app = FastAPI(title="aviary-id", version="0.11.0", lifespan=lifespan)
+app = FastAPI(title="aviary-id", version="0.12.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -357,7 +381,7 @@ async def healthz() -> dict:
     return {
         "ok": _ready,
         # The service version, so a caller can tell which request fields (``target``,
-        # 0.11.0+) this instance honours without probing for them.
+        # 0.11.0+; ``mode: confirm``, 0.12.0+) this instance honours without probing.
         "version": app.version,
         "cuda": torch.cuda.is_available(),
         "device": _classifier.device_name() if _classifier else "not loaded",
@@ -405,12 +429,20 @@ async def identify(req: IdentifyRequest) -> IdentifyResponse:
             detail="no Frigate URL: set FRIGATE_URL or pass frigate_url in the request",
         )
 
+    confirm = req.mode == "confirm"
     zoom = None
     if req.zoom and req.zoom.camera.strip() and req.zoom.end > req.zoom.start:
-        zoom = frames.Zoom(camera=req.zoom.camera.strip(),
-                           start=req.zoom.start, end=req.zoom.end)
+        if confirm:
+            # Zoom means "classify the PTZ recordings instead of the clip" — footage,
+            # which confirm mode never fetches. Frigate's crops come from the detect
+            # camera regardless, so the answer is still about the tracked bird.
+            log.info("Event %s: zoom ignored in confirm mode (no footage is fetched).",
+                     req.event_id)
+        else:
+            zoom = frames.Zoom(camera=req.zoom.camera.strip(),
+                               start=req.zoom.start, end=req.zoom.end)
     timings = frames.Timings()
-    media = frames.EventMedia(req.event_id, base, settings, zoom=zoom)
+    media = frames.EventMedia(req.event_id, base, settings, zoom=zoom, confirm=confirm)
     try:
         await media.gather(_client, timings)
         response = await _run_pipeline(media, req, timings, started)
@@ -431,14 +463,49 @@ async def identify(req: IdentifyRequest) -> IdentifyResponse:
         others = " +" + ", ".join(
             f"{s.common_name} {s.score:.2f} ({s.n_frames} crop{'s' if s.n_frames != 1 else ''})"
             for s in response.subjects[1:]) + " also in view"
+    frigate_note = ""
+    if confirm:
+        frigate_note = " mode=confirm"
+        if response.frigate_label:
+            frigate_note += (f" frigate={response.frigate_label!r}"
+                             f" agrees={response.frigate_agrees}")
     log.info(
         "identify %s -> %s %s (score=%s margin=%s, %d/%d frames, %d round(s), "
-        "localized=%s, trained[%s], %dms)%s [%s]",
+        "localized=%s, trained[%s], %dms)%s%s [%s]",
         req.event_id, response.status, response.common_name or "-",
         response.score, response.margin, response.frames_used, response.images,
         response.rounds, response.localized, trained_note, response.elapsed_ms,
-        others, timings.summary(),
+        others, frigate_note, timings.summary(),
     )
+    return response
+
+
+def _frigate_agrees(label: Optional[str], result) -> Optional[bool]:
+    """Whether the answer names the species Frigate did (common or scientific name)."""
+    label = (label or "").strip().lower()
+    if not label or result is None:
+        return None
+    return label in {(result.species.com_name or "").lower(),
+                     (result.species.sci_name or "").lower()}
+
+
+def _with_request_echo(response: IdentifyResponse, req: IdentifyRequest, media,
+                       result=None) -> IdentifyResponse:
+    """Stamp the mode and Frigate-label provenance onto any response, ok or not.
+
+    The label is the request's when the caller sent one, else whatever Frigate's event
+    JSON carried when the media was fetched — which is how a classification Frigate
+    applied AFTER the event's end message (never published on the events topic) still
+    reaches the caller.
+    """
+    label, score = req.frigate_label, req.frigate_label_score
+    if not label and media is not None and getattr(media, "sub_label", None):
+        label, score = media.sub_label, media.sub_label_score
+    response.mode = req.mode
+    response.clip_skipped = req.mode == "confirm"
+    response.frigate_label = label
+    response.frigate_label_score = score
+    response.frigate_agrees = _frigate_agrees(label, result)
     return response
 
 
@@ -461,29 +528,32 @@ async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
                 "use a smaller MODEL_NAME.",
                 _classifier.memory_summary(),
             )
-            return IdentifyResponse(status="out_of_memory", elapsed_ms=_ms(started),
-                                    images=len(media.candidates), timings=timings.stages)
+            return _with_request_echo(IdentifyResponse(
+                status="out_of_memory", elapsed_ms=_ms(started),
+                images=len(media.candidates), timings=timings.stages), req, media)
         except RuntimeError as exc:
             # cuDNN failures on a full card arrive as a plain RuntimeError rather than
             # OutOfMemoryError (CUDNN_STATUS_INTERNAL_ERROR is the usual one), so they need
             # the same treatment or they become a 500 too.
             _release_vram()
             log.error("Inference failed: %s. %s", exc, _classifier.memory_summary())
-            return IdentifyResponse(status="error", elapsed_ms=_ms(started),
-                                    images=len(media.candidates), timings=timings.stages)
+            return _with_request_echo(IdentifyResponse(
+                status="error", elapsed_ms=_ms(started),
+                images=len(media.candidates), timings=timings.stages), req, media)
 
     if not media.candidates:
-        return IdentifyResponse(status="no_media", elapsed_ms=_ms(started),
-                                timings=timings.stages)
+        return _with_request_echo(IdentifyResponse(
+            status="no_media", elapsed_ms=_ms(started), timings=timings.stages), req, media)
     if result is None:
         # Nothing anywhere in the event looked like a bird, even after escalating.
         # Deliberately NOT falling back to classifying the whole uncropped frame: on a
         # 1080p frame that leaves a feeder-distance bird about ten pixels across, and it
         # only ever produced confidently-wrong answers the caller then rejected anyway.
-        return IdentifyResponse(status="no_bird", elapsed_ms=_ms(started),
-                                images=len(media.candidates), timings=timings.stages)
+        return _with_request_echo(IdentifyResponse(
+            status="no_bird", elapsed_ms=_ms(started),
+            images=len(media.candidates), timings=timings.stages), req, media)
 
-    return IdentifyResponse(
+    return _with_request_echo(IdentifyResponse(
         status="ok",
         common_name=result.species.com_name,
         scientific_name=result.species.sci_name,
@@ -519,7 +589,7 @@ async def _run_pipeline(media, req, timings, started) -> IdentifyResponse:
         debug=_debug_out(result, crops) if req.debug else None,
         elapsed_ms=_ms(started),
         timings=timings.stages,
-    )
+    ), req, media, result)
 
 
 def _origin_of(r, crops) -> Optional[str]:

@@ -375,6 +375,16 @@ switching to `inat21`, it is worth re-sweeping `TRAINED_WEIGHT` (try `0.85`) and
 Latency will not move much: clip download and ffmpeg frame extraction dominate
 per-event time, not inference. The GPU headroom buys accuracy, not speed.
 
+The one thing that does move latency is not fetching the clip at all. Since 0.12.0 a
+request with `"mode": "confirm"` classifies only Frigate's own crops of the tracked
+object — the thumbnail and the snapshot cut to Frigate's box — and skips the clip,
+ffmpeg and the detector entirely. That is what Aviary sends for events Frigate's own
+classifier has already named (with the label along as `frigate_label`, echoed back with
+`frigate_agrees`): a second opinion about *that* bird, in a fraction of the time, while
+unnamed events still get the full pipeline. `tools/smoke_test.py --confirm` replays
+recent events that way and reports the agreement rate and the median time; run it once
+with and once without the flag to see the difference on your hardware.
+
 ## If it confuses similar species
 
 Getting the family right but the species wrong — a Northern Cardinal read as a Summer

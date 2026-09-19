@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.33.0
+
+- **Frigate can classify again; aviary-id confirms.** Until now identification meant
+  turning Frigate's own bird classification off and sending every event through the full
+  pipeline — clip download, frame sampling, detector, classifier — which could not keep up
+  when several birds were moving through the frame at once. Frigate's classifier may now
+  stay on. An event Frigate named is shown with its name straight away (*confirming…*) and
+  aviary-id **0.12.0+** takes a quick second look at *Frigate's own crops* of that tracked
+  object — thumbnail and snapshot box, no clip, no detector — so the answer comes back in
+  a fraction of the time and can only ever be about the bird Frigate tracked, never a
+  neighbour. Frigate's label stands unless the birds you have confirmed by hand (the
+  learning probe) blend to a *different* species that clears `identify_min_score` and
+  `identify_min_margin`; then the learned name wins and Frigate's is kept as the runner-up
+  (the card says *overrode Frigate*). aviary-id's own zero-shot disagreement never
+  overrides on its own. The notification fires once, when the verdict lands. Events
+  Frigate could not name still take the full route, unchanged. `identify_confirm_frigate`
+  turns the second look off (announce at end, as before). Confirmations go ahead of full
+  identifications in the queue. See *Better bird identification* in the docs.
+- **If aviary-id is unreachable, Frigate's label is announced anyway.** A service that is
+  down, a full queue or an answer with nothing to look at ends as status *Frigate*: the
+  bird is announced with Frigate's name and confidence rather than parked as "no ID", and
+  ↻ on the card runs a full identification later. Such rows never become learning examples.
+- **A label that arrives late is folded in, not duplicated.** Frigate applies a
+  `sub_label` the moment its classifier clears its threshold — on any message of the
+  object's life, sometimes after the `end` message that already sent the event for
+  identification. Every ordering now yields one row and one notification per visit and
+  species: a label arriving while identification is in flight is used if the answer comes
+  back uncertain; one arriving after an uncertain or failed answer is weighed against the
+  stored embedding locally (no second GPU pass) and announced once; one arriving after
+  the species was settled is recorded as provenance only. aviary-id 0.12.0 echoes the
+  label from Frigate's event record for the same reason. `frigate_object_update_topic`
+  (blank by default) can additionally subscribe to `frigate/tracked_object_update` for
+  installs where Frigate publishes classifications there.
+- **A re-import can no longer replace a species you or the probe decided.** With Frigate's
+  classifier on, every start-up backfill re-imports recent events *with* Frigate's label,
+  and the upsert used to let that label overwrite an overridden or hand-named species and
+  push Frigate's object score back into the species-confidence column. Source messages
+  and backfill are now non-authoritative for a settled row; only the identifier's own
+  verdict changes it. Frigate's label and score are kept on every row as provenance either
+  way, and the card's ID badge says what Frigate said.
+- **Rows waiting on the identifier announce after a restart.** The restart seeding that
+  stops an in-progress event re-notifying used to pre-mark *every* recent row, including
+  ones still `pending` — so a row requeued after a restart landed silently. Rows still
+  waiting on their answer are left out of that seed.
+- Pairs with **aviary-id 0.12.0** (`mode: confirm`, `frigate_label` echo, `/healthz`
+  version). An older service is detected from `/healthz` and Frigate's labels are then
+  announced at end as before; an older add-on ignores the new response fields.
+
 ## 0.32.1
 
 - **The Settings page checks in again.** In 0.32.0 the *Identification service* box, the

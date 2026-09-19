@@ -183,8 +183,18 @@ class Settings:
     keepsake_video: bool = True
     # Whether the learning probe also learns from the identifier's own confident answers,
     # not only from labels a person typed. Off by default: that is how a classifier
-    # reinforces its own mistakes.
+    # reinforces its own mistakes. With confirmation on (below), a Frigate label the
+    # identifier let stand counts as one of its own answers.
     identify_learn_from_auto: bool = False
+    # With Frigate's own bird classification ON: hold its label until aviary-id (0.12.0+)
+    # has looked at Frigate's crop of the same bird, and let the birds confirmed by hand
+    # (the learning probe) override it when they confidently disagree. Off = announce
+    # Frigate's label at event end, as before identification existed.
+    identify_confirm_frigate: bool = True
+    # Frigate's ``frigate/tracked_object_update`` topic, for a classification that lands
+    # after the event's ``end`` message. Blank = not subscribed (Frigate's built-in bird
+    # classifier reports through ``frigate/events`` itself; this is a safety net).
+    frigate_object_update_topic: str = ""
 
     # --- Life list on iNaturalist --------------------------------------------------
     # OAuth application + account for the password grant (the add-on has no browser for
@@ -277,6 +287,11 @@ def load_settings() -> Settings:
             _pick("IDENTIFY_EXCLUDE_BLACKLISTED", opts, "identify_exclude_blacklisted", "true")),
         identify_learn_from_auto=_as_bool(
             _pick("IDENTIFY_LEARN_FROM_AUTO", opts, "identify_learn_from_auto", "false")),
+        identify_confirm_frigate=_as_bool(
+            _pick("IDENTIFY_CONFIRM_FRIGATE", opts, "identify_confirm_frigate", "true")),
+        # Blank means "not subscribed" and must survive as blank (see frigate_review_topic).
+        frigate_object_update_topic=_pick_optional(
+            "FRIGATE_OBJECT_UPDATE_TOPIC", opts, "frigate_object_update_topic", ""),
         identify_zoom_map=_zoom_map(_pick_list("IDENTIFY_ZOOM_MAP", opts, "identify_zoom_map")),
         identify_zoom_start_offset=max(0.0, _pick_float(
             "IDENTIFY_ZOOM_START_OFFSET", opts, "identify_zoom_start_offset", 2.0)),

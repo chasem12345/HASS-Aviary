@@ -33,21 +33,32 @@ __all__ = [
 ]
 
 
-def upsert_detection(row: dict[str, Any]) -> None:
+def upsert_detection(row: dict[str, Any], authoritative: bool = False) -> None:
     """Insert a detection, or update it if (source, source_ref) already exists.
 
     Frigate sends multiple messages per event (new/update/end); the latest wins so the
     final species and confidence are kept. COALESCE preserves any media flags/refs that
     were already captured but are absent from a later message.
 
+    ``authoritative`` says the caller has DECIDED the species — the identification
+    pipeline writing its answer. Everything else (a Frigate message, a backfill page) is
+    merely reporting what a source said, and must not overwrite a species that a person
+    (``manual``), the identifier (``ok``) or the confirm fallback (``frigate``) has
+    already settled: with Frigate's own classifier on, every backfill re-import carries
+    its label, and without this rule a start-up re-import would quietly rename an
+    overridden or hand-named bird back to Frigate's guess and MAX Frigate's object score
+    back into the species-confidence column. Frigate's label still lands in
+    ``frigate_label`` either way, as provenance.
+
     Side effect on the caller's dict: ``row["id"]`` is filled in, and for a Frigate event
     that a review item has claimed, ``row["visit_id"]`` too — the notification path keys
     its once-per-visit dedupe on it, and the tap-action deep link needs the id.
     """
-    # Only Frigate rows carry a zone; default it so BirdNET's row shape (and any older
-    # caller) satisfies the named parameters without every builder growing the key.
-    defaults = {"zone": None}
-    params = {**defaults, **row}
+    # Only Frigate rows carry a zone or Frigate's own label; default them so BirdNET's
+    # row shape (and any older caller) satisfies the named parameters without every
+    # builder growing the keys.
+    defaults = {"zone": None, "frigate_label": None, "frigate_score": None}
+    params = {**defaults, **row, "authoritative": 1 if authoritative else 0}
     with _connect() as conn:
         conn.execute(
             """
@@ -55,28 +66,55 @@ def upsert_detection(row: dict[str, Any]) -> None:
                 source, source_ref, common_name, scientific_name, species_code,
                 confidence, location, zone, start_time, end_time,
                 has_clip, has_snapshot, clip_ref, snapshot_ref, native_id,
-                raw_json, created_at
+                raw_json, created_at, frigate_label, frigate_score
             ) VALUES (
                 :source, :source_ref, :common_name, :scientific_name, :species_code,
                 :confidence, :location, :zone, :start_time, :end_time,
                 :has_clip, :has_snapshot, :clip_ref, :snapshot_ref, :native_id,
-                :raw_json, :created_at
+                :raw_json, :created_at, :frigate_label, :frigate_score
             )
             ON CONFLICT(source, source_ref) DO UPDATE SET
-                -- Never downgrade a classified species back to generic 'bird' when a
-                -- later message arrives without a sub_label.
+                -- A settled species (see ``authoritative`` above) is only ever changed
+                -- by a caller that has decided it. Below that: never downgrade a
+                -- classified species back to generic 'bird' when a later message
+                -- arrives without a sub_label.
                 common_name     = CASE
+                                      WHEN :authoritative = 0
+                                           AND detections.id_status IN ('ok', 'manual', 'frigate')
+                                      THEN detections.common_name
                                       WHEN excluded.common_name = 'bird'
                                            AND detections.common_name != 'bird'
                                       THEN detections.common_name
                                       ELSE excluded.common_name
                                   END,
-                scientific_name = COALESCE(excluded.scientific_name, detections.scientific_name),
-                species_code    = COALESCE(excluded.species_code, detections.species_code),
+                scientific_name = CASE
+                                      WHEN :authoritative = 0
+                                           AND detections.id_status IN ('ok', 'manual', 'frigate')
+                                      THEN detections.scientific_name
+                                      ELSE COALESCE(excluded.scientific_name, detections.scientific_name)
+                                  END,
+                species_code    = CASE
+                                      WHEN :authoritative = 0
+                                           AND detections.id_status IN ('ok', 'manual', 'frigate')
+                                      THEN detections.species_code
+                                      ELSE COALESCE(excluded.species_code, detections.species_code)
+                                  END,
                 -- Scalar MAX() is NULL if either side is NULL; keep the best non-NULL score.
-                confidence      = COALESCE(
-                                      MAX(detections.confidence, excluded.confidence),
-                                      detections.confidence, excluded.confidence
+                -- A settled row keeps ITS confidence: the identifier's species score (or a
+                -- person's NULL) must not be out-bid by Frigate's "is this a bird" score.
+                confidence      = CASE
+                                      WHEN :authoritative = 0
+                                           AND detections.id_status IN ('ok', 'manual', 'frigate')
+                                      THEN detections.confidence
+                                      ELSE COALESCE(
+                                          MAX(detections.confidence, excluded.confidence),
+                                          detections.confidence, excluded.confidence
+                                      )
+                                  END,
+                frigate_label   = COALESCE(excluded.frigate_label, detections.frigate_label),
+                frigate_score   = COALESCE(
+                                      MAX(detections.frigate_score, excluded.frigate_score),
+                                      detections.frigate_score, excluded.frigate_score
                                   ),
                 location        = excluded.location,
                 -- COALESCE, not last-write-wins: entered_zones is cumulative so the end
@@ -385,10 +423,19 @@ def oldest_detection(common_name: str, source: str) -> Optional[dict]:
 
 
 def recent_refs(since: float) -> list[tuple[str, str]]:
-    """(source, source_ref) pairs of recent detections, to pre-mark them announced."""
+    """(source, source_ref) pairs of recent detections, to pre-mark them announced.
+
+    Rows still waiting on the identifier are left out: their announcement has not
+    happened yet — it fires when the answer lands — and pre-marking them would silence
+    it for good after a restart-requeue.
+    """
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT source, source_ref FROM detections WHERE start_time >= ?",
+            """
+            SELECT source, source_ref FROM detections
+            WHERE start_time >= ?
+              AND (id_status IS NULL OR id_status NOT IN ('pending', 'confirming'))
+            """,
             (since,),
         ).fetchall()
     return [(r["source"], r["source_ref"]) for r in rows]

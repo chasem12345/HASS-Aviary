@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS detections (
     created_at      REAL    NOT NULL,
     -- External identification (aviary-id). NULL on every BirdNET row and on Frigate rows
     -- from before the feature existed; those are "not applicable", not "failed".
-    id_status       TEXT,                            -- pending|ok|low_confidence|failed
+    id_status       TEXT,                            -- pending|confirming|ok|low_confidence|failed|manual|frigate
     id_score        REAL,                            -- fused top-1 probability
     id_margin       REAL,                            -- top-1 minus top-2; the real confidence signal
     id_model        TEXT,                            -- model@vocabulary digest that produced it
@@ -490,6 +490,11 @@ def init_db(db_path: str) -> None:
             # "has a picture of its own" predicate for SQL (the feed filter), where the
             # templates' has_crop() file check can't reach.
             ("has_crop", "INTEGER NOT NULL DEFAULT 0"),
+            # Frigate's own classification of the tracked object (0.33.0): the sub_label
+            # it published and the classifier's score for it. Provenance, kept apart from
+            # common_name so "Frigate said X, aviary-id decided Y" stays sayable after
+            # a confirmation overrides the label. NULL = Frigate named nothing.
+            ("frigate_label", "TEXT"), ("frigate_score", "REAL"),
         ):
             if name not in cols:
                 conn.execute(f"ALTER TABLE detections ADD COLUMN {name} {decl}")

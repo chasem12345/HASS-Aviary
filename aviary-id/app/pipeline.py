@@ -281,6 +281,12 @@ class Pipeline:
                 # which zoom deliberately skipped. Bounded on purpose: a bird that
                 # cannot be identified should cost a few seconds, not an unbounded hunt.
                 added = 0
+                if not media.clip_path and not media.zoom_used:
+                    # Nothing to escalate into: Frigate's crops were all there was
+                    # (confirm mode, or an event with no clip). Same outcome the two
+                    # branches below reach on their own; spelled out so the confirm
+                    # contract — no clip is ever fetched — is visible here too.
+                    break
                 if not escalated and media.clip_path:
                     escalated = True
                     added = await media.add_clip_frames(

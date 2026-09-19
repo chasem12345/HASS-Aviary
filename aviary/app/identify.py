@@ -4,12 +4,24 @@ Aviary owns the orchestration: the GPU service is a stateless ``/identify`` endp
 answers one question, and everything about *when* to ask, *whether to believe the answer*,
 and *what to do when it doesn't come back* lives here.
 
-Ordering matters and is the subtle part. Frigate normally supplies the species in
-``sub_label`` and Aviary announces on the event's ``end`` message. With identification
-enabled, Frigate's classifier is off, so ``end`` arrives with no species at all: the row is
-stored as ``pending``, nothing is announced, and the announcement happens later, when the
-identification comes back. The "announce exactly once per detection" invariant is
-preserved — it just moves.
+Ordering matters and is the subtle part. Without identification, Frigate supplies the
+species in ``sub_label`` and Aviary announces on the event's ``end`` message. With it
+enabled there are two routes, both of which MOVE the announcement rather than add one:
+
+* Frigate could not name the bird (its classifier is off, or unsure): ``end`` arrives as
+  generic 'bird', the row is stored ``pending``, and the announcement happens when the
+  full identification comes back.
+* Frigate DID name it (classifier on, service 0.12.0+): the row is stored ``confirming``
+  with Frigate's name showing, the service takes a quick look at Frigate's own crop —
+  no clip — and the announcement happens when that lands: Frigate's label as-is unless
+  the birds confirmed by hand (the learning probe) confidently say otherwise, in which
+  case the learned name wins and Frigate's becomes the runner-up. If the service cannot
+  be reached, Frigate's label is announced anyway (status ``frigate``).
+
+Frigate applies a sub_label the moment its classifier clears the threshold, so the same
+object can arrive unnamed first and named later — even after ``end``. ``ingest`` routes
+those late labels here (``resolve_late_label``) or records them for ``_process`` to read,
+so every ordering yields one row and one announcement per (visit, species).
 
 This module deliberately does not import ``ingest``'s caller. ``ingest`` has no reference
 to this module either; ``main`` wires the two together with ``ingest.set_identify_hook``,
@@ -19,6 +31,7 @@ which keeps the import graph acyclic and lets tests substitute a fake service.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import threading
@@ -70,7 +83,15 @@ def _make_client() -> Optional[httpx.AsyncClient]:
 
 
 _http = http.register("identify", _make_client)
-_queue: Optional[asyncio.Queue] = None
+# A priority queue: confirmations (Frigate's crops only, no clip) go ahead of full
+# identifications. They are the quick answers, and a burst of birds fills the queue with
+# slow clip pipelines — exactly the moment a confirmation must not wait behind them.
+# Items are (priority, sequence, row); the sequence keeps FIFO order within a priority
+# and stops the queue from ever comparing two dicts.
+_queue: Optional[asyncio.PriorityQueue] = None
+_seq = itertools.count()
+_PRIORITY_CONFIRM = 0
+_PRIORITY_FULL = 1
 _workers: list[asyncio.Task] = []
 _loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -103,7 +124,7 @@ async def start(loop: asyncio.AbstractEventLoop) -> None:
     if not enabled():
         return
     _loop = loop
-    _queue = asyncio.Queue(maxsize=_QUEUE_MAX)
+    _queue = asyncio.PriorityQueue(maxsize=_QUEUE_MAX)
     for i in range(max(1, _settings.identify_workers)):
         _workers.append(asyncio.create_task(_worker(i), name=f"aviary-identify-{i}"))
     log.info(
@@ -111,6 +132,8 @@ async def start(loop: asyncio.AbstractEventLoop) -> None:
         _settings.identify_url, len(_workers),
         _settings.identify_min_score, _settings.identify_min_margin,
     )
+    # Keeps confirm_available() current for the MQTT thread, which cannot await.
+    _workers.append(asyncio.create_task(_capability_loop(), name="aviary-identify-capabilities"))
 
 
 async def stop() -> None:
@@ -140,14 +163,25 @@ def submit(row: dict[str, Any]) -> bool:
             return False
         _inflight.add(ref)
 
+    confirm = row.get("_mode") == "confirm"
+    priority = _PRIORITY_CONFIRM if confirm else _PRIORITY_FULL
+
     def _put() -> None:
         try:
-            _queue.put_nowait(dict(row))
+            _queue.put_nowait((priority, next(_seq), dict(row)))
         except asyncio.QueueFull:
+            _discard(ref)
+            if confirm:
+                # Frigate already has a name for this bird; a full queue is no reason
+                # to hold it back. Announce as-is (status 'frigate') — same as when the
+                # service cannot be reached.
+                log.warning("Identification queue full; announcing Frigate's %s for %s "
+                            "without confirmation.", row.get("common_name"), ref)
+                _loop.create_task(_accept_frigate(dict(row), "queue full"))
+                return
             # Mark it rather than dropping it silently, so a backlog shows up in the
             # review queue instead of looking like the detection never happened.
             log.warning("Identification queue full; %s marked failed.", ref)
-            _discard(ref)
             db.set_identification(row["source"], ref, status="failed")
 
     # call_soon_threadsafe rather than run_coroutine_threadsafe: put_nowait doesn't need
@@ -170,6 +204,11 @@ async def requeue_pending() -> int:
     if not enabled():
         return 0
     rows = await asyncio.to_thread(db.pending_identifications)
+    for row in rows:
+        # A row stored 'confirming' was waiting on the quick look at Frigate's crop, not
+        # a full identification; its common_name is Frigate's (canonical) label.
+        if row.get("id_status") == "confirming":
+            row["_mode"] = "confirm"
     queued = sum(1 for row in rows if submit(row))
     if queued:
         log.info("Requeued %d detection(s) left pending by a restart.", queued)
@@ -180,7 +219,7 @@ async def requeue_pending() -> int:
 
 async def _worker(index: int) -> None:
     while True:
-        row = await _queue.get()
+        _, _, row = await _queue.get()
         ref = row.get("source_ref", "")
         try:
             await _process(row)
@@ -191,15 +230,28 @@ async def _worker(index: int) -> None:
             # A worker that dies takes a permanent slice of throughput with it, and the
             # detection would sit in 'pending' forever. Log and keep serving.
             log.exception("Identification worker %d failed on %s", index, ref)
-            await asyncio.to_thread(
-                db.set_identification, row.get("source", "frigate"), ref, "failed"
-            )
+            settled = False
+            if row.get("_mode") == "confirm":
+                # Frigate's name is still good; a bug here must not hold it back.
+                try:
+                    await _accept_frigate(row, "error")
+                    settled = True
+                except Exception:  # noqa: BLE001
+                    log.exception("Falling back to Frigate's label failed for %s", ref)
+            if not settled:
+                await asyncio.to_thread(
+                    db.set_identification, row.get("source", "frigate"), ref, "failed"
+                )
         finally:
             _discard(ref)
             _queue.task_done()
 
 
 async def _exclusions(row: dict[str, Any]) -> list[str]:
+    return await asyncio.to_thread(_exclusion_names, row)
+
+
+def _exclusion_names(row: dict[str, Any]) -> list[str]:
     """Species the identifier must not suggest for this detection.
 
     Two sources, and they mean different things:
@@ -216,7 +268,7 @@ async def _exclusions(row: dict[str, Any]) -> list[str]:
     """
     names: list[str] = []
     if row.get("id"):
-        rejected = await asyncio.to_thread(db.rejections_for, row["id"])
+        rejected = db.rejections_for(row["id"])
         if rejected:
             # Loud on purpose. A rejection silently vetoes that species on every future
             # run of this detection — the single most confusing failure mode this
@@ -229,7 +281,7 @@ async def _exclusions(row: dict[str, Any]) -> list[str]:
             )
         names.extend(rejected)
     if _settings.identify_exclude_blacklisted:
-        for common, sci in await asyncio.to_thread(db.blacklist_names):
+        for common, sci in db.blacklist_names():
             names.extend(n for n in (common, sci) if n)
     return names
 
@@ -317,6 +369,9 @@ async def _zoom_allowed(row: dict[str, Any]) -> bool:
 
 
 async def _process(row: dict[str, Any]) -> None:
+    if row.get("_mode") == "confirm":
+        await _process_confirm(row)
+        return
     ref = row["source_ref"]
     priors = await _audio_priors(row)
     exclude = await _exclusions(row)
@@ -429,6 +484,31 @@ async def _process(row: dict[str, Any]) -> None:
     # the tracked one is not.
     await _store_subjects(row, result, embed_key)
 
+    if not passes and not rescued and row.get("source") == "frigate":
+        # Frigate may have named this bird while we were looking (its classifier
+        # applies a sub_label the moment it clears the threshold — possibly after the
+        # end message that sent us here). An uncertain answer of ours does not outrank
+        # a confident one of Frigate's: its label stands, with our winner as runner-up,
+        # exactly as a confirmation would have ended. Never a name that was rejected
+        # for this bird or blacklisted — that is what sent it to the full run.
+        late = await _late_frigate_label(row, result)
+        if late and late[0].lower() not in {e.lower() for e in (exclude or [])}:
+            label, late_score = late
+            verdict = _frigate_verdict(label, slim_candidates, blended)
+            recorded = await _record_answer(
+                row, result, verdict, embed_key=embed_key, probe_weight=probe_weight,
+                probe_examples=probe_examples,
+                confidence=late_score if late_score is not None else verdict["score"],
+            )
+            if recorded:
+                log.info(
+                    "Identification for %s was uncertain (%s score=%.3f margin=%.3f) but "
+                    "Frigate named it %s%s — Frigate's label stands.",
+                    ref, name, score, margin, label,
+                    f" ({late_score:.2f})" if late_score is not None else "",
+                )
+            return
+
     if not passes and not rescued:
         log.info(
             "Identification for %s below threshold: %s score=%.3f margin=%.3f "
@@ -485,6 +565,319 @@ async def _process(row: dict[str, Any]) -> None:
         f", probe:{probe_examples}" if probe_examples else "",
         result.get("elapsed_ms", "?"),
     )
+
+
+# ------------------------------------------------------------ Frigate confirmation
+
+def _slim_candidates(candidates: Any) -> list[dict]:
+    """The service's candidate shape (common_name/scientific_name) as the slim one
+    probe.blend expects (name/sci/code/score). Accepts either shape."""
+    return [
+        {"name": c.get("common_name") or c.get("name"),
+         "sci": c.get("scientific_name") or c.get("sci"),
+         "code": c.get("species_code") or c.get("code"),
+         "score": float(c.get("score") or 0.0)}
+        for c in (candidates or [])
+        if isinstance(c, dict) and (c.get("common_name") or c.get("name"))
+    ]
+
+
+def _decode_candidates(stored: Any) -> list[dict]:
+    """A row's stored ``id_candidates`` JSON back to the slim list."""
+    if not stored:
+        return []
+    try:
+        data = json.loads(stored) if isinstance(stored, str) else stored
+    except (ValueError, TypeError):
+        return []
+    return _slim_candidates(data) if isinstance(data, list) else []
+
+
+def _lookup(candidates: list[dict], name: str) -> Optional[dict]:
+    """The candidate for a species, by common OR scientific name, case-insensitive."""
+    key = (name or "").strip().lower()
+    if not key:
+        return None
+    for c in candidates:
+        if (c.get("name") or "").lower() == key or (c.get("sci") or "").lower() == key:
+            return c
+    return None
+
+
+def _frigate_verdict(frigate_name: str, service: list[dict],
+                     blended: Optional[dict]) -> dict:
+    """Decide between Frigate's label and what the learned birds say.
+
+    The rule (the user's, 2026-09-19): Frigate's label stands unless the probe — the
+    birds confirmed by hand — blends to a DIFFERENT species that clears the same
+    thresholds a fresh identification must (``identify_min_score`` /
+    ``identify_min_margin``). The service's own zero-shot disagreement never overrides on
+    its own: with its default supervised backend being Frigate's model, and Frigate
+    having seen the bird across many frames, an uncorroborated "I'd have said otherwise"
+    is not evidence enough. It is recorded as the runner-up so the card can say so.
+
+    Returns ``{name, sci, code, score, margin, runner_up, candidates, override}``. When
+    Frigate stands, ``score`` is the (blended or service) probability of ITS species and
+    ``margin`` its lead over the best other candidate — honest numbers about the label,
+    not about whichever species the service preferred.
+    """
+    ranked = list(blended["candidates"]) if blended else list(service)
+    learned = blended["name"] if blended else None
+    override = (
+        blended is not None
+        and (learned or "").lower() != frigate_name.lower()
+        and blended["score"] >= _settings.identify_min_score
+        and blended["margin"] >= _settings.identify_min_margin
+    )
+    if override:
+        return {
+            "name": learned, "sci": blended.get("sci"), "code": blended.get("code"),
+            "score": float(blended["score"]), "margin": float(blended["margin"]),
+            "runner_up": frigate_name, "candidates": ranked, "override": True,
+        }
+    mine = _lookup(ranked, frigate_name) or _lookup(service, frigate_name)
+    score = float(mine["score"]) if mine else 0.0
+    others = [float(c["score"]) for c in ranked
+              if (c.get("name") or "").lower() != frigate_name.lower()
+              and (c.get("sci") or "").lower() != frigate_name.lower()]
+    margin = max(0.0, score - max(others, default=0.0))
+    # What aviary-id would have said instead, if anything.
+    top = ranked[0] if ranked else None
+    if top and (top.get("name") or "").lower() != frigate_name.lower():
+        runner_up = top.get("name")
+    else:
+        runner_up = ranked[1].get("name") if len(ranked) > 1 else None
+    return {
+        "name": frigate_name,
+        "sci": mine.get("sci") if mine else None,
+        "code": mine.get("code") if mine else None,
+        "score": score, "margin": margin, "runner_up": runner_up,
+        "candidates": ranked, "override": False,
+    }
+
+
+async def _record_answer(row: dict[str, Any], result: dict, verdict: dict, *,
+                         embed_key: Optional[str], probe_weight: Optional[float],
+                         probe_examples: Optional[int], confidence: Optional[float]) -> bool:
+    """Write a settled species onto the row and announce it — the one announcement.
+
+    Goes back through ``ingest.store_row`` (authoritative) so canonicalization, the
+    blacklist, the new-species notification and the keepsake hook all apply. False when
+    the row was filtered on the way in (a blacklisted species), in which case it is
+    removed along with its crop, as ``_process`` does.
+    """
+    ref = row["source_ref"]
+    identified = {k: v for k, v in row.items() if k != "_mode"}
+    identified["common_name"] = verdict["name"]
+    identified["scientific_name"] = verdict.get("sci")
+    identified["species_code"] = verdict.get("code")
+    # For the notification payload; the column is written by set_identification below
+    # (upsert keeps the highest confidence seen, which would be Frigate's object score).
+    identified["confidence"] = confidence
+    stored = await asyncio.to_thread(ingest.store_row, identified, True, True, False, True)
+    if not stored:
+        log.debug("Settled %s as %s, which is filtered; dropping the row.", ref, verdict["name"])
+        await asyncio.to_thread(db.drop_detection, row["source"], ref)
+        await asyncio.to_thread(crops.remove, ref)
+        return False
+    await asyncio.to_thread(
+        db.set_identification, row["source"], ref, "ok",
+        verdict["score"], verdict["margin"], result.get("model_version"),
+        result.get("embedding"), True, _encode_candidates(verdict["candidates"]),
+        embedding_model=embed_key, probe_weight=probe_weight, probe_examples=probe_examples,
+        embedding_target=result.get("embedding_target") or result.get("common_name"),
+        confidence=confidence,
+    )
+    return True
+
+
+async def _late_frigate_label(row: dict[str, Any],
+                              result: dict) -> Optional[tuple[str, Optional[float]]]:
+    """Frigate's label for a row that was dispatched unnamed, if one has since landed.
+
+    Two places it can be: on the row (``ingest.apply_frigate_label`` recorded a label
+    that arrived while we were pending) or in the service's answer (0.12.0+ echoes the
+    ``sub_label`` from the event JSON it fetched — the only channel for a label Frigate
+    applied after the event's end message). The latter is persisted so the card can say
+    what Frigate said.
+    """
+    current = await asyncio.to_thread(db.detection_by_ref, row["source"], row["source_ref"])
+    label = (current or {}).get("frigate_label")
+    score = (current or {}).get("frigate_score")
+    if not label and result.get("frigate_label"):
+        label, score = result["frigate_label"], result.get("frigate_label_score")
+        await asyncio.to_thread(db.set_frigate_label, row["source"], row["source_ref"],
+                                label, score)
+    label = (label or "").strip()
+    if not label or ingest.is_unclassified({"common_name": label}):
+        return None
+    return label, score
+
+
+async def _process_confirm(row: dict[str, Any]) -> None:
+    """Take a quick second look at a bird Frigate already named, then announce once.
+
+    The service classifies Frigate's own crops of the tracked object (``mode: confirm``,
+    no clip), the probe weighs the embedding against the birds confirmed by hand, and
+    ``_frigate_verdict`` decides. Anything that stops a verdict — no answer, an error, no
+    media — falls back to announcing Frigate's label as-is (``_accept_frigate``).
+    """
+    ref = row["source_ref"]
+    frigate_name = (row.get("common_name") or row.get("frigate_label") or "").strip()
+    frigate_score = row.get("frigate_score")
+    if not frigate_name or ingest.is_unclassified({"common_name": frigate_name}):
+        # Nothing to confirm (the name was reset under us): run the full identification.
+        plain = {k: v for k, v in row.items() if k != "_mode"}
+        await asyncio.to_thread(db.set_identification, row["source"], ref, "pending")
+        await _process(plain)
+        return
+
+    priors = await _audio_priors(row)
+    exclude = await _exclusions(row)
+    result = await _call_service(ref, priors, exclude, None, target=frigate_name,
+                                 mode="confirm", frigate_label=frigate_name,
+                                 frigate_score=frigate_score)
+    if result is None or result.get("status") != "ok":
+        await _accept_frigate(row, (result or {}).get("status", "no answer"))
+        return
+
+    model = result.get("model_version")
+    embed_key = result.get("embedding_key") or db.embedding_key_from(model or "")
+    embedding = result.get("embedding")
+    service = _slim_candidates(result.get("candidates"))
+    await _ensure_probe(embed_key)
+    blended = probe.blend(embedding or "", service, embed_key, exclude=set(exclude or []))
+    verdict = _frigate_verdict(frigate_name, service, blended)
+    probe_examples = blended["probe_examples"] if blended else None
+    probe_weight = blended.get("probe_weight") if blended else None
+
+    if await asyncio.to_thread(crops.save, ref, result.get("best_crop")):
+        await asyncio.to_thread(db.set_has_crop, ref, True)
+    await _store_subjects(row, result, embed_key)
+
+    # Frigate's label stands with Frigate's own confidence in it; an override carries
+    # the learned answer's score.
+    confidence = (verdict["score"] if verdict["override"]
+                  else (frigate_score if frigate_score is not None else verdict["score"]))
+    if not await _record_answer(row, result, verdict, embed_key=embed_key,
+                                probe_weight=probe_weight, probe_examples=probe_examples,
+                                confidence=confidence):
+        return
+    frigate_note = f" ({frigate_score:.2f})" if frigate_score is not None else ""
+    if verdict["override"]:
+        log.info(
+            "Overrode Frigate on %s: %s%s -> %s (score=%.3f margin=%.3f) on %d confirmed "
+            "example(s) of your own, %sms.",
+            ref, frigate_name, frigate_note, verdict["name"], verdict["score"],
+            verdict["margin"], probe_examples or 0, result.get("elapsed_ms", "?"),
+        )
+    else:
+        theirs = result.get("common_name")
+        opinion = ("agrees" if (theirs or "").lower() == frigate_name.lower()
+                   else f"would have said {theirs} ({float(result.get('score') or 0):.2f})")
+        log.info(
+            "Confirmed %s: Frigate said %s%s; aviary-id %s%s — Frigate's label stands "
+            "(score=%.3f margin=%.3f, %d frame(s), %sms).",
+            ref, frigate_name, frigate_note, opinion,
+            f", probe:{probe_examples}" if probe_examples else "",
+            verdict["score"], verdict["margin"], result.get("frames_used", 0),
+            result.get("elapsed_ms", "?"),
+        )
+
+
+async def _accept_frigate(row: dict[str, Any], reason: str) -> None:
+    await asyncio.to_thread(_accept_frigate_sync, row, reason)
+
+
+def _accept_frigate_sync(row: dict[str, Any], reason: str) -> None:
+    """Announce Frigate's label without a confirmation (status ``frigate``).
+
+    The fallback for every way a confirmation can fail to happen: the service is down,
+    answered no_media/error, the queue was full, a worker raised. Frigate had a name and
+    a confident score; hiding the bird behind "no ID" would be worse than trusting it.
+    No embedding is stored, so this can never become a learning example. ↻ on the card
+    runs a full identification later.
+    """
+    ref = row["source_ref"]
+    name = row.get("frigate_label") if ingest.is_unclassified(row) else row.get("common_name")
+    name = (name or row.get("frigate_label") or "").strip()
+    if not name or ingest.is_unclassified({"common_name": name}):
+        db.set_identification(row["source"], ref, "failed")
+        return
+    score = row.get("frigate_score")
+    identified = {k: v for k, v in row.items() if k != "_mode"}
+    identified["common_name"] = name
+    identified["confidence"] = score
+    if not ingest.store_row(identified, True, True, False, True):
+        # Filtered (blacklisted after the fact): remove the provisional row.
+        db.drop_detection(row["source"], ref)
+        crops.remove(ref)
+        return
+    db.set_identification(row["source"], ref, "frigate", None, None, None, None,
+                          score is not None, None, confidence=score)
+    log.warning("Could not confirm %s (%s); announcing Frigate's %s%s as-is.",
+                ref, reason, name, f" ({score:.2f})" if score is not None else "")
+
+
+def resolve_late_label(det: dict[str, Any], label: str, score: Optional[float]) -> None:
+    """Frigate named a bird the identifier had already given up on. Synchronous: called
+    from the MQTT thread via ``ingest.apply_frigate_label``.
+
+    ``low_confidence``: the stored embedding is enough to ask the probe whether the
+    learned birds disagree — no second GPU pass — and ``_frigate_verdict`` decides as a
+    live confirmation would. ``failed``: nothing to weigh against; Frigate's label is
+    announced as-is. Either way exactly one announcement, through store_row.
+    """
+    if not enabled():
+        return
+    ref = det["source_ref"]
+    label = (label or "").strip()
+    exclude = _exclusion_names(det)
+    if label.lower() in {e.lower() for e in exclude}:
+        log.info("Frigate's late label %r for %s was rejected for this bird or is "
+                 "blacklisted; leaving it in the review queue.", label, ref)
+        return
+    row = dict(det)
+    row["frigate_label"], row["frigate_score"] = label, score
+    det_id = det.get("id")
+    if det.get("id_status") != "low_confidence" or not det_id:
+        _accept_frigate_sync(row, "identification had failed")
+        return
+    stored = db.embedding_for(det_id)
+    service = _decode_candidates(det.get("id_candidates"))
+    blended = None
+    if stored:
+        model, embedding = stored
+        if probe.ready() and probe.model() == model:
+            blended = probe.blend(embedding, service, model, exclude=set(exclude))
+    verdict = _frigate_verdict(label, service, blended)
+    identified = dict(row)
+    identified["common_name"] = verdict["name"]
+    identified["scientific_name"] = verdict.get("sci")
+    identified["species_code"] = verdict.get("code")
+    confidence = verdict["score"] if verdict["override"] else (
+        score if score is not None else verdict["score"])
+    identified["confidence"] = confidence
+    if not ingest.store_row(identified, True, True, False, True):
+        db.drop_detection(row["source"], ref)
+        crops.remove(ref)
+        return
+    db.set_identification(
+        row["source"], ref, "ok", verdict["score"], verdict["margin"], det.get("id_model"),
+        None, True, _encode_candidates(verdict["candidates"]),
+        probe_weight=blended.get("probe_weight") if blended else None,
+        probe_examples=blended["probe_examples"] if blended else None,
+        confidence=confidence,
+    )
+    if verdict["override"]:
+        log.info("Frigate later said %s for %s, but %d confirmed example(s) of your own say "
+                 "%s (score=%.3f margin=%.3f) — the learned name stands.",
+                 label, ref, blended["probe_examples"], verdict["name"],
+                 verdict["score"], verdict["margin"])
+    else:
+        log.info("Frigate later named %s %s%s; the identifier had been unsure — Frigate's "
+                 "label stands (runner-up %s).", ref, label,
+                 f" ({score:.2f})" if score is not None else "", verdict["runner_up"])
 
 
 # Old and new "other bird" subjects whose embeddings are at least this alike are the same
@@ -716,13 +1109,17 @@ async def _call_service(event_id: str, priors: dict[str, float],
                         exclude: Optional[list[str]] = None,
                         zoom: Optional[dict] = None,
                         target: Optional[str] = None,
-                        target_subject: int = 0) -> Optional[dict]:
+                        target_subject: int = 0,
+                        mode: Optional[str] = None,
+                        frigate_label: Optional[str] = None,
+                        frigate_score: Optional[float] = None) -> Optional[dict]:
     """POST to the service, retrying once. Returns the parsed body or None.
 
     ``target`` asks the service (0.11.0+) to choose the returned embedding and best
     crop for THAT species on subject ``target_subject`` rather than for its winner; an
     older service ignores unknown fields, and one that rejects them (422) is retried
-    without.
+    without. ``mode="confirm"`` (0.12.0+) asks for Frigate's crops only, no clip, with
+    Frigate's label along for the echo; same fallback.
     """
     if _http.client is None:
         return None
@@ -745,7 +1142,14 @@ async def _call_service(event_id: str, priors: dict[str, float],
     if target:
         payload["target"] = target
         payload["target_subject"] = int(target_subject or 0)
+    if mode:
+        payload["mode"] = mode
+    if frigate_label:
+        payload["frigate_label"] = frigate_label
+        if frigate_score is not None:
+            payload["frigate_label_score"] = float(frigate_score)
     url = f"{_settings.identify_url}/identify"
+    _newer_fields = ("target", "target_subject", "mode", "frigate_label", "frigate_label_score")
 
     for attempt in (1, 2):
         try:
@@ -764,11 +1168,12 @@ async def _call_service(event_id: str, priors: dict[str, float],
                 return None
             log.warning("Identification service returned %s for %s (attempt %d): %s",
                         resp.status_code, event_id, attempt, resp.text[:200])
-            if resp.status_code == 422 and "target" in payload:
+            if resp.status_code == 422 and any(k in payload for k in _newer_fields):
                 # A strict older service that rejects fields it does not know: ask again
-                # the way it understands. The answer is then chosen for its own winner.
-                payload.pop("target", None)
-                payload.pop("target_subject", None)
+                # the way it understands. The answer is then chosen for its own winner,
+                # and a confirm request becomes a full identification.
+                for key in _newer_fields:
+                    payload.pop(key, None)
                 continue
             # 4xx other than 401 is a bad request; a retry produces the same answer.
             if resp.status_code < 500:
@@ -867,6 +1272,56 @@ async def supports_target() -> bool:
     ok = bool(data.get("ok")) and _version_at_least(data.get("version"), (0, 11, 0))
     _target_support = (now, ok)
     return ok
+
+
+_confirm_support: Optional[tuple[float, bool]] = None
+# The last answer, readable without awaiting: ingest asks from the MQTT thread.
+_confirm_ready = False
+
+
+async def supports_confirm() -> bool:
+    """Whether the service has confirm mode (aviary-id 0.12.0+). From /healthz, cached.
+
+    Also the switch ``confirm_available()`` reads. False while the service is down or
+    still loading, which makes "service unreachable → announce Frigate's label at end"
+    happen at the ingest step rather than after a queue wait.
+    """
+    global _confirm_support, _confirm_ready
+    now = time.monotonic()
+    if _confirm_support and now - _confirm_support[0] < _PROBE_HEAL_INTERVAL:
+        return _confirm_support[1]
+    data = await health()
+    ok = bool(data.get("ok")) and _version_at_least(data.get("version"), (0, 12, 0))
+    if _settings and _settings.identify_confirm_frigate:
+        if ok and not _confirm_ready:
+            log.info("aviary-id %s: Frigate's own bird classifications will be confirmed "
+                     "before they are announced.", data.get("version"))
+        elif not ok and data.get("ok") and _confirm_support is None:
+            log.info("aviary-id %s predates confirm mode (0.12.0); Frigate's own "
+                     "classifications are announced as-is.", data.get("version"))
+    _confirm_support = (now, ok)
+    _confirm_ready = ok
+    return ok
+
+
+def confirm_available() -> bool:
+    """Whether an ended, Frigate-named event should be held for confirmation now.
+
+    Synchronous and cheap on purpose — called on the MQTT thread for every such event.
+    Off until the first successful health check, so a fresh start announces Frigate's
+    labels at end (today's behaviour) rather than parking them.
+    """
+    return bool(_settings and _settings.identify_confirm_frigate and enabled()
+                and _confirm_ready)
+
+
+async def _capability_loop() -> None:
+    while True:
+        try:
+            await supports_confirm()
+        except Exception:  # noqa: BLE001 — a health hiccup must not kill the loop
+            log.debug("Capability check failed", exc_info=True)
+        await asyncio.sleep(_PROBE_HEAL_INTERVAL)
 
 
 async def probe_model() -> Optional[str]:

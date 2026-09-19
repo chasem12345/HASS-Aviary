@@ -67,6 +67,10 @@ class MqttIngestor:
         # runs a Frigate older than 0.14, which has no review items to publish).
         if s.frigate_review_topic:
             topics.append((s.frigate_review_topic, 0))
+        # Optional safety net for a classification Frigate publishes after an event's
+        # end message (see frigate_object_update_topic).
+        if s.frigate_object_update_topic:
+            topics.append((s.frigate_object_update_topic, 0))
         client.subscribe(topics)
         log.info("Subscribed to %s", ", ".join(f"'{t}'" for t, _ in topics))
 
@@ -98,6 +102,9 @@ class MqttIngestor:
                 ingest.handle_frigate(message.payload)
             elif s.frigate_review_topic and _topic_matches(topic, s.frigate_review_topic):
                 ingest.handle_frigate_review(message.payload)
+            elif s.frigate_object_update_topic and _topic_matches(
+                    topic, s.frigate_object_update_topic):
+                ingest.handle_frigate_object_update(message.payload)
             elif _topic_matches(topic, s.birdnet_topic):
                 ingest.handle_birdnet(message.payload)
         except Exception:  # noqa: BLE001 - never let a bad message kill the loop

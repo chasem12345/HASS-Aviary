@@ -30,7 +30,8 @@ data readout, where a bird BirdNET-Go has only *heard* stays a silhouette until 
 
 > By default Aviary does **no** classification of its own — it reads the species Frigate
 > emits in the event `sub_label` and the species BirdNET-Go emits in its MQTT payload.
-> Optionally it can take over visual identification entirely; see below.
+> Optionally it can take over visual identification entirely, or confirm Frigate's
+> labels with a second look; see below.
 
 ## Screenshots
 
@@ -69,7 +70,10 @@ Because Aviary already ingests BirdNET-Go audio, it also passes species *heard* 
 time as a prior — a cardinal that sang on its way to the feeder is more likely to be the bird
 in the picture. No standalone bird identifier can do that.
 
-Turn Frigate's own bird classification off when you enable this. See
+Frigate's own bird classification can stay on or go off. Off, aviary-id names every bird
+from the clip. On, Frigate names the bird fast and aviary-id (0.12.0+) **confirms** it from
+Frigate's own crop of that bird — no clip, so it keeps up with a busy feeder — letting the
+birds you have confirmed by hand override Frigate when they confidently disagree. See
 [aviary-id/README.md](aviary-id/README.md) for the service and
 [aviary/DOCS.md](aviary/DOCS.md#better-bird-identification) for the add-on side.
 

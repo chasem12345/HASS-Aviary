@@ -20,32 +20,46 @@ from typing import Optional
 import paho.mqtt.client as mqtt
 
 FRIGATE_TOPIC = os.environ.get("FRIGATE_TOPIC", "frigate/events")
+FRIGATE_UPDATE_TOPIC = os.environ.get("FRIGATE_UPDATE_TOPIC", "frigate/tracked_object_update")
 BIRDNET_TOPIC = os.environ.get("BIRDNET_TOPIC", "birdnet")
 
 
 def frigate_event(event_id: str, species: Optional[str], camera: str, score: float,
-                  ts: float, msg_type: str = "end") -> dict:
+                  ts: float, msg_type: str = "end",
+                  species_score: Optional[float] = None) -> dict:
     """A Frigate event message.
 
     ``species=None`` is the shape Frigate publishes when its own bird classification is
-    turned off — no ``sub_label`` at all. That is the normal case once external
-    identification is enabled, and it exercises a completely different ingest path (the
-    row is stored as pending and handed to aviary-id rather than announced), so it needs
-    covering here.
+    turned off — no ``sub_label`` at all. With identification enabled that exercises the
+    full-identification path (the row is stored as pending and handed to aviary-id).
+
+    ``species_score`` gives the ``[name, score]`` pair shape current Frigate publishes
+    when its classifier IS on: the score is the classifier's confidence in the name.
+    With identification enabled and aviary-id 0.12.0+, such an event is held for
+    confirmation (stored ``confirming``, announced once aviary-id has looked at Frigate's
+    crop) rather than announced at ``end``.
     """
     obj = {
         "id": event_id,
         "camera": camera,
         "label": "bird",
-        "sub_label": species,
+        "sub_label": [species, species_score] if (species and species_score is not None) else species,
         "top_score": score,
         "score": score,
         "start_time": ts,
-        "end_time": ts + 8,
+        "end_time": ts + 8 if msg_type == "end" else None,
         "has_clip": True,
         "has_snapshot": True,
     }
     return {"type": msg_type, "before": obj, "after": obj}
+
+
+def frigate_classification(event_id: str, species: str, score: float, camera: str,
+                           ts: float) -> dict:
+    """A ``frigate/tracked_object_update`` classification message — how a label Frigate
+    applies AFTER an event's end message travels (needs ``frigate_object_update_topic``)."""
+    return {"type": "classification", "id": event_id, "camera": camera, "timestamp": ts,
+            "model": "bird", "sub_label": species, "score": score}
 
 
 def birdnet_event(det_id: int, common: str, sci: str, code: str, conf: float, ts: float) -> dict:
@@ -92,6 +106,21 @@ def main() -> None:
         # The in-progress message for the same shape. It must NOT trigger identification —
         # only the 'end' message does, or every event would cost several GPU passes.
         frigate_event("evt-1005", None, "feeder_cam", 0.83, now - 300, msg_type="new"),
+        # Frigate's classifier ON, as current Frigate publishes it: a [name, score] pair.
+        # The bird arrives as plain 'bird' first and gains the label on a later message —
+        # here on the end. With aviary-id 0.12.0+ the end is stored 'confirming' and the
+        # announcement waits for the confirmation; nothing is announced twice.
+        frigate_event("evt-1006", None, "feeder_cam", 0.85, now - 240, msg_type="new"),
+        frigate_event("evt-1006", "Northern Cardinal", "feeder_cam", 0.85, now - 240,
+                      msg_type="update", species_score=0.91),
+        frigate_event("evt-1006", "Northern Cardinal", "feeder_cam", 0.88, now - 240,
+                      species_score=0.93),
+        # Ended as plain 'bird' (full identification); the label lands afterwards on
+        # the tracked_object_update topic — see late_samples below.
+        frigate_event("evt-1007", None, "feeder_cam", 0.87, now - 120),
+    ]
+    late_samples = [
+        frigate_classification("evt-1007", "Carolina Wren", 0.95, "feeder_cam", now - 110),
     ]
     birdnet_samples = [
         birdnet_event(1, "Rainbow Lorikeet", "Trichoglossus moluccanus", "railor5", 0.88, now - 1800),
@@ -102,7 +131,14 @@ def main() -> None:
     for e in frigate_samples:
         client.publish(FRIGATE_TOPIC, json.dumps(e), qos=0)
         label = e["after"]["sub_label"] or "(no sub_label)"
-        print(f"→ {FRIGATE_TOPIC}: {label} [{e['type']}]")
+        if isinstance(label, list):
+            label = f"{label[0]} ({label[1]:.2f})"
+        print(f"→ {FRIGATE_TOPIC}: {e['after']['id']} {label} [{e['type']}]")
+    time.sleep(0.5)  # the late label is late
+    for e in late_samples:
+        client.publish(FRIGATE_UPDATE_TOPIC, json.dumps(e), qos=0)
+        print(f"→ {FRIGATE_UPDATE_TOPIC}: {e['id']} {e['sub_label']} ({e['score']:.2f}) "
+              f"[classification]")
     for e in birdnet_samples:
         client.publish(BIRDNET_TOPIC, json.dumps(e), qos=0)
         print(f"→ {BIRDNET_TOPIC}: {e['CommonName']}")

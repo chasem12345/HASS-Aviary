@@ -739,19 +739,54 @@ county's few hundred.
 
 ### How it changes the flow
 
-**Turn Frigate's bird classification off** (`classification: bird: enabled: false`). Frigate
-keeps doing what it is good at — spotting that *something bird-shaped* is there — and Aviary
-takes over naming it.
+Frigate's own bird classification can stay **on** or be turned **off**; both work, and they
+change what aviary-id is asked to do.
 
-Every Frigate event then arrives with no `sub_label`. Instead of being discarded by
-`ignore_unclassified`, it is recorded as *pending*, sent to aviary-id, and only announced
-once a species comes back. Notifications still fire exactly once per detection; they just
-fire when the identification lands rather than when the event ends, so they carry a species
-worth reading.
+**With Frigate's classifier off** (`classification: bird: enabled: false`), Frigate keeps
+doing what it is good at — spotting that *something bird-shaped* is there — and Aviary takes
+over naming it. Every Frigate event arrives with no `sub_label`. Instead of being discarded
+by `ignore_unclassified`, it is recorded as *pending*, sent to aviary-id, and only announced
+once a species comes back. aviary-id pulls the clip and snapshot **from Frigate directly**,
+samples frames across the clip, crops to the bird, and classifies the best few. Aviary only
+ever sends it an event id, so no video passes through Home Assistant.
 
-aviary-id pulls the clip and snapshot **from Frigate directly**, samples frames across the
-clip, crops to the bird, and classifies the best three. Aviary only ever sends it an event
-id, so no video passes through Home Assistant.
+**With Frigate's classifier on** (aviary-id 0.12.0+), Frigate names the bird quickly from
+its own crop and Aviary shows that name at once (*confirming…*), but holds the notification
+until aviary-id has taken a second look — at **Frigate's own crops** of that tracked object
+(the thumbnail and the snapshot cut to Frigate's box), with no clip, no frame sampling and
+no detector. That makes it fast, and it makes it about *that* bird: with several birds
+moving through the frame, a detector run over a full frame is the one way a neighbour could
+be classified instead. The verdict is simple. **Frigate's label stands** unless the birds
+you have confirmed by hand — the learning probe, see *Learning from your own birds* — blend
+to a *different* species that clears `identify_min_score` and `identify_min_margin`; then
+the learned name wins and Frigate's is kept as the runner-up (the card reads *overrode
+Frigate*). aviary-id's own disagreement, on its own, never overrides Frigate: its default
+supervised model is the very one behind Frigate's classifier, and Frigate has watched the
+bird across many frames. Events Frigate could *not* name still take the full route above.
+`identify_confirm_frigate: false` turns the second look off and announces Frigate's label
+at event end, as Aviary did before identification existed.
+
+If aviary-id cannot be reached — down, still loading, a full queue, or nothing to look at
+for that event — Frigate's label is announced anyway, with Frigate's own confidence, and the
+card carries a *Frigate* badge; ↻ runs a full identification later. Those rows never become
+learning examples. Frigate's label and score are kept on every row as provenance, and the
+ID badge's tooltip says what Frigate said and whether it was confirmed or overridden.
+
+Frigate applies a `sub_label` the moment its classifier clears its threshold (default 0.9),
+which can be on any message of the object's life — sometimes after the `end` message that
+already sent the event for a full identification. Aviary folds a late label in rather than
+recording it twice: while identification is in flight it is used if the answer comes back
+uncertain; after an uncertain or failed answer it is weighed against the stored embedding
+locally and announced once; after the species was settled it is recorded but changes
+nothing. Either way there is one row per Frigate event and one notification per species per
+visit. Frigate normally reports the label through its events topic itself; if yours
+publishes classifications on `frigate/tracked_object_update` after an event ends (watch the
+topic during a visit), set `frigate_object_update_topic` to subscribe to it too.
+
+Notifications still fire exactly once per detection (per species per visit); they just fire
+when the identification or confirmation lands rather than when the event ends, so they carry
+a species worth reading. Rows still waiting are counted in species totals under their
+provisional name for those few seconds; an override moves the count.
 
 ### Setting it up
 
@@ -759,9 +794,16 @@ id, so no video passes through Home Assistant.
    repository. That machine needs to reach Frigate; it needs no access to Home Assistant.
 2. Set `identify_url` to its address and `identify_enabled` to `true`. Set `identify_token`
    to match `AVIARY_ID_TOKEN` on the service.
-3. Turn off bird classification in Frigate.
+3. Decide about Frigate's bird classification. **Off:** aviary-id names every bird from the
+   clip. **On** (aviary-id 0.12.0+): Frigate names it fast and aviary-id confirms from
+   Frigate's crop — keep Frigate's `threshold` high (its default 0.9), so only its confident
+   calls take the quick route; below it the event arrives unnamed and gets the full look.
+   If you lower that threshold, the learning probe is the only thing that corrects Frigate.
 4. Check the **Settings** page — it shows whether the service is up, whether it found the
-   GPU, and how many species are in its vocabulary.
+   GPU, and how many species are in its vocabulary. The log says which route Frigate's
+   labels take: *Frigate's own bird classifications will be confirmed before they are
+   announced*, or *predates confirm mode* for an older service (labels then announce at
+   end).
 
 ### When it isn't sure
 
@@ -1033,13 +1075,15 @@ upload error instead.
 | `xeno_canto_api_key` | Optional free key from [xeno-canto.org/account](https://xeno-canto.org/account). Unlocks curated song/call reference recordings; blank keeps the iNaturalist fallback. See [Reference recordings](#reference-recordings). |
 | `identify_url` | Base URL of the [aviary-id](#better-bird-identification) companion service, e.g. `http://10.0.0.50:8100`. Blank disables identification. |
 | `identify_token` | Shared secret sent as a bearer token; must match `AVIARY_ID_TOKEN` on the service. Blank means no auth. |
-| `identify_enabled` | Send unidentified Frigate detections to that service (default `false`). **Turn Frigate's own bird classification off when you enable this.** |
+| `identify_enabled` | Send Frigate detections to that service (default `false`). Frigate's own bird classification may be on or off: unnamed events get a full identification; named ones are confirmed from Frigate's crop (aviary-id 0.12.0+, see `identify_confirm_frigate`). |
+| `identify_confirm_frigate` | With Frigate's classifier on, hold its label until aviary-id has looked at Frigate's crop of the same bird; the birds you confirmed by hand may override it (default `true`). `false` announces Frigate's label at event end. See *How it changes the flow*. |
+| `frigate_object_update_topic` | Frigate's `frigate/tracked_object_update` topic, for a classification Frigate publishes after an event's end (default blank = not subscribed). Same `topic_prefix` as `frigate_topic`. |
 | `identify_min_score` | Minimum species probability to accept a result (default `0.35`). Below it, the detection goes to the review queue. |
 | `identify_min_margin` | Minimum gap between the top two species (default `0.08`). A high score with a tiny margin means two confusable birds, not a confident answer. |
 | `identify_workers` | Concurrent identification requests (default `2`). The service serializes GPU work anyway. |
 | `identify_timeout` | Seconds to wait for an identification (default `60`). |
 | `identify_retain_days` | Days to keep unidentified detections before purging them (default `14`; `0` keeps forever). |
-| `identify_learn_from_auto` | Let the learning probe also learn from the identifier's own confident answers, not only from species you named by hand (default `false`). See *Learning from your own birds*. |
+| `identify_learn_from_auto` | Let the learning probe also learn from the identifier's own confident answers, not only from species you named by hand (default `false`). A Frigate label the identifier let stand counts as one of its answers. See *Learning from your own birds*. |
 | `identify_use_audio_priors` | Bias identification toward species BirdNET-Go heard around the same time (default `true`). |
 | `identify_exclude_blacklisted` | Rule blacklisted species out of the identifier's candidate list (default `true`). Turn off if you blacklisted a species that genuinely visits. |
 | `identify_zoom_map` | `"detect_camera:ptz_camera"` pairs (default empty). Events from the detect camera are classified from the PTZ camera's recordings for the event's time window instead of the event clip — see *Cross-camera zoom* below. Needs aviary-id 0.8.0+. |

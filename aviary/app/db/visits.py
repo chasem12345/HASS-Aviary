@@ -208,6 +208,9 @@ def seed_visit_announcements(since: float) -> int:
             SELECT d.visit_id, d.common_name, MIN(d.id), ?
             FROM detections d JOIN visits v ON v.id = d.visit_id
             WHERE (v.end_time IS NULL OR v.end_time >= ?)
+              -- A row awaiting confirmation is named (Frigate's label, provisionally)
+              -- but NOT yet announced: that happens when the answer lands.
+              AND (d.id_status IS NULL OR d.id_status NOT IN ('pending', 'confirming'))
               {_named_clause('d')}
             GROUP BY d.visit_id, d.common_name
             """,

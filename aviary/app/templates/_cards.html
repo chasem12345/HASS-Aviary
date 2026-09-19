@@ -61,11 +61,19 @@
       {% if d.id_status == 'ok' %}
         {# The margin is the honest signal: a high score separated from the runner-up by
            almost nothing is two confusable species, not a confident answer. Surfacing it
-           here is what makes a thin call visible without opening anything. #}
+           here is what makes a thin call visible without opening anything. With
+           Frigate's classifier on, the row also says what Frigate called it and whether
+           aviary-id confirmed that or the learned birds overrode it. #}
+        {% set overrode = d.frigate_label and (d.common_name or '') | lower != d.frigate_label | lower %}
         <span class="idbadge idbadge-ok"
-              title="Identified by aviary-id&#10;score {{ d.id_score | fmt_pct }} · margin {{ d.id_margin | fmt_pct }}{% if d.id_probe_examples %}&#10;matched against {{ d.id_probe_examples }} confirmed example(s) of your own{% endif %}{% if d.id_model %}&#10;{{ d.id_model }}{% endif %}">
-          ID {{ d.id_margin | fmt_pct }} margin{% if d.id_probe_examples %} ·&nbsp;learned{% endif %}
+              title="Identified by aviary-id&#10;score {{ d.id_score | fmt_pct }} · margin {{ d.id_margin | fmt_pct }}{% if d.id_probe_examples %}&#10;matched against {{ d.id_probe_examples }} confirmed example(s) of your own{% endif %}{% if d.frigate_label %}&#10;Frigate said {{ d.frigate_label }}{% if d.frigate_score %} ({{ d.frigate_score | fmt_pct }}){% endif %} — {{ 'overridden by your confirmed birds' if overrode else 'confirmed' }}{% endif %}{% if d.id_model %}&#10;{{ d.id_model }}{% endif %}">
+          ID {{ d.id_margin | fmt_pct }} margin{% if d.id_probe_examples %} ·&nbsp;learned{% endif %}{% if overrode %} ·&nbsp;overrode Frigate{% elif d.frigate_label %} ·&nbsp;confirmed{% endif %}
         </span>
+      {% elif d.id_status == 'confirming' %}
+        <span class="idbadge idbadge-pending" title="Frigate's classification; aviary-id is taking a second look before it is announced">confirming…</span>
+      {% elif d.id_status == 'frigate' %}
+        <span class="idbadge idbadge-frigate"
+              title="Frigate's classifier{% if d.frigate_score %} ({{ d.frigate_score | fmt_pct }}){% endif %}; aviary-id could not confirm it — ↻ below to retry">Frigate</span>
       {% elif d.id_status == 'low_confidence' %}
         <span class="idbadge idbadge-low"
               title="Identification was below the confidence threshold (score {{ d.id_score | fmt_pct }}, margin {{ d.id_margin | fmt_pct }}) — needs review">

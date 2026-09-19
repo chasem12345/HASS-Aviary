@@ -175,10 +175,14 @@ def create_app() -> FastAPI:
              vstats["visits"], vstats["grouped"], vstats["ungrouped"], seeded)
 
     if identify.enabled():
-        # Frigate's classifier should be OFF when this is on, so every Frigate event
-        # arrives as generic 'bird' and is routed here instead of being discarded by the
-        # unclassified gate.
+        # Two routes into the identifier. An event Frigate could not name arrives as
+        # generic 'bird' and gets the full identification instead of being discarded by
+        # the unclassified gate. One Frigate DID name is held for a quick confirmation
+        # of Frigate's own crop (service 0.12.0+), and a label that lands after the
+        # identifier already answered is reconciled without a second GPU pass.
         ingest.set_identify_hook(identify.submit)
+        ingest.set_confirm_capable(identify.confirm_available)
+        ingest.set_late_label_hook(identify.resolve_late_label)
     elif settings.identify_enabled:
         # Enabled with no URL: without this warning every Frigate detection would simply
         # vanish (unclassified, no identifier) with nothing in the log to explain it.

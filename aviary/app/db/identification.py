@@ -19,6 +19,8 @@ __all__ = [
     "_upsert_detection_embedding",
     "put_detection_embedding",
     "has_embedding",
+    "embedding_for",
+    "set_frigate_label",
     "embedding_target_for",
     "delete_detection_embedding",
     "manual_rows_missing_embeddings",
@@ -59,6 +61,7 @@ def set_identification(
     probe_weight: Optional[float] = None,
     probe_examples: Optional[int] = None,
     embedding_target: Optional[str] = None,
+    confidence: Optional[float] = None,
 ) -> None:
     """Record the outcome of an external identification attempt.
 
@@ -73,6 +76,9 @@ def set_identification(
     bird" (typically 0.85+) and ours answers "is this a Black-capped Chickadee". Taking
     the maximum would put Frigate's high object score in the field the UI labels as
     species confidence, making an uncertain identification look authoritative.
+    ``confidence`` names a different value to write there than ``score``: a confirmation
+    that lets Frigate's label stand records the identifier's probability for that label
+    as ``id_score`` but Frigate's own classification score as the row's confidence.
 
     ``model`` (the full model_version) is provenance for the RESULT — after a model or
     vocabulary change it tells you which rows are stale. ``embedding_model`` keys the
@@ -98,7 +104,7 @@ def set_identification(
             """,
             (status, score, margin, model, time.time(), candidates,
              probe_weight, probe_examples)
-            + ((score,) if set_confidence else ())
+            + (((confidence if confidence is not None else score),) if set_confidence else ())
             + (source, source_ref),
         )
         if embedding and embedding_model:
@@ -168,6 +174,44 @@ def has_embedding(detection_id: int) -> bool:
             (detection_id,),
         ).fetchone()
     return row is not None
+
+
+def embedding_for(detection_id: int) -> Optional[tuple[str, str]]:
+    """(embedding key, base64 embedding) stored for a detection, or None.
+
+    Backs the local confirm decision: when Frigate's label arrives for a row the
+    identifier already looked at (and found uncertain), the stored vector is enough to
+    ask the probe whether the learned birds disagree — no second GPU pass needed.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT model, embedding FROM identification_embeddings WHERE detection_id = ?",
+            (detection_id,),
+        ).fetchone()
+    return (row["model"], row["embedding"]) if row else None
+
+
+def set_frigate_label(source: str, source_ref: str, label: Optional[str],
+                      score: Optional[float]) -> bool:
+    """Record Frigate's own classification on a row without touching the species.
+
+    For a label that lands AFTER the row was dispatched or decided: provenance only.
+    The score keeps the best value seen, as ``upsert_detection`` does. True when a row
+    was updated.
+    """
+    if not label:
+        return False
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE detections SET
+                frigate_label = ?,
+                frigate_score = COALESCE(MAX(frigate_score, ?), frigate_score, ?)
+            WHERE source = ? AND source_ref = ?
+            """,
+            (label, score, score, source, source_ref),
+        )
+        return bool(cur.rowcount)
 
 
 def manual_rows_missing_embeddings(limit: int = 50) -> list[dict]:
@@ -407,16 +451,17 @@ def species_heard_between(start: float, end: float) -> list[str]:
 
 
 def pending_identifications(limit: int = 500) -> list[dict]:
-    """Detections stuck in 'pending', oldest first — requeued at startup.
+    """Detections stuck in 'pending' or 'confirming', oldest first — requeued at startup.
 
     A restart mid-flight (add-on update, host reboot) otherwise strands these forever:
-    the MQTT ``end`` message that would have triggered them is long gone.
+    the MQTT ``end`` message that would have triggered them is long gone. A row's
+    ``id_status`` says which kind of run it was waiting on.
     """
     with _connect() as conn:
         rows = conn.execute(
             """
             SELECT * FROM detections
-            WHERE id_status = 'pending'
+            WHERE id_status IN ('pending', 'confirming')
             ORDER BY start_time ASC LIMIT ?
             """,
             (limit,),

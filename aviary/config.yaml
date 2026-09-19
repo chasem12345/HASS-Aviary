@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.32.1"
+version: "0.33.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -55,6 +55,8 @@ options:
   identify_use_audio_priors: true
   identify_exclude_blacklisted: true
   identify_learn_from_auto: false
+  identify_confirm_frigate: true
+  frigate_object_update_topic: ""
   identify_zoom_map: []
   identify_zoom_start_offset: 2.0
   identify_zoom_zone_priority: []
@@ -105,9 +107,11 @@ schema:
   # Shared secret sent as `Authorization: Bearer ...`; must match AVIARY_ID_TOKEN on
   # the service. Blank means the service is not checking (fine on a trusted LAN).
   identify_token: "password?"
-  # With this on, Frigate's own bird classification should be turned OFF: Aviary
-  # takes over species identification entirely and only needs Frigate's `bird`
-  # object detection.
+  # Frigate's own bird classification can be on or off alongside this. OFF: every
+  # Frigate `bird` event arrives unnamed and Aviary identifies it. ON: Frigate names
+  # the bird quickly from its own crop, and aviary-id (0.12.0+) confirms that label
+  # from the same crop before it is announced — see identify_confirm_frigate. Events
+  # Frigate could not name still get the full identification either way.
   identify_enabled: "bool"
   # Below this fused top-1 probability, a result is treated as unidentified and goes
   # to the review queue instead of the registry.
@@ -135,8 +139,24 @@ schema:
   # Let the learning probe also learn from the identifier's own confident answers, not
   # only from species you named by hand. Off by default: training on its own unreviewed
   # guesses is how a classifier reinforces its mistakes. Turn on if you rarely label by
-  # hand and trust the automatic answers of confirmed species.
+  # hand and trust the automatic answers of confirmed species. With
+  # identify_confirm_frigate on, a Frigate label the identifier let stand counts as
+  # one of its automatic answers.
   identify_learn_from_auto: "bool"
+  # With Frigate's own bird classification ON, its label is not announced until
+  # aviary-id (0.12.0+) has looked at Frigate's crop of the same bird — no clip, so it
+  # is quick, and it can only ever be about the bird Frigate tracked. Frigate's label
+  # stands unless the birds you have confirmed by hand (the learning probe) say
+  # confidently otherwise; then the learned name wins and Frigate's is kept as the
+  # runner-up. If aviary-id is unreachable the label is announced as-is. Off = announce
+  # Frigate's label at event end, without a second look.
+  identify_confirm_frigate: "bool"
+  # Frigate's `frigate/tracked_object_update` topic (same topic_prefix as
+  # frigate_topic). Only needed if Frigate publishes a bird's classification AFTER the
+  # event's end message — watch the topic during a visit before turning this on; the
+  # built-in bird classifier normally reports through the events topic itself. Blank
+  # leaves it unsubscribed.
+  frigate_object_update_topic: "str?"
   # --- Cross-camera zoom --------------------------------------------------------
   # "detect_camera:ptz_camera" pairs. When an event's camera appears on the left, the
   # identification service classifies the RIGHT camera's recordings for the event's time

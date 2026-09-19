@@ -50,6 +50,18 @@ _loop: Optional[asyncio.AbstractEventLoop] = None
 # one), and so tests can substitute a fake.
 _identify_hook: Optional[Callable[[dict], bool]] = None
 
+# Set by main() to identify.confirm_available: whether an ended Frigate event that already
+# carries Frigate's own species label should be held for aviary-id's confirmation rather
+# than announced on the spot. A callable, not a flag, because the answer depends on the
+# service version seen at /healthz and on the identify_confirm_frigate option.
+_confirm_capable: Optional[Callable[[], bool]] = None
+
+# Set by main() to identify.resolve_late_label: called with (row, label, score) when
+# Frigate's label lands for a row the identifier has ALREADY finished with and found
+# uncertain (or failed on), so the label can be weighed against what was learned without
+# a second GPU pass. Same injection reasoning as _identify_hook.
+_late_label_hook: Optional[Callable[[dict, str, Optional[float]], None]] = None
+
 # Set by main() to keepsakes.schedule: called with a species name whenever a live Frigate
 # event ends with that species on it, so its first/latest keepsakes can be reconsidered.
 # Same injection reasoning as _identify_hook. Never called during backfill — the startup
@@ -74,6 +86,18 @@ def set_identify_hook(hook: Optional[Callable[[dict], bool]]) -> None:
     """Route unclassified Frigate detections to external identification."""
     global _identify_hook
     _identify_hook = hook
+
+
+def set_confirm_capable(check: Optional[Callable[[], bool]]) -> None:
+    """Route Frigate-named detections through confirmation when ``check()`` says so."""
+    global _confirm_capable
+    _confirm_capable = check
+
+
+def set_late_label_hook(hook: Optional[Callable[[dict, str, Optional[float]], None]]) -> None:
+    """Hand a Frigate label that arrived after identification finished to the identifier."""
+    global _late_label_hook
+    _late_label_hook = hook
 
 
 def set_keepsake_hook(hook: Optional[Callable[[str], None]]) -> None:
@@ -176,8 +200,13 @@ def is_unclassified(row: dict) -> bool:
 
 
 def store_row(row: Optional[dict], live: bool = True, announce: bool = True,
-              pending_id: bool = False) -> bool:
+              pending_id: bool = False, authoritative: bool = False) -> bool:
     """Upsert a built row unless it's filtered out. Returns True if stored.
+
+    ``authoritative=True`` is for the identifier writing its decision: it may replace a
+    species already settled on the row. Source messages and backfill leave that off, so
+    a re-import can never undo an identification or a hand label (see
+    ``db.upsert_detection``).
 
     ``live=False`` (backfill) still records the species/refs as seen but never fires
     detection events — historical rows are not news. ``announce=False`` stores the
@@ -225,7 +254,7 @@ def store_row(row: Optional[dict], live: bool = True, announce: bool = True,
                 row["common_name"], row["source"], row["source_ref"],
             )
             return False
-    db.upsert_detection(row)
+    db.upsert_detection(row, authoritative=authoritative)
     if announce:
         _announce(row, live)
         # A finished, named camera sighting may be the species' first or its newest.
@@ -321,13 +350,21 @@ def build_frigate_row(obj: dict) -> Optional[dict]:
     if not event_id:
         return None
 
-    sub_label = obj.get("sub_label")
-    # sub_label can be a plain string or a [name, score] pair depending on Frigate version.
-    if isinstance(sub_label, (list, tuple)):
-        sub_label = sub_label[0] if sub_label else None
-    common_name = sub_label or "bird"
-
     data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
+
+    sub_label = obj.get("sub_label")
+    # Frigate's own classification. Over MQTT ``sub_label`` is a [name, score] pair (the
+    # score is the classifier's confidence in the NAME, distinct from the object score
+    # below); over the events HTTP API it is a plain string with the score under
+    # ``data.sub_label_score``. Older builds sent a bare string with no score at all.
+    frigate_score: Optional[float] = None
+    if isinstance(sub_label, (list, tuple)):
+        frigate_score = _as_float(sub_label[1]) if len(sub_label) > 1 else None
+        sub_label = sub_label[0] if sub_label else None
+    if frigate_score is None:
+        frigate_score = _as_float(data.get("sub_label_score"))
+    sub_label = (str(sub_label).strip() or None) if sub_label else None
+    common_name = sub_label or "bird"
     # First non-None wins (an `or` chain would drop a legitimate 0.0 score).
     confidence = _as_float(_first_not_none(
         obj.get("top_score"),
@@ -354,6 +391,10 @@ def build_frigate_row(obj: dict) -> Optional[dict]:
         "scientific_name": None,
         "species_code": None,
         "confidence": confidence,
+        # Kept apart from common_name, which identification may later overwrite: what
+        # Frigate itself said, and how sure it was, stay on the row as provenance.
+        "frigate_label": sub_label,
+        "frigate_score": frigate_score if sub_label else None,
         "location": obj.get("camera"),
         "zone": zone,
         "start_time": _as_float(obj.get("start_time")) or _now(),
@@ -402,6 +443,36 @@ def handle_frigate(payload: bytes) -> None:
                   "record of it either).", row["source_ref"])
         return
 
+    if ended and not is_unclassified(row):
+        # A second `end` for a row the identifier already has or had (a broker replay, a
+        # duplicate publish): the label is provenance now, not a new detection. Routing
+        # it through store_row would re-upsert and — for a row awaiting confirmation —
+        # announce Frigate's label ahead of the answer. One indexed lookup, on ended
+        # named messages only.
+        existing = db.detection_by_ref(row["source"], row["source_ref"])
+        if existing is not None and existing.get("id_status"):
+            apply_frigate_label(row["source_ref"], row["frigate_label"] or row["common_name"],
+                                row.get("frigate_score"), existing)
+            return
+        if _identify_hook is not None and (_is_blacklisted(row["common_name"])
+                                           or _is_blacklisted(row.get("scientific_name"))):
+            # Frigate named a species you have blacklisted as one classifiers get wrong.
+            # Dropping the event (what store_row would do) throws away a bird that is
+            # most likely something else; identifying it with that species ruled out
+            # (identify_exclude_blacklisted) names it properly. Frigate's label stays on
+            # the row as provenance; the species goes back to unnamed for the run.
+            log.info("Frigate labelled %s as blacklisted %r; identifying it instead.",
+                     row["source_ref"], row["common_name"])
+            row["common_name"] = "bird"
+            row["scientific_name"] = None
+            _dispatch_for_identification(row)
+            return
+        if _identify_hook is not None and _confirm_capable is not None and _confirm_capable():
+            # Frigate named it and aviary-id can take a quick second look at Frigate's
+            # crop: hold the announcement until it has. See _dispatch_for_confirmation.
+            _dispatch_for_confirmation(row)
+            return
+
     # An ended event with no species, and somewhere to send it: hand it to the
     # identification service instead of announcing or discarding it. Only on `end` —
     # in-progress messages would mean paying for a GPU pass on a bird that is still
@@ -414,6 +485,79 @@ def handle_frigate(payload: bytes) -> None:
     # (or is about to have) the finished clip for the notification's tap action.
     if store_row(row, announce=ended):
         log.debug("Frigate detection upserted: %s (%s)", row["common_name"], row["source_ref"])
+
+
+def handle_frigate_object_update(payload: bytes) -> None:
+    """Handle a ``frigate/tracked_object_update`` message.
+
+    Only ``{"type": "classification", "id", "sub_label", "score", ...}`` matters here: a
+    species Frigate's classifier settled on for a tracked object, published on its own
+    rather than inside the object's event messages. When it arrives after the event's
+    ``end`` — which the events topic can no longer carry — this is the only way to hear
+    about it. Everything else on the topic (faces, plates, descriptions) is ignored.
+    """
+    try:
+        msg = json.loads(payload)
+    except (ValueError, TypeError):
+        log.warning("Frigate object update: could not decode payload")
+        return
+    if not isinstance(msg, dict) or msg.get("type") != "classification":
+        return
+    ref, label = msg.get("id"), msg.get("sub_label")
+    if isinstance(label, (list, tuple)):
+        label = label[0] if label else None
+    if not ref or not label:
+        return
+    outcome = apply_frigate_label(str(ref), str(label), _as_float(msg.get("score")))
+    log.debug("Frigate classification %r for %s (score %s): %s.",
+              label, ref, msg.get("score"), outcome)
+
+
+def apply_frigate_label(source_ref: str, label: Optional[str], score: Optional[float],
+                        existing: Optional[dict] = None) -> str:
+    """Fold a Frigate label that arrived AFTER the row's `end` was handled into the row.
+
+    Frigate applies a sub_label the moment its classifier clears the threshold, which
+    can be on any message of the object's life — or after it. Every ordering must leave
+    exactly one row and one announcement per (visit, species), so what happens depends
+    on where the row is:
+
+    * ``pending`` / ``confirming`` — the identifier has not answered yet. The label is
+      recorded on the row and ``identify._process`` reads it before deciding.
+    * ``low_confidence`` / ``failed`` — it answered and could not name the bird. Frigate
+      now can: the label is weighed against the learned birds using the embedding
+      already stored (no second GPU pass) and the result announced, once.
+    * ``ok`` / ``manual`` / ``frigate`` — the species is settled. Provenance only; a
+      disagreement is logged, never re-announced or renamed.
+    * no status — identification never touched this row; nothing to reconcile.
+
+    Returns what was done, for the caller's log line.
+    """
+    label = (label or "").strip()
+    if not label or is_unclassified({"common_name": label}):
+        return "ignored"
+    det = existing or db.detection_by_ref("frigate", source_ref)
+    if det is None:
+        return "ignored"  # a filtered or dropped event, or one Aviary never saw
+    db.set_frigate_label("frigate", source_ref, label, score)
+    status = det.get("id_status")
+    if status in ("pending", "confirming"):
+        return "recorded"
+    if status in ("low_confidence", "failed"):
+        if _late_label_hook is None:
+            return "recorded"
+        try:
+            _late_label_hook(dict(det), label, score)
+        except Exception:  # noqa: BLE001 — never let this break the MQTT loop
+            log.exception("Resolving Frigate's late label for %s failed.", source_ref)
+            return "recorded"
+        return "resolved"
+    if status in ("ok", "manual", "frigate"):
+        if (det.get("common_name") or "").strip().lower() != label.lower():
+            log.info("Frigate later said %r for %s; keeping %s (%s).",
+                     label, source_ref, det.get("common_name"), status)
+        return "recorded"
+    return "recorded"
 
 
 def build_review_row(obj: dict) -> Optional[dict]:
@@ -485,6 +629,27 @@ def _dispatch_for_identification(row: dict) -> None:
     db.set_identification(row["source"], row["source_ref"], status="pending")
     if not _identify_hook(row):
         log.debug("Identification not queued for %s (already in flight or queue full).",
+                  row["source_ref"])
+
+
+def _dispatch_for_confirmation(row: dict) -> None:
+    """Store a Frigate-named row as ``confirming`` and queue it for a second look.
+
+    The row is stored named — Frigate's label shows on the card straight away — but NOT
+    announced: that happens once when the identifier has either let the label stand or
+    overridden it (``identify._process_confirm``), or, if it cannot be reached, with
+    Frigate's label as-is. Stored before it is queued for the same restart-recovery
+    reason as ``_dispatch_for_identification``.
+    """
+    if not store_row(row, announce=False):
+        return  # filtered — ignored camera, deleted ref, or blacklisted
+    # store_row canonicalized the name; keep the canonical form as the label the
+    # decision compares against and the UI reports ("Frigate said ...").
+    row["frigate_label"] = row["common_name"]
+    db.set_identification(row["source"], row["source_ref"], status="confirming")
+    row["_mode"] = "confirm"
+    if not _identify_hook(row):
+        log.debug("Confirmation not queued for %s (already in flight or queue full).",
                   row["source_ref"])
 
 

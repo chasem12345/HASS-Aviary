@@ -74,6 +74,29 @@ def test_diverse_without_extras_takes_one_per_frame_then_fills():
     assert pipeline.diverse(ranked, 3, {c.key for c in take}) == []
 
 
+def test_pre_cropped_only_needs_no_detector():
+    """Confirm mode: Frigate's two crops flow through selection with the detector never
+    consulted — ``_detect`` has nothing to do, ``localize`` ranks by area, ``diverse``
+    takes both."""
+    import asyncio
+
+    class Boom:
+        def detect(self, *a, **k):
+            raise AssertionError("detector must not run on pre-cropped candidates")
+
+    cands = [frames.Candidate(image=Image.new("RGB", (96, 96)), origin="thumbnail",
+                              pre_cropped=True, score=0.9),
+             frames.Candidate(image=Image.new("RGB", (220, 200)), origin="snapshot+box",
+                              pre_cropped=True, score=0.9)]
+    p = pipeline.Pipeline(classifier=None, detector=Boom(), settings=settings())
+    assert asyncio.run(p._detect(cands, 0)) == {}  # noqa: SLF001
+    ranked = pipeline.localize(cands, {}, settings())
+    assert [c.origin for c in ranked] == ["snapshot+box", "thumbnail"]  # bigger first
+    assert all(c.pre_cropped and c.anchor_dist is None for c in ranked)
+    assert sorted(c.key for c in pipeline.diverse(ranked, 4, set())) == \
+        sorted(c.key for c in ranked)
+
+
 def test_diverse_never_starves_primary_when_limit_is_tiny():
     cands = [frame("clip@1.00s")]
     dets = {0: [Det((250, 400, 350, 600), 0.9), Det((650, 400, 750, 600), 0.7)]}

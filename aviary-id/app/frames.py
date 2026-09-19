@@ -278,6 +278,26 @@ def _as_float(value) -> Optional[float]:
         return None
 
 
+def _sub_label_from_event(event: dict) -> tuple[Optional[str], Optional[float]]:
+    """Frigate's own species label for the event, and its classification score.
+
+    The events API reports ``sub_label`` as a string with the score under
+    ``data.sub_label_score``; some builds report a ``[name, score]`` pair instead.
+    """
+    raw = event.get("sub_label")
+    score = None
+    if isinstance(raw, (list, tuple)):
+        score = _as_float(raw[1]) if len(raw) > 1 else None
+        raw = raw[0] if raw else None
+    label = str(raw).strip() if raw else None
+    if not label:
+        return None, None
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    if score is None:
+        score = _as_float(data.get("sub_label_score"))
+    return label, score
+
+
 def _box_from_event(event: dict) -> Optional[tuple[float, float, float, float]]:
     """Frigate's own bounding box for the snapshot frame, in absolute pixels.
 
@@ -311,11 +331,20 @@ class EventMedia:
     """Everything fetched for one event, so escalation can reuse it without re-downloading."""
 
     def __init__(self, event_id: str, base: str, settings: Settings,
-                 zoom: Optional[Zoom] = None):
+                 zoom: Optional[Zoom] = None, confirm: bool = False):
         self.event_id = event_id
         self.base = base
         self.settings = settings
         self.zoom = zoom
+        # Confirm mode: Frigate has already named this bird and the caller only wants a
+        # second opinion on FRIGATE'S OWN crops of the tracked object — the thumbnail and
+        # the snapshot cut to Frigate's box. No clip download, no ffmpeg, no detector:
+        # those are what dominate per-event time, and a detector run over a full frame
+        # is also the one way a neighbouring bird could be classified instead of this
+        # one. A constructor flag rather than a gather() argument because the pipeline's
+        # escalation calls add_clip_frames()/swap_to_event_clip() later; with no clip
+        # path they are already inert, and the flag records why.
+        self.confirm = confirm
         self.candidates: list[Candidate] = []
         self.clip_path: Optional[str] = None
         self.duration: Optional[float] = None
@@ -336,6 +365,11 @@ class EventMedia:
         self._client: Optional[httpx.AsyncClient] = None
         self._tmpdir: Optional[str] = None
         self._used_offsets: set[int] = set()
+        # Frigate's own classification of the object, as the event JSON reports it at
+        # fetch time. Echoed to the caller: a label Frigate applied after the event's
+        # end message never reaches it over MQTT, but it is here.
+        self.sub_label: Optional[str] = None
+        self.sub_label_score: Optional[float] = None
 
     async def close(self) -> None:
         if self._tmpdir:
@@ -380,6 +414,7 @@ class EventMedia:
         self._event_path = self.path
         self.start_time = _as_float(event.get("start_time"))
         self.end_time = _as_float(event.get("end_time"))
+        self.sub_label, self.sub_label_score = _sub_label_from_event(event)
 
         snapshot = _decode(snap_bytes, f"snapshot for {self.event_id}") if snap_bytes else None
         if snapshot is not None:
@@ -392,6 +427,25 @@ class EventMedia:
             else:
                 # No box from Frigate: keep the full snapshot and let the detector try.
                 self.candidates.append(Candidate(image=snapshot, origin="snapshot"))
+
+        if self.confirm:
+            # Only Frigate's crops of the tracked object. A boxless full snapshot would
+            # need the detector to find a bird in it — and with two birds in frame that
+            # bird need not be the one Frigate named — so it is dropped rather than
+            # classified.
+            kept = [c for c in self.candidates if c.pre_cropped]
+            if len(kept) < len(self.candidates):
+                log.debug("Event %s: confirm mode dropped the boxless snapshot.",
+                          self.event_id)
+            self.candidates = kept
+            if not kept:
+                log.warning(
+                    "Event %s: confirm mode has no Frigate crops to look at (thumbnail "
+                    "disabled by NO_THUMBNAIL, or no snapshot box in the event).",
+                    self.event_id,
+                )
+            timings.add("clip", 0.0)
+            return
 
         await self._fetch_clip(client, timings)
 

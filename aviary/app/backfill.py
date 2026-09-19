@@ -63,14 +63,17 @@ async def _backfill_frigate(client: httpx.AsyncClient, settings: Settings) -> in
     base = settings.frigate_url
     imported = 0
     before: float | None = None
-    # Consecutive pages that yielded nothing. With external identification enabled,
-    # Frigate's own classifier is off and every historical event is unclassified — so
-    # every page is dropped by the unclassified gate, and paging on event count alone
-    # would walk the entire history (up to _MAX_PAGES x _FRIGATE_PAGE events) importing
-    # nothing, on every start. Backfill deliberately does not route to the identifier
-    # (that would queue thousands of GPU jobs per restart), so there is nothing to gain
-    # by continuing. A few empty pages are tolerated first: a genuinely mixed history can
-    # have a run of filtered events (an ignored camera) with importable ones behind it.
+    # Consecutive pages that yielded nothing. With Frigate's own classifier off, every
+    # historical event is unclassified — so every page is dropped by the unclassified
+    # gate, and paging on event count alone would walk the entire history (up to
+    # _MAX_PAGES x _FRIGATE_PAGE events) importing nothing, on every start. Backfill
+    # deliberately does not route to the identifier (that would queue thousands of GPU
+    # jobs per restart), so there is nothing to gain by continuing. A few empty pages
+    # are tolerated first: a genuinely mixed history can have a run of filtered events
+    # (an ignored camera) with importable ones behind it. Named history (Frigate's
+    # classifier on) imports as plain rows: no confirmation, no notifications, and a
+    # species the identifier or a person already settled is never overwritten
+    # (store_row is non-authoritative here).
     empty_pages = 0
 
     for _ in range(_MAX_PAGES):
@@ -101,8 +104,8 @@ async def _backfill_frigate(client: httpx.AsyncClient, settings: Settings) -> in
         if empty_pages >= _MAX_EMPTY_PAGES:
             log.info(
                 "Backfill: %d consecutive Frigate pages imported nothing; stopping. "
-                "(Expected when Frigate's own bird classification is off — historical "
-                "events have no species, and backfill does not run identification.)",
+                "(Expected when the history carries no species labels — Frigate's own "
+                "bird classification off — since backfill does not run identification.)",
                 empty_pages,
             )
             break
