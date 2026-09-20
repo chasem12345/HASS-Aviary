@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.35.0
+
+- **Aviary is the second authoritative pass.** Tonight Frigate called a Northern Cardinal
+  a *Vermilion Flycatcher* (0.80) and 0.34.0 let it stand: under the confirm rule only the
+  birds you had confirmed by hand could override Frigate, aviary-id's own opinion never
+  could, and the probe abstained. The rule is now three-way. Agreement stays the half-second
+  look at Frigate's crops. A learned-probe override still wins at once. And a *disagreement*
+  the probe does not settle escalates to the **full identification** — clip frames, the
+  zoomed camera, frame consensus — whose answer replaces Frigate's when it clears your
+  thresholds (that event: cardinal 0.92, three of three frames) and otherwise leaves
+  Frigate's label standing with aviary-id's answer as runner-up. A clip run is spent only
+  on disagreements (one of eighteen events this evening). Frigate's label stays on the row
+  as provenance either way. See *How it changes the flow* in the docs.
+- **The confirm pass now sees Frigate's snapshot crop too.** Frigate 0.16+ reports the
+  snapshot box *relative* to the frame as x, y, width, height; aviary-id rejected any box
+  under 1.0 as "normalised, expected pixels" and confirmed from the 175-pixel thumbnail
+  alone. aviary-id **0.12.1** places the relative box on the snapshot, so confirm mode gets
+  the full-resolution crop as well — the clearer look, and one more vote. Pairs with
+  aviary-id 0.12.1; the add-on works unchanged against 0.12.0 with the thumbnail only.
+- **Other birds in view announce.** A bird the identifier named as an *other bird in view*
+  never fired a notification, so a new species that first showed up beside the tracked bird
+  went unannounced. A sighting is a sighting: a named other bird now fires
+  `aviary_detection` once per species per visit, with its own crop as the picture and a new
+  `subject_idx` field, and says *New species!* when Aviary has never recorded that species —
+  after which it counts as known, so its first appearance as the tracked bird is an
+  ordinary sighting. Hand-naming an other bird does not notify, as with tracked birds.
+- **Notifications land where you can act.** A *New species!* notification opened the
+  detection card, one tap short of the Confirm and Reject buttons. The event now carries
+  `review_path` (the species page, whose banner has both) for a new species awaiting review,
+  and the bundled blueprint opens it for new species and the detection card for everything
+  else. **Reload automations** after updating so Home Assistant picks up the new blueprint;
+  `panel_path` is unchanged for automations of your own.
+- **Opening Aviary from a notification no longer traps you.** Every tab click bounced back
+  to the page the notification opened. Home Assistant keeps reporting the same panel route
+  for as long as its URL stands, and every Aviary page is a fresh load that re-applied it.
+  The deep link now fires only from the panel's root page and once per browser tab.
+
 ## 0.34.0
 
 - **Bird statistics in Home Assistant, and a PTZ that follows the rarest bird.** Aviary now

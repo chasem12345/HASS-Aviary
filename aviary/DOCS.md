@@ -318,9 +318,19 @@ deduplicated):
   "seconds_since_species_last_detected": 5400.0,  // any source; null = first ever
   "seconds_since_species_last_seen": 5400.0,      // Frigate only; null = never seen
   "seconds_since_species_last_heard": 120.0,      // BirdNET-Go only; null = never heard
-  "panel_path": "/<addon_slug>/detection/1234"    // this detection's Aviary page, for tap actions
+  "panel_path": "/<addon_slug>/detection/1234",   // this detection's Aviary page, for tap actions
+  "review_path": "/<addon_slug>/species/Blue%20Jay", // where to Confirm/Reject a NEW species; null otherwise
+  "subject_idx": null                              // 1+ for an "other bird in view" the identifier named
 }
 ```
+
+`review_path` is set only for a new species that is waiting in the review queue (the
+confirmation gate on, species not yet confirmed): the species page, whose banner holds the
+**Confirm** and **Reject** buttons. The bundled blueprint opens it for "New species!"
+notifications and the detection card for everything else, so a tap lands where you can act.
+`subject_idx` marks a sighting of an *other bird in view* (see *Other birds in view*): the
+event belongs to a different tracked bird, the image is the other bird's own crop, and
+`panel_path` opens the detection whose card shows it.
 
 `is_new_species` means **never detected at all**, from any source. `is_first_seen` and
 `is_first_heard` mean **never recorded by that kind of source before** — so a bird you have
@@ -756,13 +766,18 @@ until aviary-id has taken a second look — at **Frigate's own crops** of that t
 (the thumbnail and the snapshot cut to Frigate's box), with no clip, no frame sampling and
 no detector. That makes it fast, and it makes it about *that* bird: with several birds
 moving through the frame, a detector run over a full frame is the one way a neighbour could
-be classified instead. The verdict is simple. **Frigate's label stands** unless the birds
-you have confirmed by hand — the learning probe, see *Learning from your own birds* — blend
-to a *different* species that clears `identify_min_score` and `identify_min_margin`; then
-the learned name wins and Frigate's is kept as the runner-up (the card reads *overrode
-Frigate*). aviary-id's own disagreement, on its own, never overrides Frigate: its default
-supervised model is the very one behind Frigate's classifier, and Frigate has watched the
-bird across many frames. Events Frigate could *not* name still take the full route above.
+be classified instead. The verdict has three outcomes. If aviary-id **agrees**, Frigate's
+label stands, and that is the whole cost — half a second. If the birds you have confirmed by
+hand — the learning probe, see *Learning from your own birds* — blend to a *different*
+species that clears `identify_min_score` and `identify_min_margin`, the learned name wins
+at once. If aviary-id **disagrees** on Frigate's crops but the probe does not settle it,
+Aviary is the authoritative second pass: it runs the **full identification** — clip frames,
+the zoomed camera, frame consensus — and that answer replaces Frigate's label when it
+clears the thresholds (or the consensus rescue), with Frigate's label kept on the row as
+provenance (the card reads *overrode Frigate*); a full pass that is itself unsure leaves
+Frigate's label standing with aviary-id's answer as the runner-up. A quick look at one or
+two crops that merely *disagrees* is not evidence enough to overrule Frigate on its own; the
+clip is. Events Frigate could *not* name still take the full route above.
 `identify_confirm_frigate: false` turns the second look off and announces Frigate's label
 at event end, as Aviary did before identification existed.
 
@@ -909,8 +924,13 @@ on its own crops, and reports the tracked bird as the answer plus every other bi
   get a registry number and thumbnail like any other species — the wren at the cardinal's
   bath is a wren visit. Other birds that could not be named, were rejected, or fell below
   the thresholds never count. Removing a species from the registry also rules it out on
-  every other-bird it was named on. Notifications still key on tracked detections: a
-  species first met as an other-bird announces as new on its first tracked event.
+  every other-bird it was named on.
+- **Named other birds announce (0.35.0).** A sighting is a sighting: an other bird the
+  identifier names fires the same `aviary_detection` event as a tracked bird — once per
+  species per visit, with its own crop as the picture, `subject_idx` set, and *New
+  species!* when Aviary has never recorded that species anywhere. It then counts as
+  known, so its first appearance as the tracked bird is an ordinary sighting. Birds you
+  name by hand do not notify, exactly like hand-naming a tracked bird.
 
 Other birds that could not be named do not enter the main Unidentified queue (the
 detection itself has a species); the page shows *N other birds in view need a name →*

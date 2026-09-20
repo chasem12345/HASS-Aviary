@@ -270,10 +270,13 @@ variables:
           and (frigate_proxy_base | trim) != '' and trigger.event.data.source_ref
     -%}{{ frigate_proxy_base | trim }}/{{ trigger.event.data.source_ref }}/{{ seen_image }}
     {%- else -%}{{ trigger.event.data.image | default('', true) }}{%- endif -%}
-  # Tap action: always the detection's own page in the Aviary panel (/detection/<id>),
-  # for both seen and heard birds. The add-on supplies the deep link in panel_path.
+  # Tap action: the detection's own page in the Aviary panel (/detection/<id>), for both
+  # seen and heard birds — except a NEW species awaiting your review, which opens its
+  # species page instead, where the Confirm and Reject buttons are (review_path, add-on
+  # 0.35.0+; older add-ons don't send it and fall back to panel_path).
   tap_url: >-
-    {{ trigger.event.data.panel_path | default('', true) }}
+    {% set review = trigger.event.data.review_path | default('', true) %}
+    {{ review if (is_new and review) else trigger.event.data.panel_path | default('', true) }}
   # clickAction = Android, url = iOS; each platform ignores the other's key.
   notify_data: >-
     {% if image and tap_url %}{{ {'image': image, 'clickAction': tap_url, 'url': tap_url} }}

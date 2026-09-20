@@ -298,13 +298,18 @@ def _sub_label_from_event(event: dict) -> tuple[Optional[str], Optional[float]]:
     return label, score
 
 
-def _box_from_event(event: dict) -> Optional[tuple[float, float, float, float]]:
-    """Frigate's own bounding box for the snapshot frame, in absolute pixels.
+def _box_from_event(event: dict,
+                    size: Optional[tuple[int, int]] = None) -> Optional[tuple[float, float, float, float]]:
+    """Frigate's own bounding box for the snapshot frame, in absolute pixels (x1, y1, x2, y2).
 
-    Frigate reports this in a couple of shapes depending on version: a top-level
-    ``snapshot.box``, or ``data.box``. Some builds normalise ``data.box`` to 0-1, which is
-    detected and rejected here rather than guessed at — a normalised box applied as pixels
-    would crop the top-left corner of the frame and quietly ruin every identification.
+    Two shapes, depending on Frigate version. Older builds put pixel corners in a
+    top-level ``snapshot.box``. Current Frigate (0.16+) stores ``data.box`` RELATIVE to the
+    detect frame as ``(x, y, w, h)`` — its ``to_relative_box`` divides the corners by the
+    detect width/height and keeps width and height, not the far corner. A relative box is
+    scaled by the decoded snapshot's own ``size``: the snapshot IS the detect-resolution
+    frame, so the ratios hold whatever the resolution. Without ``size`` a relative box
+    cannot be placed and is skipped (never applied as pixels — that would crop the
+    top-left corner of the frame and quietly ruin every identification).
     """
     for path in (("snapshot", "box"), ("data", "box")):
         node = event
@@ -318,11 +323,20 @@ def _box_from_event(event: dict) -> Optional[tuple[float, float, float, float]]:
             box = tuple(float(v) for v in node)
         except (TypeError, ValueError):
             continue
-        if max(box) <= 1.0:
-            log.debug("Ignoring a normalised box from %s; expected pixels.", "/".join(path))
+        if min(box) < 0:
             continue
-        x1, y1, x2, y2 = box
-        if x2 > x1 and y2 > y1:
+        if max(box) <= 1.0:
+            if not size:
+                log.debug("Skipping the relative box from %s: no frame size to place it.",
+                          "/".join(path))
+                continue
+            width, height = size
+            x, y, bw, bh = box
+            x1, y1, x2, y2 = x * width, y * height, (x + bw) * width, (y + bh) * height
+        else:
+            x1, y1, x2, y2 = box
+        # At least a couple of pixels each way: a zero-size box is Frigate saying "no box".
+        if x2 >= x1 + 2 and y2 >= y1 + 2:
             return (x1, y1, x2, y2)
     return None
 
@@ -418,7 +432,8 @@ class EventMedia:
 
         snapshot = _decode(snap_bytes, f"snapshot for {self.event_id}") if snap_bytes else None
         if snapshot is not None:
-            box = _box_from_event(event) if (event and self.settings.use_event_box) else None
+            box = (_box_from_event(event, snapshot.size)
+                   if (event and self.settings.use_event_box) else None)
             if box:
                 self.candidates.append(Candidate(
                     image=crop_box(snapshot, box, self.settings.crop_padding),

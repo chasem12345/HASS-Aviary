@@ -162,6 +162,14 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
     else:
         panel_path = f"/{panel_slug}/species/{quote(common_name, safe='')}"
     visit_path = f"/{panel_slug}/visit/{int(visit_id)}" if panel_slug and visit_id else None
+    # A new species that is waiting for your review: the species page, where Confirm and
+    # Reject are, is the tap target that lets you act on the notification (the blueprint
+    # prefers it for new species). None otherwise, so automations can tell the two apart.
+    review_path = None
+    if is_new and panel_slug and _settings.require_species_confirmation:
+        confirmed = await asyncio.to_thread(db.is_species_confirmed, common_name)
+        if not confirmed:
+            review_path = f"/{panel_slug}/species/{quote(common_name, safe='')}"
 
     verb = "seen" if source == "frigate" else "heard"
     # The first time a species is recorded by THIS kind of source — the moment a bird you
@@ -194,6 +202,12 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
         "seconds_since_species_last_seen": _gap("seen"),
         "seconds_since_species_last_heard": _gap("heard"),
         "panel_path": panel_path,
+        # Where to confirm or reject a NEW species awaiting review (the species page);
+        # None for known species and with the confirmation gate off.
+        "review_path": review_path,
+        # Which bird of the event this is: None/0 for the tracked bird, 1+ for an "other
+        # bird in view" the identifier named (its own crop is the image).
+        "subject_idx": int(row["subject_idx"]) if row.get("subject_idx") else None,
         # The visit (Frigate review item) this sighting belongs to. Notifications fire
         # once per species per visit, so an automation can treat visit_id as "one bird
         # stay" and visit_path as a tap target for the whole stay. None for audio rows
@@ -255,7 +269,17 @@ async def _panel_slug() -> Optional[str]:
 async def _resolve_image(row: dict) -> Optional[tuple[bytes, str]]:
     """Best (bytes, content-type) for the notification image, or None."""
     try:
-        if row.get("source") == "frigate" and _settings.frigate_url:
+        subject_idx = int(row.get("subject_idx") or 0)
+        if subject_idx and row.get("source_ref"):
+            # An other bird in view: its own stored crop, never the event snapshot —
+            # that frame shows the TRACKED bird, and a "New species! Carolina Wren" with a
+            # cardinal in the picture would be worse than no picture.
+            path = crops.path_if_exists(str(row["source_ref"]), subject_idx)
+            if path:
+                data = await asyncio.to_thread(Path(path).read_bytes)
+                if data:
+                    return data, "image/jpeg"
+        if row.get("source") == "frigate" and _settings.frigate_url and not subject_idx:
             deadline = time.monotonic() + _SNAPSHOT_WAIT_S
             while True:
                 # Re-read by (source, source_ref): later Frigate messages upsert the

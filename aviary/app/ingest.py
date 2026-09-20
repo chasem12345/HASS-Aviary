@@ -147,6 +147,68 @@ def touch_keepsake(common_name: Optional[str]) -> None:
         log.exception("Keepsake hook failed for %s", common_name)
 
 
+def announce_subject(parent: dict, subject: dict) -> None:
+    """Announce an OTHER bird in view — a named secondary subject — as a sighting of its
+    species. A sighting is a sighting: it fires the same ``aviary_detection`` event as a
+    tracked bird, once per species per visit, with the subject's own crop as the picture
+    (``subject_idx`` tells notify which one), and it is "New species!" when Aviary has never
+    recorded the species anywhere — after which the species counts as known, so its first
+    appearance as the tracked bird is an ordinary sighting rather than a second "new".
+    Best-effort; never raises. Blacklisted names are skipped like any other ingest.
+    """
+    try:
+        name = (subject.get("manual_name") or subject.get("common_name") or "").strip()
+        idx = int(subject.get("idx") or 0)
+        ref = parent.get("source_ref")
+        if not name or idx <= 0 or not ref or is_unclassified({"common_name": name}):
+            return
+        sci = subject.get("manual_sci") or subject.get("scientific_name")
+        if _is_blacklisted(name) or _is_blacklisted(sci):
+            return
+        row = {
+            "source": "frigate", "source_ref": str(ref),
+            "common_name": name, "scientific_name": sci,
+            "species_code": subject.get("species_code"),
+            "confidence": subject.get("score"),
+            "location": parent.get("location"), "zone": parent.get("zone"),
+            "start_time": parent.get("start_time"), "end_time": parent.get("end_time"),
+            "id": parent.get("id"), "visit_id": parent.get("visit_id"),
+            "subject_idx": idx,
+        }
+        _canonicalize(row)
+        if _is_blacklisted(row["common_name"]):
+            return
+        visit_id = row.get("visit_id")
+        if visit_id is not None and not db.claim_visit_announcement(
+                int(visit_id), row["common_name"], row.get("id")):
+            return  # this species was already announced for this visit
+        # Keyed with the subject index: the tracked bird's own claim on this event must
+        # not swallow the other bird's, and vice versa.
+        key = f"frigate:{row['source_ref']}:{idx}"
+        with _known_lock:
+            if key in _announced_refs:
+                return
+            _announced_refs[key] = None
+            while len(_announced_refs) > _ANNOUNCED_CAP:
+                _announced_refs.pop(next(iter(_announced_refs)))
+            lname = row["common_name"].lower()
+            is_new = lname not in _known_species
+            if is_new:
+                _known_species.add(lname)
+        _stats("species")
+        if _loop is not None and notify.enabled():
+            asyncio.run_coroutine_threadsafe(notify.send_detection(dict(row), is_new=is_new), _loop)
+        if is_new and _new_species_hook is not None:
+            try:
+                _new_species_hook(row["common_name"])
+            except Exception:  # noqa: BLE001
+                log.exception("New-species hook failed for %s", row["common_name"])
+        log.info("Other bird in view announced: %s in %s (bird %d%s).",
+                 row["common_name"], row["source_ref"], idx, ", new species" if is_new else "")
+    except Exception:  # noqa: BLE001 — a notification must never break the identification
+        log.exception("Announcing an other bird in view failed for %s", parent.get("source_ref"))
+
+
 def seed_notify_state() -> None:
     """Seed known species (all-time) and recently announced refs from the DB.
 
@@ -154,9 +216,11 @@ def seed_notify_state() -> None:
     re-notify after an add-on restart.
     """
     with _known_lock:
-        # Tracked-bird (or heard) species only: a bird known solely as an other-bird in
-        # view still announces as new on its first tracked event.
-        _known_species.update(name.lower() for name in db.distinct_species(include_subjects=False))
+        # Every species Aviary has recorded, as the tracked bird, heard, OR as an other
+        # bird in view (0.35.0): a sighting is a sighting, so a species first met in the
+        # background has had its "new species" moment and its first tracked event is an
+        # ordinary sighting.
+        _known_species.update(name.lower() for name in db.distinct_species(include_subjects=True))
         for source, ref in db.recent_refs(time.time() - 3600):
             _announced_refs[f"{source}:{ref}"] = None
         _tombstones.update(f"{s}:{r}" for s, r in db.tombstoned_refs())

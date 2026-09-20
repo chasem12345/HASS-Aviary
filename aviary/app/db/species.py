@@ -183,7 +183,8 @@ def species_list(
 
 def distinct_species(source: Optional[str] = None, include_subjects: bool = True) -> list[str]:
     """Every species name. ``include_subjects=False`` restricts to species that have been
-    the tracked bird of an event (or heard) — what "new species" notifications key on."""
+    the tracked bird of an event (or heard); the default also counts other birds in view,
+    which is what "new species" notifications key on since 0.35.0."""
     params: list = []
     where = "WHERE 1=1" + _source_clause(source, params) + _named_clause()
     table = "species_sightings detections" if include_subjects else "detections"

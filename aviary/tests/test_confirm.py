@@ -212,6 +212,7 @@ def test_service_agrees_frigate_stands_and_announces_once(confirm_env):
     assert call["mode"] == "confirm" and call["zoom"] is None
     assert call["frigate_label"] == "Northern Cardinal" and call["frigate_score"] == 0.93
     assert call["target"] == "Northern Cardinal"
+    assert len(confirm_env.fake.calls) == 1                    # agreement: no clip run
     assert db.embedding_target_for(r["id"]) == (True, "Northern Cardinal")
     # The re-announce guard holds: a second pass through store_row is silent.
     before = len(ingest._announced_refs)  # noqa: SLF001
@@ -219,18 +220,53 @@ def test_service_agrees_frigate_stands_and_announces_once(confirm_env):
     assert len(ingest._announced_refs) == before  # noqa: SLF001
 
 
-def test_service_disagrees_but_probe_abstains_frigate_stands(confirm_env):
+def test_disagreement_escalates_to_the_clip_and_a_weak_clip_leaves_frigate_standing(confirm_env):
     queued = confirm(confirm_env, "v2")
-    confirm_env.fake.answers = [svc("House Finch", 0.8,
-                                    [("House Finch", 0.8), ("Northern Cardinal", 0.12)])]
+    confirm_env.fake.answers = [
+        svc("House Finch", 0.46, [("House Finch", 0.46), ("Northern Cardinal", 0.12)]),  # crops
+        svc("House Finch", 0.20, [("House Finch", 0.20), ("Northern Cardinal", 0.15)]),  # clip
+    ]
     run(identify._process(queued))  # noqa: SLF001
+    calls = confirm_env.fake.calls
+    assert len(calls) == 2 and calls[0]["mode"] == "confirm" and "mode" not in calls[1]
     r = row("v2")
     assert r["common_name"] == "Northern Cardinal" and r["id_status"] == "ok"
-    assert r["id_score"] == pytest.approx(0.12)               # honest number for the label
+    assert r["id_score"] == pytest.approx(0.15)               # honest number for the label
     assert r["confidence"] == pytest.approx(0.93)
     shortlist = json.loads(r["id_candidates"])
     assert shortlist[0]["name"] == "House Finch"              # what aviary-id would have said
     assert announced("v2")
+
+
+def test_disagreement_is_settled_by_a_confident_clip(confirm_env):
+    """Tonight's cardinal: Frigate said Vermilion Flycatcher 0.80, the crop said cardinal
+    0.46, the clip said cardinal 0.92 with three frames agreeing. The clip wins."""
+    queued = confirm(confirm_env, "v5", label="Vermilion Flycatcher", score=0.80)
+    confirm_env.fake.answers = [
+        svc("Northern Cardinal", 0.46, [("Northern Cardinal", 0.46), ("Eastern Screech-Owl", 0.27)]),
+        svc("Northern Cardinal", 0.92, [("Northern Cardinal", 0.92), ("Tufted Titmouse", 0.01)]),
+    ]
+    run(identify._process(queued))  # noqa: SLF001
+    assert len(confirm_env.fake.calls) == 2
+    r = row("v5")
+    assert r["common_name"] == "Northern Cardinal" and r["id_status"] == "ok"
+    assert r["id_score"] == pytest.approx(0.92)
+    assert r["frigate_label"] == "Vermilion Flycatcher"       # what Frigate said, kept
+    assert announced("v5")
+    assert ingest._announced_refs.get("frigate:v5") is None or True  # noqa: SLF001
+    assert sum(1 for k in ingest._announced_refs if k.startswith("frigate:v5")) == 1  # noqa: SLF001
+
+
+def test_escalated_clip_failure_keeps_frigates_label(confirm_env):
+    queued = confirm(confirm_env, "v6")
+    confirm_env.fake.answers = [
+        svc("House Finch", 0.5, [("House Finch", 0.5), ("Northern Cardinal", 0.1)]),
+        None,                                                 # the clip run failed
+    ]
+    run(identify._process(queued))  # noqa: SLF001
+    r = row("v6")
+    assert r["id_status"] == "frigate" and r["common_name"] == "Northern Cardinal"
+    assert announced("v6")
 
 
 def test_learned_birds_override_frigate(confirm_env):

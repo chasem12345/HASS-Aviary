@@ -382,6 +382,15 @@ async def _process(row: dict[str, Any]) -> None:
 
     if result is None or result.get("status") != "ok":
         status = (result or {}).get("status", "failed")
+        # A bird Frigate named (a confirmation escalated here, or a label that landed
+        # while we were pending) keeps that name rather than ending as "no ID".
+        late = await _late_frigate_label(row, result or {})
+        if late and late[0].lower() not in {e.lower() for e in (exclude or [])}:
+            log.info("Identification for %s returned %s; Frigate had named it %s.",
+                     ref, status, late[0])
+            await _accept_frigate({**row, "frigate_label": late[0], "frigate_score": late[1]},
+                                  status)
+            return
         log.info("Identification for %s returned %s.", ref, status)
         await asyncio.to_thread(db.set_identification, row["source"], ref, "failed")
         return
@@ -481,8 +490,8 @@ async def _process(row: dict[str, Any]) -> None:
         await asyncio.to_thread(db.set_has_crop, ref, True)
     # And every OTHER bird the service found in the event, each on its own crop and
     # embedding. Done on both branches below: a second bird can be perfectly clear while
-    # the tracked one is not.
-    await _store_subjects(row, result, embed_key)
+    # the tracked one is not — and a named one is announced as a sighting of its species.
+    await _store_subjects(row, result, embed_key, announce=True)
 
     if not passes and not rescued and row.get("source") == "frigate":
         # Frigate may have named this bird while we were looking (its classifier
@@ -750,10 +759,33 @@ async def _process_confirm(row: dict[str, Any]) -> None:
     verdict = _frigate_verdict(frigate_name, service, blended)
     probe_examples = blended["probe_examples"] if blended else None
     probe_weight = blended.get("probe_weight") if blended else None
+    probe_note = f", probe:{probe_examples}" if probe_examples else ", probe abstained"
+    frigate_note = f" ({frigate_score:.2f})" if frigate_score is not None else ""
+
+    theirs = (result.get("common_name") or "").strip()
+    agrees = result.get("frigate_agrees")
+    if agrees is None:
+        agrees = bool(theirs) and theirs.lower() == frigate_name.lower()
+    if not verdict["override"] and theirs and not agrees:
+        # Aviary is the authoritative second pass. A quick look at Frigate's one or two
+        # crops that DISAGREES is not evidence enough to overrule Frigate on its own —
+        # but it is reason enough to look properly. The full identification (clip
+        # frames, zoom, frame consensus) decides: an answer that clears the thresholds
+        # replaces Frigate's label (the row keeps ``frigate_label`` as provenance); one
+        # that does not leaves Frigate's label standing via the late-label rule.
+        log.info(
+            "Frigate said %s%s for %s; aviary-id's quick look at Frigate's crop%s says %s "
+            "(%.2f, %d frame(s)%s) — checking the clip.",
+            frigate_name, frigate_note, ref, "s" if (result.get("frames_used") or 0) > 1 else "",
+            theirs, float(result.get("score") or 0.0), result.get("frames_used") or 0, probe_note,
+        )
+        await asyncio.to_thread(db.set_identification, row["source"], ref, "pending")
+        await _process({k: v for k, v in row.items() if k != "_mode"})
+        return
 
     if await asyncio.to_thread(crops.save, ref, result.get("best_crop")):
         await asyncio.to_thread(db.set_has_crop, ref, True)
-    await _store_subjects(row, result, embed_key)
+    await _store_subjects(row, result, embed_key, announce=True)
 
     # Frigate's label stands with Frigate's own confidence in it; an override carries
     # the learned answer's score.
@@ -763,7 +795,6 @@ async def _process_confirm(row: dict[str, Any]) -> None:
                                 probe_weight=probe_weight, probe_examples=probe_examples,
                                 confidence=confidence):
         return
-    frigate_note = f" ({frigate_score:.2f})" if frigate_score is not None else ""
     if verdict["override"]:
         log.info(
             "Overrode Frigate on %s: %s%s -> %s (score=%.3f margin=%.3f) on %d confirmed "
@@ -772,14 +803,10 @@ async def _process_confirm(row: dict[str, Any]) -> None:
             verdict["margin"], probe_examples or 0, result.get("elapsed_ms", "?"),
         )
     else:
-        theirs = result.get("common_name")
-        opinion = ("agrees" if (theirs or "").lower() == frigate_name.lower()
-                   else f"would have said {theirs} ({float(result.get('score') or 0):.2f})")
         log.info(
-            "Confirmed %s: Frigate said %s%s; aviary-id %s%s — Frigate's label stands "
+            "Confirmed %s: Frigate said %s%s; aviary-id agrees%s — Frigate's label stands "
             "(score=%.3f margin=%.3f, %d frame(s), %sms).",
-            ref, frigate_name, frigate_note, opinion,
-            f", probe:{probe_examples}" if probe_examples else "",
+            ref, frigate_name, frigate_note, probe_note,
             verdict["score"], verdict["margin"], result.get("frames_used", 0),
             result.get("elapsed_ms", "?"),
         )
@@ -886,7 +913,8 @@ def resolve_late_label(det: dict[str, Any], label: str, score: Optional[float]) 
 _CARRY_SIMILARITY = 0.85
 
 
-async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str) -> None:
+async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str,
+                          announce: bool = False) -> None:
     """Persist the service's ``subjects[]`` for a detection (aviary-id 0.10.0+).
 
     The primary (idx 0) gets a row for uniform labelling but the detection row remains
@@ -894,6 +922,9 @@ async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str) -> 
     thresholds exactly like a primary — no consensus rescue, to keep the rule simple —
     and stored with its own crop and embedding. Labels and rejections the user already
     gave to other birds in this event are carried to whichever new subject matches them.
+    With ``announce`` (a live identification, not a re-embed of history) every named other
+    bird is announced as a sighting of ITS species — once per species per visit, with its
+    own crop, and as a new species if Aviary has never recorded it.
     Any failure here is logged and swallowed: subjects are a bonus on top of the answer.
     """
     try:
@@ -1013,6 +1044,8 @@ async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str) -> 
             for r in others:
                 if r["id_status"] in ("ok", "manual"):
                     ingest.touch_keepsake(r["manual_name"] or r["common_name"])
+                    if announce:
+                        await asyncio.to_thread(ingest.announce_subject, row, r)
     except Exception:  # noqa: BLE001 — never let the bonus break the answer
         log.exception("Storing subjects for %s failed.", row.get("source_ref"))
 

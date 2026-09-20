@@ -48,8 +48,7 @@
       var base = window.AVIARY_BASE || "", handled = false;
       window.addEventListener("message", function (e) {
         if (!e.data || e.data.type !== "home-assistant/properties" || handled) return;
-        // Only the first route deep-links. HA re-sends properties on resize too, and acting
-        // on those would yank the user back here after they navigated inside the panel.
+        // Only the first route per page deep-links. HA re-sends properties on resize too.
         handled = true;
         var r = e.data.route;
         if (!r) return;
@@ -59,9 +58,19 @@
           .replace(/^\/app(?=\/|$)/, "")
           .replace(/^\/[^/]+/, "");   // drop the add-on slug segment
         var here = window.location.pathname.slice(base.length) || "/";
-        if (target && target !== "/" && target !== here) {
-          window.location.replace(base + target);
-        }
+        // HA keeps reporting the SAME route for as long as the panel URL stands, and every
+        // page here is a fresh load with a fresh copy of this script — so without the two
+        // guards below, every tab click after a notification tap compared "/recent" to the
+        // stale "/detection/123" and bounced the user straight back. (1) Only the iframe's
+        // root page deep-links: HA always opens the panel at "/", and a tab click never
+        // lands there. (2) Each route is honoured once per browser tab.
+        if (!target || target === "/" || target === here || here !== "/") return;
+        var key = "aviary:deeplink:" + target;
+        try {
+          if (sessionStorage.getItem(key)) return;
+          sessionStorage.setItem(key, "1");
+        } catch (err) { /* private mode: guard (1) still holds */ }
+        window.location.replace(base + target);
       });
       window.parent.postMessage({ type: "home-assistant/subscribe-properties" }, "*");
     })();

@@ -9,7 +9,7 @@
 {# Review banner: this species isn't in the registry until it's approved. Reject reuses
    the same menu as Remove species…, so a misclassification is handled one way only. #}
 {% if gated and not confirmed %}
-<section class="card review-banner">
+<section class="card review-banner" id="review">
   <div>
     <strong>Awaiting review</strong>
     <p>Not in the registry yet, and not counted in your species totals. Check the
