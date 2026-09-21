@@ -150,3 +150,41 @@ def test_review_path_points_at_the_species_page_for_a_new_unconfirmed_species(en
     fired.clear()
     asyncio.run(notify.send_detection(row, is_new=True))
     assert fired[0][1]["review_path"] is None                 # already confirmed: nothing to review
+
+
+# --- 0.36.0: the tracked bird announces first -------------------------------------------
+
+def test_same_species_other_bird_defers_to_the_tracked_birds_announcement(notified):
+    """Two cardinals in view: one notification, the tracked bird's — not the other
+    bird's, and not two for an event with no visit."""
+    sent, _ = notified
+    with db._connect() as conn:  # noqa: SLF001
+        conn.execute("UPDATE detections SET common_name = 'Carolina Wren' WHERE source_ref = 'ev1'")
+    row = db.detection_by_ref("frigate", "ev1")
+    store(row, service_result())        # the other bird is a Carolina Wren too
+    assert sent == []
+
+
+def test_other_birds_announce_after_the_tracked_bird(notified, monkeypatch):
+    """Through the full path: the tracked bird's verdict lands and claims the visit
+    first; the other bird of another species announces after it."""
+    sent, _ = notified
+    from test_confirm import FakeService, msg
+    hooked: list[dict] = []
+    ingest.set_identify_hook(lambda r: hooked.append(dict(r)) or True)
+    fake = FakeService()
+    monkeypatch.setattr(identify, "_call_service", fake)
+    try:
+        ingest.handle_frigate(msg("full1", "end", end=1_788_904_620.0))
+        result = service_result()
+        result["frames_used"] = 3
+        fake.answers = [result]
+
+        async def go():
+            ingest.set_event_loop(asyncio.get_running_loop())
+            await identify._process(hooked[-1])  # noqa: SLF001
+            await asyncio.sleep(0.01)
+        asyncio.run(go())
+    finally:
+        ingest.set_identify_hook(None)
+    assert [(p["common_name"], p.get("subject_idx")) for p, _ in sent] ==         [("Northern Cardinal", None), ("Carolina Wren", 1)]

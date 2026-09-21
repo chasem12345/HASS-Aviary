@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.35.0"
+version: "0.36.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -56,6 +56,8 @@ options:
   identify_exclude_blacklisted: true
   identify_learn_from_auto: false
   identify_confirm_frigate: true
+  identify_visit_context: true
+  identify_visit_window_s: 20.0
   frigate_object_update_topic: ""
   identify_zoom_map: []
   identify_zoom_start_offset: 2.0
@@ -156,6 +158,15 @@ schema:
   # runner-up. If aviary-id is unreachable the label is announced as-is. Off = announce
   # Frigate's label at event end, without a second look.
   identify_confirm_frigate: "bool"
+  # Frigate tracks one bird's stay as many short objects, and the 2-second fragments it
+  # could not name come back from the identifier uncertain. With this on, such a
+  # fragment takes the name of a bird already identified in the SAME visit, zone and
+  # moment (within identify_visit_window_s seconds) — when that species is on the
+  # fragment's own shortlist and no other named species was nearby. Marked "same
+  # visit" on the card, never a learning example, never a second notification. Off =
+  # every fragment stands or falls on its own footage.
+  identify_visit_context: "bool"
+  identify_visit_window_s: "float(0.0,300.0)"
   # Frigate's `frigate/tracked_object_update` topic (same topic_prefix as
   # frigate_topic). Only needed if Frigate publishes a bird's classification AFTER the
   # event's end message — watch the topic during a visit before turning this on; the

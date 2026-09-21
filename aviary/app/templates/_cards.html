@@ -79,6 +79,9 @@
               title="Identification was below the confidence threshold (score {{ d.id_score | fmt_pct }}, margin {{ d.id_margin | fmt_pct }}) — needs review">
           uncertain
         </span>
+      {% elif d.id_status == 'visit' %}
+        <span class="idbadge idbadge-visit"
+              title="Named after a bird identified seconds earlier in the same visit and zone; this fragment's own answer was uncertain ({{ d.common_name }} scored {{ d.id_score | fmt_pct }} here). Not used for learning.">same visit</span>
       {% elif d.id_status == 'manual' %}
         <span class="idbadge idbadge-manual" title="You identified this one">by hand</span>
       {% elif d.id_status == 'pending' %}
@@ -136,7 +139,8 @@
     <div class="subjects">
       <span class="subjects-label">Also in view:</span>
       {% for s in others %}
-      <div class="subject-chip{{ ' subject-unnamed' if not s.display_name }}" data-id="{{ d.id }}" data-subject="{{ s.idx }}">
+      <div class="subject-chip{{ ' subject-unnamed' if not s.display_name }}" data-id="{{ d.id }}" data-subject="{{ s.idx }}"
+           {% if s.co_occurring %}title="Seen beside the tracked bird in {{ s.co_occurring }} frame{{ '' if s.co_occurring == 1 else 's' }}"{% elif s.co_occurring == 0 %}title="Never in the same frame as the tracked bird — kept on other evidence (off its path, or several frames naming another species)"{% endif %}>
         {% if has_crop(d.source_ref, s.idx) %}
         <img loading="lazy" alt="" src="{{ u('frigate_subject_crop', event_id=d.source_ref, idx=s.idx) }}">
         {% endif %}

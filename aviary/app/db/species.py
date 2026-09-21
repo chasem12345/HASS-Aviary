@@ -358,16 +358,27 @@ def canonical_species(name: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+# A Frigate fragment not yet linked to a visit that started within this many seconds of
+# another is the same stay (Frigate's review cutoff is 30 s): a burst of tracked objects
+# whose review message has not arrived yet must not read as "last seen 4 seconds ago".
+_UNLINKED_SIBLING_S = 60.0
+
+
 def species_last_times(common_name: str, source: str, source_ref: str,
-                       visit_id: Optional[int] = None) -> dict:
+                       visit_id: Optional[int] = None,
+                       start_time: Optional[float] = None) -> dict:
     """The species' most recent detection time — overall and per source — excluding
-    one row (already upserted) and, when given, every other member of its visit.
+    one row (already upserted), every other member of its visit, and any unlinked
+    Frigate fragment within a minute of it.
 
     Feeds the notification blueprint's per-species cooldown: 'how long has this
     species been quiet before this detection?', split by source so a camera cooldown
     isn't fed by audio detections (and vice versa). Siblings in the same visit are the
     same stay, not a previous one — without excluding them, the second tracked object of
-    one visit would report the species as "last seen 4 seconds ago".
+    one visit would report the species as "last seen 4 seconds ago"; a sibling whose
+    review link has not arrived yet is excluded by time instead. Reads the sightings
+    view, so a species known only as an *other bird in view* has a last-seen time and
+    is not "first sighting" forever.
     """
     empty = {"any": None, "seen": None, "heard": None}
     with _connect() as conn:
@@ -376,12 +387,15 @@ def species_last_times(common_name: str, source: str, source_ref: str,
             SELECT MAX(start_time) AS any_t,
                    MAX(CASE WHEN source = 'frigate' THEN start_time END) AS seen_t,
                    MAX(CASE WHEN source = 'birdnet' THEN start_time END) AS heard_t
-            FROM detections
+            FROM species_sightings
             WHERE common_name = ? COLLATE NOCASE
               AND NOT (source = ? AND source_ref = ?)
               AND (? IS NULL OR visit_id IS NULL OR visit_id != ?)
+              AND NOT (source = 'frigate' AND visit_id IS NULL AND ? IS NOT NULL
+                       AND ABS(start_time - ?) <= ?)
             """,
-            (common_name, source, source_ref, visit_id, visit_id),
+            (common_name, source, source_ref, visit_id, visit_id,
+             start_time, start_time, _UNLINKED_SIBLING_S),
         ).fetchone()
     if not row:
         return empty

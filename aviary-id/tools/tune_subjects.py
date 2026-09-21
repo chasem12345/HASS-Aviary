@@ -51,6 +51,7 @@ KNOBS = {
     "sim_merge": "sim_merge", "sim_split": "sim_split", "sim_primary": "sim_primary",
     "sim_secondary": "sim_secondary", "min_crops": "min_secondary_crops",
     "single_det": "single_crop_det", "max_subjects": "max_subjects",
+    "vote_min": "vote_min", "sim_cross": "sim_cross",
 }
 DEFAULT_GRID = {
     "sim_merge": "0.65,0.70,0.75,0.80,0.85,0.90",
@@ -60,6 +61,8 @@ DEFAULT_GRID = {
     "single_det": "0.3,0.4,0.5,0.6,0.7",
     "min_crops": "1,2,3",
     "max_subjects": "2,3,4",
+    "vote_min": "0.3,0.4,0.5,0.6,0.7",
+    "sim_cross": "0.80,0.85,0.90,0.95",
 }
 
 
@@ -126,16 +129,36 @@ def decode(b64: str) -> np.ndarray:
     return v / n if n else v
 
 
-def metas_from(crops: list[dict]) -> list[CropMeta]:
-    """CropMeta per debug crop; top-1 names become small ints so the partition can compare."""
+def metas_from(crops: list[dict], footage: str | None = None) -> list[CropMeta]:
+    """CropMeta per debug crop; top-1 names become small ints so the partition can compare.
+
+    Captures from a service older than 0.13.0 lack ``zoomed`` and ``frame_boxes``; they are
+    inferred — a clip crop with no anchor in a ``footage == "zoom"`` capture was zoomed, and
+    a frame's box count is the number of classified crops sharing its origin (an
+    undercount: the service forwards at most a few boxes per frame).
+    """
     names = sorted({c.get("top1") or "" for c in crops})
     index = {n: i for i, n in enumerate(names)}
-    return [CropMeta(origin=c["origin"], det_score=c["det_score"], rank=c["rank"],
-                     pre_cropped=c["pre_cropped"],
-                     center=tuple(c["center"]) if c.get("center") else None,
-                     anchor_dist=c.get("anchor_dist"), t=c.get("t"),
-                     top1=index[c.get("top1") or ""] if c.get("top1") else None)
-            for c in crops]
+    per_origin: dict[str, int] = {}
+    for c in crops:
+        per_origin[c["origin"]] = per_origin.get(c["origin"], 0) + 1
+    out = []
+    for c in crops:
+        is_clip = c["origin"].startswith("clip@")
+        zoomed = c.get("zoomed")
+        if zoomed is None:
+            zoomed = footage == "zoom" and is_clip and c.get("anchor_dist") is None
+        out.append(CropMeta(
+            origin=c["origin"], det_score=c["det_score"], rank=c["rank"],
+            pre_cropped=c["pre_cropped"],
+            center=tuple(c["center"]) if c.get("center") else None,
+            anchor_dist=c.get("anchor_dist"), t=c.get("t"),
+            top1=index[c.get("top1") or ""] if c.get("top1") else None,
+            top1_score=float(c.get("top1_score") or 0.0) if c.get("top1") else 1.0,
+            zoomed=bool(zoomed),
+            frame_boxes=int(c.get("frame_boxes") or per_origin[c["origin"]]),
+        ))
+    return out
 
 
 def crop_line(c: dict) -> str:
@@ -145,7 +168,9 @@ def crop_line(c: dict) -> str:
     if c.get("anchor_dist") is not None:
         geo += f" path±{c['anchor_dist']:.2f}"
     pre = " [frigate]" if c.get("pre_cropped") else ""
-    return (f"{c['origin']:<16} det={c['det_score']:.2f}{geo}{pre}  "
+    zoom = " zoom" if c.get("zoomed") else ""
+    boxes = f" boxes={c['frame_boxes']}" if c.get("frame_boxes", 1) != 1 else ""
+    return (f"{c['origin']:<16} det={c['det_score']:.2f}{geo}{pre}{zoom}{boxes}  "
             f"{c.get('top1', '')} {c.get('top1_score', 0) * 100:.0f}%")
 
 
@@ -160,7 +185,9 @@ def show(crops: list[dict], subjects, label: str) -> None:
             kind = f"other {s_idx}"
         anch = "" if s.anchored else " (unanchored)"
         coh = f" cohesion {s.cohesion:.2f}" if s.cohesion is not None else ""
-        print(f"      [{kind}{anch}{coh}]")
+        cooc = f" beside-primary {s.co_occurring}" if not s.primary and s.kept else ""
+        solo = f" solo {s.solo_frames}" if s.solo_frames else ""
+        print(f"      [{kind}{anch}{coh}{cooc}{solo}]")
         for i, note in zip(s.indices, s.notes):
             print(f"        {crop_line(crops[i])}   {note}")
 
@@ -203,8 +230,10 @@ def service_summary(res: dict) -> None:
         coh = f" cohesion {s['cohesion']:.2f}" if s.get("cohesion") is not None else ""
         tgt = f" target={s['embedding_target']!r}" if s.get("embedding_target") else ""
         best = f" best={s['best_origin']}" if s.get("best_origin") else ""
+        cooc = (f" beside-primary {s['co_occurring']}"
+                if not s.get("primary") and s.get("co_occurring") is not None else "")
         print(f"  [{kind}{anch}] {s.get('common_name')} {(s.get('score') or 0) * 100:.0f}% "
-              f"on {s.get('n_frames', 0)} crop(s){pur}{coh}{best}{tgt}")
+              f"on {s.get('n_frames', 0)} crop(s){pur}{coh}{cooc}{best}{tgt}")
     for f in res.get("unassigned") or []:
         print(f"  [unassigned] {f['origin']:<16} det={f['det_score']:.2f}  "
               f"{f['top1']} {f['top1_score'] * 100:.0f}%")
@@ -332,7 +361,8 @@ def main() -> int:
             continue
         feats = np.stack([decode(c["embedding"]) for c in crops])
         matrix(crops, feats)
-        metas = metas_from(crops)
+        metas = metas_from(crops, footage="zoom" if (res.get("timings") or {}).get("zoom_clip")
+                           else None)
         svc = (res.get("debug") or {}).get("settings") or {}
         base = {k: svc.get(k) for k in KNOBS if svc.get(k) is not None}
         base.update(pinned)

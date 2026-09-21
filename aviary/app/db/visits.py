@@ -17,6 +17,8 @@ __all__ = [
     "_settle_visits",
     "claim_visit_announcement",
     "seed_visit_announcements",
+    "unseed_pending_claims",
+    "visit_named_siblings",
     "visit_by_id",
     "visit_by_review_id",
     "visit_members",
@@ -114,17 +116,22 @@ def upsert_visit(row: dict[str, Any]) -> int:
                 """,
                 [visit_id, *refs, visit_id],
             )
-            # A member that already HAD a species when it got linked was announced on
-            # its own (per-event) before the review item listed it — or was labelled by
-            # hand, or backfilled, none of which should notify again. Record those
-            # species as announced for the visit so a later sibling stays silent.
+            # A member that was already ANNOUNCED when it got linked — per-event, before
+            # the review item listed it, or silently claimed by a backfill — must count
+            # as announced for the visit so a later sibling stays silent. Keyed on the
+            # announcement itself (``announced_at``), never on "has a name": with
+            # Frigate's classifier on, an in-progress member carries Frigate's
+            # provisional label long before its verdict, and seeding it here claimed
+            # the (visit, species) pair ahead of the real announcement, which then
+            # found the claim taken and never fired (0.36.0).
             conn.execute(
                 f"""
                 INSERT OR IGNORE INTO visit_announced
                     (visit_id, common_name, detection_id, announced_at)
-                SELECT visit_id, common_name, id, ?
+                SELECT visit_id, common_name, id, COALESCE(announced_at, ?)
                 FROM detections
                 WHERE visit_id = ? AND source_ref IN ({marks})
+                  AND announced_at IS NOT NULL
                   {_named_clause()}
                 """,
                 [now, visit_id, *refs],
@@ -208,15 +215,84 @@ def seed_visit_announcements(since: float) -> int:
             SELECT d.visit_id, d.common_name, MIN(d.id), ?
             FROM detections d JOIN visits v ON v.id = d.visit_id
             WHERE (v.end_time IS NULL OR v.end_time >= ?)
-              -- A row awaiting confirmation is named (Frigate's label, provisionally)
-              -- but NOT yet announced: that happens when the answer lands.
-              AND (d.id_status IS NULL OR d.id_status NOT IN ('pending', 'confirming'))
+              -- Announced for certain (0.36.0 stamp), or — for rows from before the
+              -- stamp existed — ended and not awaiting a verdict. A row awaiting
+              -- confirmation is named (Frigate's label, provisionally) but NOT yet
+              -- announced: that happens when the answer lands. Nor is an event still
+              -- in progress at the restart: its end message announces it.
+              AND (d.announced_at IS NOT NULL
+                   OR (d.end_time IS NOT NULL
+                       AND (d.id_status IS NULL
+                            OR d.id_status NOT IN ('pending', 'confirming'))))
               {_named_clause('d')}
             GROUP BY d.visit_id, d.common_name
             """,
             (time.time(), since),
         )
         return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+
+def unseed_pending_claims() -> int:
+    """Drop visit claims held by rows whose verdict has not landed. Returns how many.
+
+    Start-up repair for databases written by 0.33–0.35, whose link-time seed claimed
+    the (visit, species) pair for every named member — including ones still
+    ``confirming``/``pending`` — so the verdict's announcement found the claim taken.
+    Only in-flight rows can still be helped; settled history is left alone.
+    """
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            DELETE FROM visit_announced
+            WHERE detection_id IN (
+                SELECT id FROM detections
+                WHERE id_status IN ('pending', 'confirming') AND announced_at IS NULL
+            )
+            """
+        )
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+
+def _zone_set(zone_csv: Optional[str]) -> set[str]:
+    return {z.strip().lower() for z in (zone_csv or "").split(",") if z.strip()}
+
+
+def visit_named_siblings(visit_id: int, det_id: Optional[int], zone: Optional[str],
+                         start: Optional[float], end: Optional[float],
+                         window_s: float) -> list[dict]:
+    """Settled members of a visit that were in the same zone within ``window_s`` of a
+    fragment's span — the birds an uncertain fragment may be a re-tracking of.
+
+    Settled = identified, hand-named, Frigate-confirmed, or itself inherited. Zone
+    overlap is judged on Frigate's comma-joined zone lists; a row with no zone (a
+    single-view camera) matches any. Newest first.
+    """
+    if start is None:
+        return []
+    span_end = end if end is not None else start
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, common_name, scientific_name, species_code, zone, start_time,
+                   end_time, id_status
+            FROM detections
+            WHERE visit_id = ? AND source = 'frigate' AND id != ?
+              AND id_status IN ('ok', 'manual', 'frigate', 'visit')
+              AND start_time <= ? AND COALESCE(end_time, start_time) >= ?
+              {_named_clause()}
+            ORDER BY start_time DESC
+            """,
+            (visit_id, det_id if det_id is not None else -1,
+             span_end + window_s, start - window_s),
+        ).fetchall()
+    mine = _zone_set(zone)
+    out = []
+    for r in rows:
+        theirs = _zone_set(r["zone"])
+        if mine and theirs and not (mine & theirs):
+            continue
+        out.append(dict(r))
+    return out
 
 
 def visit_by_id(visit_id: int) -> Optional[dict]:

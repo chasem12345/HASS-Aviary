@@ -133,10 +133,10 @@ async def send_detection(row: dict, is_new: bool, test: bool = False) -> dict:
     # Measured against previous VISITS: sibling events of the same stay are excluded, or
     # the second tracked object of one visit would report "last seen 4 seconds ago".
     visit_id = row.get("visit_id") if source == "frigate" else None
-    last_times = await asyncio.to_thread(
-        db.species_last_times, common_name, source, source_ref, visit_id)
-    visit = await asyncio.to_thread(db.visit_by_id, int(visit_id)) if visit_id else None
     start_time = row.get("start_time")
+    last_times = await asyncio.to_thread(
+        db.species_last_times, common_name, source, source_ref, visit_id, start_time)
+    visit = await asyncio.to_thread(db.visit_by_id, int(visit_id)) if visit_id else None
 
     def _gap(key: str) -> Optional[float]:
         prev = last_times.get(key)

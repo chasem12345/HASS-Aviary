@@ -134,6 +134,14 @@ class ClassifyResult:
     cohesion: Optional[float] = None
     # Per-crop partition notes, aligned with ``indices`` (debug output).
     notes: list = field(default_factory=list)
+    # Frames this subject shares with the primary (0 for the primary): the two birds were
+    # in view together, which is what makes a secondary a bird rather than drift.
+    co_occurring: int = 0
+    # Clip crops of this subject that were the only detector box in their frame.
+    solo_frames: int = 0
+    # Indices (into the full crop list) of the crops behind ``unassigned``, in the same
+    # order, so a debug consumer can attach each verdict to its crop. Primary only.
+    unassigned_indices: list = field(default_factory=list)
     # Classified crops that belong to no reported bird — a cluster that failed the
     # evidence gate or the SUBJECT_MAX cap. Primary only. Answers "what was that third
     # thing?" without pretending it was a bird worth naming.
@@ -393,10 +401,14 @@ class Classifier:
 
         enc = self._encode([c.image for c in crops], priors, exclude)
         top1 = enc.probs.argmax(dim=-1).tolist()
+        top1_score = enc.probs.max(dim=-1).values.tolist()
         meta = [subjects_mod.CropMeta(
             origin=c.origin, det_score=float(c.score), rank=float(c.rank),
             pre_cropped=bool(c.pre_cropped), center=c.center,
-            anchor_dist=c.anchor_dist, t=c.t, top1=int(top1[k]))
+            anchor_dist=c.anchor_dist, t=c.t, top1=int(top1[k]),
+            top1_score=float(top1_score[k]),
+            zoomed=bool(getattr(c, "zoomed", False)),
+            frame_boxes=int(getattr(c, "frame_boxes", 1) or 1))
             for k, c in enumerate(crops)]
         s = self.settings
         parts = subjects_mod.partition(
@@ -404,7 +416,8 @@ class Classifier:
             sim_merge=s.subject_sim_merge, sim_split=s.subject_sim_split,
             min_secondary_crops=s.subject_min_crops, single_crop_det=s.subject_single_det,
             max_subjects=s.subject_max, sim_primary=s.subject_sim_primary,
-            sim_secondary=s.subject_sim_secondary, include_dropped=True,
+            sim_secondary=s.subject_sim_secondary, vote_min=s.subject_vote_min,
+            sim_cross=s.subject_sim_cross, include_dropped=True,
         )
         kept = [p for p in parts if p.kept]
         if not kept:
@@ -426,9 +439,13 @@ class Classifier:
                               target_idx=target_idx if k == target_subject else None,
                               cohesion=sub.cohesion, notes=sub.notes)
                    for k, sub in enumerate(kept)]
+        for r, sub in zip(results, kept):
+            r.co_occurring = sub.co_occurring
+            r.solo_frames = sub.solo_frames
         primary = results[0]
         primary.others = results[1:]
         leftovers = [i for p in parts if not p.kept for i in p.indices]
+        primary.unassigned_indices = list(leftovers)
         if leftovers:
             rows = torch.as_tensor(leftovers, device=enc.probs.device, dtype=torch.long)
             primary.unassigned = self._per_frame(

@@ -145,3 +145,57 @@ def test_deleting_detection_removes_subjects(env):
     db.reject_subject(env["id"], 1, "House Wren")
     db.delete_detection(env["id"])
     assert db.subjects_for(env["id"]) == [] and db.subject_rejections(env["id"]) == {}
+
+
+# --- 0.36.0: the same rescue as the tracked bird, and no chips for drift ---------------
+
+def test_frame_consensus_rescues_an_other_bird_like_the_tracked_bird(env):
+    """Below the thresholds (0.2 < 0.35) but every frame agreed: accepted at half the
+    thresholds, exactly as the primary is in identify._process."""
+    result = service_result(wren_score=0.2)
+    result["subjects"][1]["consensus"] = {"votes": 3, "supporting": 3, "fraction": 1.0,
+                                          "agreed": True, "score": 0.8}
+    result["subjects"][1]["co_occurring"] = 2
+    store(env, result)
+    other = db.secondary_subjects_for(env["id"])[0]
+    assert other["id_status"] == "ok" and other["display_name"] == "Carolina Wren"
+    # Frames that disagreed rescue nothing.
+    result["subjects"][1]["consensus"]["agreed"] = False
+    store(env, result)
+    assert db.secondary_subjects_for(env["id"])[0]["id_status"] == "low_confidence"
+
+
+def test_one_unnamed_crop_never_beside_the_tracked_bird_is_not_stored(env):
+    result = service_result(wren_score=0.2)
+    result["subjects"][1]["n_frames"] = 1
+    result["subjects"][1]["co_occurring"] = 0
+    store(env, result)
+    assert db.secondary_subjects_for(env["id"]) == []
+    assert db.unidentified_counts()["subjects"] == 0 and not crops.exists("ev1", 1)
+    # Seen beside the tracked bird: a real second bird, worth a shortlist chip.
+    result["subjects"][1]["co_occurring"] = 1
+    store(env, result)
+    other = db.secondary_subjects_for(env["id"])[0]
+    assert other["id_status"] == "low_confidence" and other["co_occurring"] == 1
+    # Several crops (an older service reports no co_occurring): stored as before.
+    result["subjects"][1]["n_frames"] = 2
+    del result["subjects"][1]["co_occurring"]
+    store(env, result)
+    assert db.secondary_subjects_for(env["id"])[0]["co_occurring"] is None
+    # A confidently named lone crop is a bird whatever the frame count.
+    result = service_result()
+    result["subjects"][1]["n_frames"] = 1
+    result["subjects"][1]["co_occurring"] = 0
+    store(env, result)
+    assert db.secondary_subjects_for(env["id"])[0]["display_name"] == "Carolina Wren"
+
+
+def test_a_hand_label_keeps_a_weak_other_bird(env):
+    store(env, service_result())
+    db.set_subject_species_manually(env["id"], 1, "Carolina Wren", None)
+    result = service_result(wren_score=0.2)
+    result["subjects"][1]["n_frames"] = 1
+    result["subjects"][1]["co_occurring"] = 0
+    store(env, result)      # same wren (same embedding), re-found weakly: the label wins
+    other = db.secondary_subjects_for(env["id"])[0]
+    assert other["id_status"] == "manual" and other["display_name"] == "Carolina Wren"

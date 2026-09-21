@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS detections (
     created_at      REAL    NOT NULL,
     -- External identification (aviary-id). NULL on every BirdNET row and on Frigate rows
     -- from before the feature existed; those are "not applicable", not "failed".
-    id_status       TEXT,                            -- pending|confirming|ok|low_confidence|failed|manual|frigate
+    id_status       TEXT,                            -- pending|confirming|ok|low_confidence|failed|manual|frigate|visit
     id_score        REAL,                            -- fused top-1 probability
     id_margin       REAL,                            -- top-1 minus top-2; the real confidence signal
     id_model        TEXT,                            -- model@vocabulary digest that produced it
@@ -495,6 +495,14 @@ def init_db(db_path: str) -> None:
             # common_name so "Frigate said X, aviary-id decided Y" stays sayable after
             # a confirmation overrides the label. NULL = Frigate named nothing.
             ("frigate_label", "TEXT"), ("frigate_score", "REAL"),
+            # When this row's species was announced (or silently claimed for its visit
+            # by a backfill) — 0.36.0. NULL = never. The link-time visit seed keys on it:
+            # a member that already HAD a name when the review item linked it is not
+            # thereby announced (with Frigate's classifier on, in-progress rows carry
+            # Frigate's provisional label long before their verdict), and seeding it
+            # swallowed the real announcement. Legacy rows announced before the column
+            # existed stay NULL; the start-up seed still covers them by status.
+            ("announced_at", "REAL"),
         ):
             if name not in cols:
                 conn.execute(f"ALTER TABLE detections ADD COLUMN {name} {decl}")
@@ -579,6 +587,11 @@ def init_db(db_path: str) -> None:
             # Share of the subject's crops that agreed with its answer (aviary-id 0.11.0+).
             # 0.5 on a primary means two birds were fused into one answer. NULL = unknown.
             conn.execute("ALTER TABLE detection_subjects ADD COLUMN purity REAL")
+        if "co_occurring" not in sub_cols:
+            # Frames this other bird shared with the tracked bird (aviary-id 0.13.0+):
+            # > 0 means the two were in view together — a second bird for certain.
+            # NULL = unknown (older service).
+            conn.execute("ALTER TABLE detection_subjects ADD COLUMN co_occurring INTEGER")
         # Everything already in the registry counts as approved: enabling the confirmation
         # gate must not dump an existing collection into the review queue. Guarded by a
         # marker rather than "is species_confirmed empty", which would re-stamp for someone

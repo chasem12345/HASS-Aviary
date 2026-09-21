@@ -175,6 +175,13 @@ class SubjectOut(BaseModel):
     cohesion: Optional[float] = None
     # Origin of the crop behind ``best_crop``/``embedding`` (e.g. "clip@2.50s").
     best_origin: Optional[str] = None
+    # Frames this bird shared with the primary (0 for the primary itself). A secondary
+    # with co_occurring > 0 was seen BESIDE the tracked bird — a second bird for certain.
+    # 0 means it was kept on other evidence (off the tracked path, or several crops
+    # confidently naming another species) and never appeared in the same frame.
+    co_occurring: int = 0
+    # Clip crops of this bird that were the only detector box in their frame.
+    solo_frames: int = 0
 
 
 class DebugCrop(BaseModel):
@@ -191,6 +198,8 @@ class DebugCrop(BaseModel):
     best_for: Optional[int] = None  # the subjects[] entry whose best_crop/embedding this is
     top1: str = ""
     top1_score: float = 0.0
+    zoomed: bool = False            # from the zoomed PTZ recordings
+    frame_boxes: int = 1            # detector boxes in this crop's frame (de-duplicated)
     embedding: str = ""             # base64 float16, same encoding as the response's
 
 
@@ -251,9 +260,10 @@ class IdentifyResponse(BaseModel):
     # subjects[0] — including embedding_target; older callers can ignore this list.
     subjects: list[SubjectOut] = Field(default_factory=list)
     # Crops the classifier looked at that belong to no reported bird: a cluster that
-    # failed the evidence gate (SUBJECT_MIN_CROPS / SUBJECT_SINGLE_DET) or the
-    # SUBJECT_MAX cap. Their per-frame verdicts, so "what was that third thing?" has an
-    # answer without pretending it was a bird worth naming.
+    # failed the evidence gate (never seen beside the tracked bird, or too few crops /
+    # no confident species — SUBJECT_MIN_CROPS, SUBJECT_SINGLE_DET, SUBJECT_VOTE_MIN) or
+    # the SUBJECT_MAX cap. Their per-frame verdicts, so "what was that third thing?" has
+    # an answer without pretending it was a bird worth naming.
     unassigned: list[FrameOut] = Field(default_factory=list)
     # Only with ``debug: true`` on the request.
     debug: Optional[dict] = None
@@ -368,7 +378,7 @@ async def lifespan(_: FastAPI):
             await _client.aclose()
 
 
-app = FastAPI(title="aviary-id", version="0.12.1", lifespan=lifespan)
+app = FastAPI(title="aviary-id", version="0.13.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -625,6 +635,8 @@ def _subject_out(idx: int, r, crops) -> SubjectOut:
         purity=r.purity,
         cohesion=r.cohesion,
         best_origin=_origin_of(r, crops),
+        co_occurring=int(getattr(r, "co_occurring", 0) or 0),
+        solo_frames=int(getattr(r, "solo_frames", 0) or 0),
     )
 
 
@@ -644,15 +656,27 @@ def _debug_out(result, crops) -> dict:
         for i, f in zip(r.indices, r.per_frame):
             per_frame[i] = f
     # Unassigned crops were classified too; their verdicts ride along with subject=None.
-    unassigned = {f.origin: f for f in result.unassigned}
+    # Keyed by crop index (two unassigned boxes from one frame must not share a verdict);
+    # falls back to the origin for a result that did not record the indices.
+    unassigned_idx = getattr(result, "unassigned_indices", None) or []
+    if len(unassigned_idx) == len(result.unassigned):
+        for i, f in zip(unassigned_idx, result.unassigned):
+            per_frame.setdefault(i, f)
+    else:
+        by_origin = {f.origin: f for f in result.unassigned}
+        for i, c in enumerate(crops):
+            if i not in owner and c.origin in by_origin:
+                per_frame.setdefault(i, by_origin[c.origin])
     out = []
     for i, c in enumerate(crops):
-        f = per_frame.get(i) or (unassigned.get(c.origin) if i not in owner else None)
+        f = per_frame.get(i)
         out.append(DebugCrop(
             origin=c.origin, det_score=float(c.score), rank=float(c.rank),
             pre_cropped=bool(c.pre_cropped), center=c.center, anchor_dist=c.anchor_dist,
             t=c.t, subject=owner.get(i), note=notes.get(i, ""), best_for=best_for.get(i),
             top1=f.top1 if f else "", top1_score=f.top1_score if f else 0.0,
+            zoomed=bool(getattr(c, "zoomed", False)),
+            frame_boxes=int(getattr(c, "frame_boxes", 1) or 1),
             embedding=_classifier.crop_embedding(i) if _classifier else "",
         ).model_dump())
     return {"crops": out, "settings": {
@@ -661,6 +685,8 @@ def _debug_out(result, crops) -> dict:
         "max_subjects": settings.subject_max,
         "sim_primary": settings.subject_sim_primary,
         "sim_secondary": settings.subject_sim_secondary,
+        "vote_min": settings.subject_vote_min,
+        "sim_cross": settings.subject_sim_cross,
     }}
 
 

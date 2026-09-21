@@ -38,7 +38,7 @@ _SUBJECT_COLS = (
     "detection_id", "idx", "is_primary", "common_name", "scientific_name", "species_code",
     "score", "margin", "candidates", "id_status", "manual_name", "manual_sci",
     "embedding_model", "embedding", "crop_file", "anchored", "n_frames", "created_at",
-    "embedding_target", "purity",
+    "embedding_target", "purity", "co_occurring",
 )
 
 

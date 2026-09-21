@@ -184,6 +184,19 @@ class Settings:
     # embedding kept for learning. Tune with tools/tune_subjects.py --replay.
     subject_sim_primary: Optional[float] = 0.92
     subject_sim_secondary: Optional[float] = 0.90
+    # A crop's own top-1 counts as a species VOTE only at or above this probability;
+    # below it the crop has no opinion and similarity alone places it. Frigate's crop of
+    # a blurred, infrared or two-bird moment scores 15–35 % on some sparrow, and an
+    # unconditional vote let that veto ten clear zoomed frames of a cardinal. Measured:
+    # every vote under 0.4 in the fixture corpus was junk; 0.6 silences real 0.5–0.6
+    # votes that keep a same-bath owl/poorwill mix-up out of the primary.
+    subject_vote_min: float = 0.5
+    # Cosine at which a WIDE-camera crop and a ZOOMED crop may be called the same bird —
+    # and only when both hold agreeing confident votes. Cross-camera cosine is otherwise
+    # uninformative (same bird 0.70–0.99, two species 0.64–0.89, measured), so a seed is
+    # linked to zoomed frames by zoom anchoring (a frame with one bird in it shows the
+    # tracked bird), never by similarity alone. "off" disables cross-camera joins.
+    subject_sim_cross: Optional[float] = 0.90
 
     # --- species vocabulary -------------------------------------------------------
     # Free key from https://ebird.org/api/keygen. Without it the service falls back to
@@ -254,6 +267,8 @@ def load_settings() -> Settings:
         subject_max=max(1, _as_int("SUBJECT_MAX", 3)),
         subject_sim_primary=_as_optional_unit("SUBJECT_SIM_PRIMARY", 0.92),
         subject_sim_secondary=_as_optional_unit("SUBJECT_SIM_SECONDARY", 0.90),
+        subject_vote_min=min(1.0, max(0.0, _as_float("SUBJECT_VOTE_MIN", 0.5))),
+        subject_sim_cross=_as_optional_unit("SUBJECT_SIM_CROSS", 0.90),
         ebird_api_key=os.environ.get("EBIRD_API_KEY", "").strip(),
         ebird_region=os.environ.get("EBIRD_REGION", "").strip(),
         ebird_refresh_days=_as_int("EBIRD_REFRESH_DAYS", 30),

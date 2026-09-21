@@ -55,6 +55,8 @@ services:
       # SUBJECT_MAX: "3"              # primary plus at most this many other birds
       # SUBJECT_SIM_PRIMARY: "0.92"   # bar to join the PRIMARY when the crop DISAGREES on the species
       # SUBJECT_SIM_SECONDARY: "0.90" # same, for joining/merging OTHER birds ("off" = SIM_MERGE)
+      # SUBJECT_VOTE_MIN: "0.5"       # a crop's top-1 counts as a species vote only at/above this
+      # SUBJECT_SIM_CROSS: "0.90"     # wide<->zoomed crops are one bird only with agreeing votes at/above this
       # EXTRA_SPECIES: "Painted Bunting,Bobolink"
       # EXCLUDE_SPECIES: "Rock Pigeon"
       # CPU_ONLY: "1"                 # skip the GPU entirely (~5s/event, useful for tests)

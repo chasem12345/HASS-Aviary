@@ -90,6 +90,12 @@ async def _identify_maintenance(settings) -> None:
     await asyncio.sleep(15)
     await identify.requeue_pending()
     await identify.purge_old()
+    # Uncertain fragments already in the review queue whose visit siblings can name
+    # them (0.36.0): database only, no GPU, so it need not wait for the service.
+    try:
+        await identify.inherit_backlog()
+    except Exception:
+        log.exception("Visit-context pass over the review queue failed.")
     # Retro-protect the zoomed footage of events pinned before kept-exports existed.
     # Before the probe wait on purpose: this needs only Frigate, not the GPU service.
     try:
@@ -169,11 +175,16 @@ def create_app() -> FastAPI:
     ingest.seed_notify_state()
     # Same for visits: species already present in a recent/open visit were announced (or
     # deliberately not) before this restart — a member arriving now must not re-notify.
+    # And the reverse repair (0.36.0): a claim taken for a row whose verdict has not
+    # landed was the link-time seed's doing, not an announcement — release it so the
+    # verdict can announce.
+    released = db.unseed_pending_claims()
     seeded = db.seed_visit_announcements(time.time() - 3600)
     vstats = db.visit_stats()
     log.info("Visits: %d, covering %d Frigate events (%d ungrouped); pre-marked %d "
-             "recent visit/species pairs as announced.",
-             vstats["visits"], vstats["grouped"], vstats["ungrouped"], seeded)
+             "recent visit/species pairs as announced%s.",
+             vstats["visits"], vstats["grouped"], vstats["ungrouped"], seeded,
+             f", released {released} premature claim(s)" if released else "")
 
     if identify.enabled():
         # Two routes into the identifier. An event Frigate could not name arrives as

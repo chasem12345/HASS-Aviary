@@ -59,6 +59,8 @@ class Crop:
     center: Optional[tuple[float, float]] = None   # box bottom-center, normalized to the frame
     anchor_dist: Optional[float] = None            # distance to the tracked path; None = no anchor
     t: Optional[float] = None                      # clip offset seconds; None for non-clip crops
+    zoomed: bool = False                           # from the zoomed PTZ recordings (frames.Candidate)
+    frame_boxes: int = 1                           # detector boxes in this crop's frame, de-duplicated
 
 
 def _clip_offset(origin: str) -> Optional[float]:
@@ -92,6 +94,40 @@ def _anchor_factor(dist: Optional[float]) -> float:
     return 1.0 if dist <= _ANCHOR_RADIUS else _ANCHOR_PENALTY
 
 
+# Two detector boxes in one frame whose intersection covers this much of the SMALLER box
+# are one bird boxed twice (a whole-bird box and a head/body box), not two birds. Judged
+# against the smaller box rather than by IoU because the duplicate is usually a partial
+# box: the union is dominated by the full box and IoU comes out modest. Two real birds
+# side by side overlap the smaller one far less.
+_DUPLICATE_OVERLAP = 0.7
+
+
+def _overlap_of_smaller(a: Detection, b: Detection) -> float:
+    ax1, ay1, ax2, ay2 = a.box
+    bx1, by1, bx2, by2 = b.box
+    iw = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    ih = max(0.0, min(ay2, by2) - max(ay1, by1))
+    smaller = min(a.area, b.area)
+    return (iw * ih) / smaller if smaller > 0 else 0.0
+
+
+def dedupe(dets: list[Detection]) -> list[Detection]:
+    """Drop boxes that are the same bird boxed twice, keeping the higher-scoring one.
+
+    The subject partition treats two boxes in one frame as two birds — a hard rule — so a
+    duplicate box would split one bird into "the tracked bird" and "another bird in view"
+    and cost the frame its single-bird status. Measured on real events: duplicates sit at
+    centre distance ~0.18 with cosine 0.99–1.00, indistinguishable by embedding.
+    """
+    kept: list[Detection] = []
+    for det in sorted(dets, key=lambda d: -d.score):
+        if not any(_overlap_of_smaller(det, k) >= _DUPLICATE_OVERLAP for k in kept):
+            kept.append(det)
+    # Preserve the original order among the survivors so keys (#k) stay stable.
+    order = {id(d): n for n, d in enumerate(dets)}
+    return sorted(kept, key=lambda d: order[id(d)])
+
+
 def localize(
     candidates: list[frames.Candidate],
     detections: dict[int, list[Detection]],
@@ -109,6 +145,10 @@ def localize(
     box — skip the detector entirely and rank on their own score. They are already the crop
     we were trying to produce, and running a COCO model over a tight crop mostly finds
     nothing.
+
+    Detector boxes are de-duplicated per frame first (``dedupe``), and every crop records
+    how many boxes its frame held after that — one box means the bird was alone in view,
+    which the subject partition leans on for zoomed footage.
     """
     ranked: list[Crop] = []
     for i, cand in enumerate(candidates):
@@ -119,7 +159,8 @@ def localize(
                 origin=cand.origin, key=cand.origin, pre_cropped=True,
             ))
             continue
-        for k, det in enumerate(detections.get(i, [])):
+        boxes = dedupe(list(detections.get(i, [])))
+        for k, det in enumerate(boxes):
             dist = _anchor_distance(cand, det)
             ranked.append(Crop(
                 rank=det.score * (det.area ** 0.5) * _anchor_factor(dist),
@@ -131,6 +172,8 @@ def localize(
                 center=_box_center(cand, det),
                 anchor_dist=dist,
                 t=_clip_offset(cand.origin),
+                zoomed=bool(getattr(cand, "zoomed", False)),
+                frame_boxes=len(boxes),
             ))
     ranked.sort(key=lambda c: c.rank, reverse=True)
     return ranked
@@ -163,6 +206,13 @@ def diverse(ranked: list[Crop], limit: int, already: set[str]) -> list[Crop]:
         picked.append(crop)
         picked_keys.add(crop.key)
         return len(picked) >= limit
+
+    # Frigate's own crops first, whatever their rank: they are the anchor the subject
+    # partition seeds the tracked bird from, and the thumbnail (175 px) otherwise ranks
+    # below every clip crop on area alone and never reaches the classifier.
+    for crop in ranked:
+        if crop.pre_cropped and take(crop):
+            return picked
 
     # Best per origin, and the spatially distinct extras per origin, in rank order.
     best_by_origin: dict[str, Crop] = {}

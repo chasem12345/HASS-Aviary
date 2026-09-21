@@ -410,6 +410,12 @@ def _announce(row: dict, live: bool) -> None:
         is_new = name not in _known_species
         if is_new:
             _known_species.add(name)
+    # The fact of the announcement, on the row: what the visit link-time seed keys on.
+    # Backfilled rows are stamped too — they claimed their visit's species just above.
+    try:
+        db.mark_announced(row["source"], row["source_ref"])
+    except Exception:  # noqa: BLE001 — bookkeeping must never block the notification
+        log.exception("Could not stamp announced_at on %s", key)
     if live:
         _stats("species")  # its counts moved
         _stats("zones")    # and a visit's bird just became known
@@ -621,8 +627,8 @@ def apply_frigate_label(source_ref: str, label: Optional[str], score: Optional[f
     * ``low_confidence`` / ``failed`` — it answered and could not name the bird. Frigate
       now can: the label is weighed against the learned birds using the embedding
       already stored (no second GPU pass) and the result announced, once.
-    * ``ok`` / ``manual`` / ``frigate`` — the species is settled. Provenance only; a
-      disagreement is logged, never re-announced or renamed.
+    * ``ok`` / ``manual`` / ``frigate`` / ``visit`` — the species is settled. Provenance
+      only; a disagreement is logged, never re-announced or renamed.
     * no status — identification never touched this row; nothing to reconcile.
 
     Returns what was done, for the caller's log line.
@@ -646,7 +652,7 @@ def apply_frigate_label(source_ref: str, label: Optional[str], score: Optional[f
             log.exception("Resolving Frigate's late label for %s failed.", source_ref)
             return "recorded"
         return "resolved"
-    if status in ("ok", "manual", "frigate"):
+    if status in ("ok", "manual", "frigate", "visit"):
         if (det.get("common_name") or "").strip().lower() != label.lower():
             log.info("Frigate later said %r for %s; keeping %s (%s).",
                      label, source_ref, det.get("common_name"), status)

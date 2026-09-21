@@ -191,6 +191,12 @@ class Settings:
     # (the learning probe) override it when they confidently disagree. Off = announce
     # Frigate's label at event end, as before identification existed.
     identify_confirm_frigate: bool = True
+    # An uncertain fragment inside a visit takes the name of a settled sibling in the same
+    # zone within identify_visit_window_s seconds, when that species is on its own
+    # shortlist (0.36.0). Frigate tracks one stay as many short objects; the 2-second
+    # tail of a cardinal's visit is the cardinal, not a bird nobody can name.
+    identify_visit_context: bool = True
+    identify_visit_window_s: float = 20.0
     # Frigate's ``frigate/tracked_object_update`` topic, for a classification that lands
     # after the event's ``end`` message. Blank = not subscribed (Frigate's built-in bird
     # classifier reports through ``frigate/events`` itself; this is a safety net).
@@ -305,6 +311,10 @@ def load_settings() -> Settings:
             _pick("IDENTIFY_LEARN_FROM_AUTO", opts, "identify_learn_from_auto", "false")),
         identify_confirm_frigate=_as_bool(
             _pick("IDENTIFY_CONFIRM_FRIGATE", opts, "identify_confirm_frigate", "true")),
+        identify_visit_context=_as_bool(
+            _pick("IDENTIFY_VISIT_CONTEXT", opts, "identify_visit_context", "true")),
+        identify_visit_window_s=max(0.0, min(300.0, _pick_float(
+            "IDENTIFY_VISIT_WINDOW_S", opts, "identify_visit_window_s", 20.0))),
         # Blank means "not subscribed" and must survive as blank (see frigate_review_topic).
         frigate_object_update_topic=_pick_optional(
             "FRIGATE_OBJECT_UPDATE_TOPIC", opts, "frigate_object_update_topic", ""),

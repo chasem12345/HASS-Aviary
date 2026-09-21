@@ -432,8 +432,13 @@ What changes:
   silent; a *different* species in the same visit still announces. The payload gains
   `visit_id`, `visit_path` (a tap target for the whole visit) and `frigate_review_id`,
   and the quiet-gap fields (`seconds_since_species_last_seen` and friends) are measured
-  against previous visits, not sibling events. The blueprint needs no change; its
-  per-species cooldown now only ever matters *across* visits.
+  against previous visits, not sibling events — nor against a sibling fragment whose
+  review link has not arrived yet (0.36.0). The blueprint needs no change; its
+  per-species cooldown now only ever matters *across* visits. What makes a member
+  "already announced" for its visit is the announcement itself (stamped on the row as
+  `announced_at`), not that it had a name when the review item linked it: with Frigate's
+  classifier on, every in-progress member has Frigate's provisional name, and keying on
+  the name silenced the confirmation's announcement outright (0.33–0.35).
 - **"Seen" counts count visits.** The dashboard tiles, leaderboard, species pages, recap
   and charts count a species once per visit rather than once per tracked object. Audio
   detections are unaffected. Frigate events with no review item — history older than
@@ -835,6 +840,22 @@ Every Frigate detection gains a **↻ re-identify** button. Adjust a threshold o
 list, re-run a bird you can name yourself, and compare. That is the intended way to tune the
 thresholds; the defaults are starting points, not recommendations.
 
+**Fragments of a visit (0.36.0).** Most of what lands in the queue is not a mystery bird
+but a *piece* of a known one: Frigate tracks a cardinal's ninety-second stay as a dozen
+short objects, and the two-second tail where it hops out of frame comes back uncertain on
+its own footage. With `identify_visit_context` on (the default), an uncertain fragment
+takes the name of a bird already identified — by the identifier, by you, or by a confirmed
+Frigate label — in the **same visit, the same zone and the same moment**
+(`identify_visit_window_s`, 20 seconds either side), provided that species is on the
+fragment's own shortlist at 15 % or better and no *other* named species was nearby; a
+moment with a cardinal and a wren both identified inherits nothing. The card reads
+*same visit* (the tooltip gives the fragment's own score for that species), the row counts
+toward the visit like any other member but never becomes a learning example, and nothing
+is announced — the visit already was. A fragment settled this way can settle the next one,
+so a long stay cut into many objects resolves object by object. Fragments already in the
+queue when you update are named at start-up. Turn it off to have every fragment stand or
+fall on its own footage.
+
 ### Cross-camera zoom
 
 For a two-camera rig — a wide camera running bird detection over zones, and a record-only
@@ -913,7 +934,16 @@ stored *one* bird's picture under it, poisoning what the identifier learned.
 With **aviary-id 0.10.0+** the identifier first works out which crops are the same bird
 (Frigate's own crop and tracked path first, then image similarity), classifies each bird
 on its own crops, and reports the tracked bird as the answer plus every other bird as
-**Also in view** on the card — each with its own crop, name (or shortlist), and controls:
+**Also in view** on the card — each with its own crop, name (or shortlist), and controls.
+Since **aviary-id 0.13.0** that partition trusts the evidence in proportion to how sure it
+is: a crop's species is a vote only when the classifier is at least half sure of it (a
+blurred or infrared crop of Frigate's scoring 15 % on some sparrow no longer keeps ten
+clear frames of a cardinal out of the primary); a zoomed PTZ frame with exactly one bird in
+it shows the tracked bird and joins the primary outright; and an other bird must have been
+*seen* to be one — beside the tracked bird in a frame (the chip's tooltip says in how many),
+in a frame with two boxes, or off the tracked path. One crop that was never beside the
+tracked bird is the same bird's appearance drift, not a second bird, and is not stored.
+Other birds get the same frame-consensus rescue the tracked bird has.
 
 - Pick a name from the shortlist or **✎** to type one: the label is stored against
   *that bird's* crop and embedding. It can never teach the identifier from a picture of
@@ -930,7 +960,10 @@ on its own crops, and reports the tracked bird as the answer plus every other bi
   species per visit, with its own crop as the picture, `subject_idx` set, and *New
   species!* when Aviary has never recorded that species anywhere. It then counts as
   known, so its first appearance as the tracked bird is an ordinary sighting. Birds you
-  name by hand do not notify, exactly like hand-naming a tracked bird.
+  name by hand do not notify, exactly like hand-naming a tracked bird. Other birds
+  announce **after** the tracked bird's own verdict (0.36.0), so a second bird of the same
+  species never takes the visit's claim ahead of it, and the bundled blueprint shows the
+  other bird's own crop rather than the tracked bird's event preview.
 
 Other birds that could not be named do not enter the main Unidentified queue (the
 detection itself has a species); the page shows *N other birds in view need a name →*
@@ -1201,6 +1234,8 @@ refresh (at most 15 minutes, or immediately after a restart).
 | `identify_token` | Shared secret sent as a bearer token; must match `AVIARY_ID_TOKEN` on the service. Blank means no auth. |
 | `identify_enabled` | Send Frigate detections to that service (default `false`). Frigate's own bird classification may be on or off: unnamed events get a full identification; named ones are confirmed from Frigate's crop (aviary-id 0.12.0+, see `identify_confirm_frigate`). |
 | `identify_confirm_frigate` | With Frigate's classifier on, hold its label until aviary-id has looked at Frigate's crop of the same bird; the birds you confirmed by hand may override it (default `true`). `false` announces Frigate's label at event end. See *How it changes the flow*. |
+| `identify_visit_context` | An uncertain fragment takes the name of a bird identified in the same visit, zone and moment when that species is on its own shortlist and no other named species was nearby (default `true`). Marked *same visit*; never a learning example. See *When it isn't sure*. |
+| `identify_visit_window_s` | How many seconds either side of a fragment a settled sibling counts as "the same moment" for the rule above (default `20`, 0–300). |
 | `frigate_object_update_topic` | Frigate's `frigate/tracked_object_update` topic, for a classification Frigate publishes after an event's end (default blank = not subscribed). Same `topic_prefix` as `frigate_topic`. |
 | `ha_stats` | Publish one sensor per confirmed species (rarity 0–100 plus counts) and `sensor.aviary_ptz_target` to Home Assistant over MQTT discovery (default `true`). See [Bird statistics in Home Assistant](#bird-statistics-in-home-assistant). |
 | `ha_stats_window_days` | Days behind the rarity score: 100 × (1 − days active ÷ window) (default `30`, 7–365). |

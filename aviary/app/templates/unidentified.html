@@ -23,9 +23,11 @@
 {% if scope == 'subjects' and groups %}
 <p class="setting-help">
   These detections have a species, but the identifier found <strong>another bird in the
-  same footage</strong> it could not name. Each shows up under <em>Also in view</em> on the
-  card with its own crop and shortlist — pick a name there, or ✎ to type one. Naming it
-  teaches the identifier from that bird's crop alone.
+  same footage</strong> it could not name — one it saw beside the tracked bird, or off its
+  path. Each shows up under <em>Also in view</em> on the card with its own crop and
+  shortlist — pick a name there, or ✎ to type one. Naming it teaches the identifier from
+  that bird's crop alone. (A single stray crop that was never in the same frame as the
+  tracked bird is not listed here: that is the tracked bird itself, seen badly.)
 </p>
 {% endif %}
 
@@ -42,9 +44,10 @@
 {% if scope != 'subjects' %}
 <p class="setting-help">
   Frigate saw a bird here but no species could be confirmed — either the identification
-  scored below your thresholds, or it could not be completed. Use <strong>↻ re-identify</strong>
-  to try again after changing a threshold or the species list. These are not counted as a
-  species and do not appear in the registry.
+  scored below your thresholds, or it could not be completed — and no bird identified
+  seconds earlier in the same visit and zone could vouch for it. Use
+  <strong>↻ re-identify</strong> to try again after changing a threshold or the species
+  list. These are not counted as a species and do not appear in the registry.
 </p>
 {% endif %}
 {# Bulk actions over the cards on THIS page (pagination loads more). Re-identify queues

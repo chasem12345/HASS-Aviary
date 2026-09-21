@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.36.0
+
+- **The bird in view is the tracked bird again.** Today's review queue held seven
+  "uncertain" tracked birds and eighteen "other birds in view" that needed a name, and
+  most of them were the same bird. Replaying three of the uncertain events showed the
+  shape every time: the primary was Frigate's one wide-camera crop — a motion-blurred
+  take-off, an infrared cardinal with no red in it, a box holding two birds — scored at
+  15–36 % on some sparrow, and *every* zoomed PTZ frame, Northern Cardinal at 99 %, sat in
+  "also in view", because that junk crop's species vote barred them from the primary and
+  cross-camera similarity could not let them back in. **aviary-id 0.13.0** re-partitions
+  the crops: a crop's species counts as a vote only when the classifier is at least
+  `SUBJECT_VOTE_MIN` (0.5) sure of it; a zoomed frame in which the detector found exactly
+  one bird shows the tracked bird and joins the primary outright, unless it and Frigate's
+  crop confidently name different species; similarity is measured within one camera
+  (cross-camera cosine of the same bird runs 0.70–0.99 and of two species 0.64–0.89, so it
+  links nothing on its own — `SUBJECT_SIM_CROSS`); and boxes in a two-bird frame are placed
+  best-match first instead of by detector score. On the sixteen real fixtures every
+  expected primary held, and the three captures went from a one-crop sparrow to a seven-,
+  eight- and four-crop cardinal. Frigate's thumbnail, which ranked below every clip crop
+  on area and never reached the classifier, is now always taken. Pairs with **aviary-id
+  0.13.0**; an older service works unchanged.
+- **An "other bird in view" has to have been seen to be one.** A second bird is now
+  evidenced — beside the tracked bird in a frame (`co_occurring`, shown on the chip's
+  tooltip), in a two-box frame, or off the tracked path — and a cluster that never shared a
+  frame is reported only as several cohesive crops confidently naming another species.
+  One crop that was never beside the tracked bird is the tracked bird's own appearance
+  drift; it is listed under `unassigned` for the tuning tool and no longer stored as a
+  chip. Duplicate detector boxes on one bird (the head and the whole bird) are merged
+  before any of this, so a bird boxed twice is not two birds. Other birds also get the
+  same frame-consensus rescue the tracked bird has had since 0.16.0, instead of a
+  strictly harder bar. Today's eighteen chips would have been two.
+- **A fragment of a visit takes the visit's name.** Frigate tracks one stay as a dozen
+  short objects, and the two-second tail of a cardinal's visit comes back uncertain on its
+  own footage: 36 of 39 uncertain fragments today sat in a visit with a named sibling
+  seconds away. With `identify_visit_context` (default on) such a fragment takes the name
+  of the bird identified in the **same visit, zone and moment** (within
+  `identify_visit_window_s`, 20 s) — when that species is on the fragment's own shortlist
+  and no *other* named species was nearby; a mixed moment inherits nothing. The card says
+  *same visit*; the row is never a learning example and never a second notification, and
+  a settled fragment can name the next one. Fragments already in the review queue are
+  named at start-up. See *When it isn't sure* in the docs.
+- **The Baltimore Oriole at 17:55 did not notify, and now would.** Frigate named it on
+  its second message, the review item listed it a moment later, and the confirmation
+  landed after `end` — and Aviary said nothing, because linking a member that already
+  *had a name* recorded its species as announced for the visit. That rule was written for
+  an event announced per-event before its review item arrived; with Frigate's classifier
+  on, every in-progress event carries Frigate's provisional label, so the seed claimed
+  the (visit, species) pair ahead of the real announcement, which then found it taken.
+  Only full identifications (still "bird" at link time) ever notified — intermittently,
+  by race. Announcements now stamp the row (`announced_at`) and the seed keys on that
+  stamp alone; a claim left by the old seed for a row still awaiting its verdict is
+  released at start-up. Related: the cooldown gap no longer shrinks to seconds when a
+  sibling fragment's review link has not arrived yet, a species known only as an other
+  bird in view is no longer *First sighting!* every time, other birds announce **after**
+  the tracked bird's own verdict (so a second bird of the same species never steals the
+  visit's claim), and the bundled blueprint shows an other bird's own crop rather than
+  the tracked bird's preview GIF — **reload automations** after updating.
+
 ## 0.35.0
 
 - **Aviary is the second authoritative pass.** Tonight Frigate called a Northern Cardinal

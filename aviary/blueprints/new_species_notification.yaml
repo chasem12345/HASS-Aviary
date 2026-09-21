@@ -264,9 +264,13 @@ variables:
     {%- else %} heard{% if trigger.event.data.location %} at
     {{ trigger.event.data.location }}{% endif %}{% endif %}
   # Seen birds: live image from the Frigate integration (current event, never a
-  # stale cache). Everything else: the image the add-on staged under /local.
+  # stale cache). Everything else: the image the add-on staged under /local. An OTHER
+  # bird in view (subject_idx > 0, add-on 0.35.0+) always uses the staged image — its own
+  # crop — because the Frigate event's preview shows the TRACKED bird, and "New species!
+  # Carolina Wren" over a picture of a cardinal is worse than no picture.
   image: >-
-    {%- if verb == 'seen' and seen_image != 'aviary'
+    {%- set other_bird = (trigger.event.data.subject_idx | default(0, true) | int(0)) > 0 -%}
+    {%- if verb == 'seen' and not other_bird and seen_image != 'aviary'
           and (frigate_proxy_base | trim) != '' and trigger.event.data.source_ref
     -%}{{ frigate_proxy_base | trim }}/{{ trigger.event.data.source_ref }}/{{ seen_image }}
     {%- else -%}{{ trigger.event.data.image | default('', true) }}{%- endif -%}

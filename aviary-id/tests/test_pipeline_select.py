@@ -45,6 +45,7 @@ def test_localize_carries_geometry_and_penalizes_off_path():
     assert on.center == (0.3, 0.6) and on.t == 1.0 and not on.pre_cropped
     thumb = next(c for c in ranked if c.pre_cropped)
     assert thumb.center is None and thumb.anchor_dist is None and thumb.t is None
+    assert on.frame_boxes == 2 and off.frame_boxes == 2 and thumb.frame_boxes == 1
 
 
 def test_diverse_reserves_room_for_a_second_bird():
@@ -64,14 +65,52 @@ def test_diverse_reserves_room_for_a_second_bird():
 
 
 def test_diverse_without_extras_takes_one_per_frame_then_fills():
-    cands = [frame("clip@1.00s"), frame("clip@2.00s")]
-    dets = {0: [Det((250, 400, 350, 600), 0.9), Det((260, 405, 355, 610), 0.85)],  # same bird twice
-            1: [Det((250, 400, 350, 600), 0.8)]}
+    cands = [frame("clip@1.00s"), frame("clip@2.00s"), frame("clip@3.00s")]
+    dets = {0: [Det((250, 400, 350, 600), 0.9), Det((500, 400, 600, 600), 0.85)],  # two boxes, near
+            1: [Det((250, 400, 350, 600), 0.8)],
+            2: [Det((250, 400, 350, 600), 0.7)]}
     ranked = pipeline.localize(cands, dets, settings())
     take = pipeline.diverse(ranked, 3, set())
+    # (0.55, 0.6) is within the anchor radius of (0.3, 0.6)? No: 0.25 apart — a distinct
+    # extra, reserved after the two best-per-frame slots at limit 3 (reserve = 1).
     assert [c.key for c in take] == ["clip@1.00s#0", "clip@2.00s#0", "clip@1.00s#1"]
     # Already-used keys are skipped and nothing is returned when everything is used.
-    assert pipeline.diverse(ranked, 3, {c.key for c in take}) == []
+    assert pipeline.diverse(ranked, 4, {c.key for c in ranked}) == []
+
+
+def test_localize_dedupes_one_bird_boxed_twice_and_counts_frame_boxes():
+    cands = [frame("clip@1.00s"), frame("clip@2.00s")]
+    dets = {0: [Det((250, 400, 350, 600), 0.9), Det((260, 405, 355, 610), 0.85),  # same bird twice
+                Det((650, 400, 750, 600), 0.7)],                                   # another bird
+            1: [Det((250, 400, 350, 600), 0.8), Det((280, 470, 340, 590), 0.6)]}  # whole bird + head
+    ranked = pipeline.localize(cands, dets, settings())
+    keys = sorted(c.key for c in ranked)
+    assert keys == ["clip@1.00s#0", "clip@1.00s#1", "clip@2.00s#0"]
+    by_key = {c.key: c for c in ranked}
+    assert by_key["clip@1.00s#0"].frame_boxes == 2 and by_key["clip@1.00s#1"].frame_boxes == 2
+    assert by_key["clip@1.00s#1"].center == (0.7, 0.6)      # the survivor is the other bird
+    assert by_key["clip@2.00s#0"].frame_boxes == 1 and by_key["clip@2.00s#0"].score == 0.8
+    assert all(not c.zoomed for c in ranked)
+
+
+def test_localize_carries_zoomed_flag():
+    cand = frames.Candidate(image=Image.new("RGB", (1000, 1000)), origin="clip@1.00s",
+                            zoomed=True)
+    ranked = pipeline.localize([cand], {0: [Det((250, 400, 350, 600), 0.9)]}, settings())
+    assert ranked[0].zoomed and ranked[0].frame_boxes == 1 and ranked[0].anchor_dist is None
+
+
+def test_diverse_takes_frigate_crops_first_whatever_their_rank():
+    """The 175 px thumbnail ranks below every clip crop on area alone; it is the seed
+    the partition anchors the tracked bird on and must reach the classifier."""
+    cands = [frames.Candidate(image=Image.new("RGB", (175, 175)), origin="thumbnail",
+                              pre_cropped=True, score=0.9)]
+    cands += [frame(f"clip@{k}.00s") for k in range(1, 7)]
+    dets = {i: [Det((100, 100, 900, 900), 0.95)] for i in range(1, 7)}
+    ranked = pipeline.localize(cands, dets, settings())
+    assert ranked[-1].origin == "thumbnail"                 # last by rank...
+    take = pipeline.diverse(ranked, 4, set())
+    assert take[0].origin == "thumbnail" and len(take) == 4  # ...first into the take
 
 
 def test_pre_cropped_only_needs_no_detector():

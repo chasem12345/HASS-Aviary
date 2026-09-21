@@ -40,6 +40,7 @@ __all__ = [
     "_UNIDENTIFIED",
     "unidentified_detections",
     "unidentified_counts",
+    "uncertain_rows_in_visits",
     "unidentified_count",
     "purge_unidentified",
 ]
@@ -495,6 +496,21 @@ def unidentified_detections(limit: int = 100, before: Optional[float] = None,
     with _connect() as conn:
         rows = conn.execute(
             f"SELECT * FROM detections {where} ORDER BY start_time DESC LIMIT ?", params
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def uncertain_rows_in_visits(since: float) -> list[dict]:
+    """Review-queue rows that belong to a visit, oldest first — the ones a settled
+    sibling might name (identify.inherit_backlog)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM detections
+            WHERE id_status = 'low_confidence' AND visit_id IS NOT NULL AND start_time >= ?
+            ORDER BY start_time
+            """,
+            (since,),
         ).fetchall()
     return [dict(r) for r in rows]
 

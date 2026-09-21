@@ -56,12 +56,20 @@ birds — using, strongest first:
    timestamp. A detector box on the path is the primary; a box clearly off it is another
    bird and may never join the primary — a hard rule, where earlier versions only
    penalized it in the ranking.
-3. **Embedding similarity.** Everything the first two cannot place — frames outside the
-   path's time range, zoomed footage (which has no path), the off-path boxes themselves —
-   is clustered by BioCLIP image-embedding cosine (`SUBJECT_SIM_MERGE`). Two boxes in
-   the same frame are two birds and never share a subject. A cluster that turns out to
-   look just like the primary is merged back into it (the path estimate was off, or it
-   is a second bird of the same species — harmless either way).
+3. **Zoomed footage** (0.13.0). A PTZ camera's recordings have no path, but the PTZ is
+   aimed at the tracked bird's zone: a zoomed frame in which the detector found exactly
+   one bird shows the tracked bird and joins the primary outright — unless that crop and
+   Frigate's crop confidently name different species, which means the PTZ was looking at
+   someone else. Frames with two boxes are placed by similarity, one box per bird.
+4. **Embedding similarity.** Everything the first three cannot place — frames outside the
+   path's time range, two-bird zoomed frames, the off-path boxes themselves — is
+   clustered by BioCLIP image-embedding cosine (`SUBJECT_SIM_MERGE`). Two boxes in the
+   same frame are two birds and never share a subject. A cluster that turns out to look
+   just like the primary is merged back into it (the path estimate was off, or it is a
+   second bird of the same species — harmless either way). Similarity is measured within
+   one camera: a wide-camera crop and a zoomed crop of the same bird land anywhere from
+   0.70 to 0.99 and two species from 0.64 to 0.89, so across cameras only agreeing,
+   confident species votes at `SUBJECT_SIM_CROSS` link two crops.
 
 The path is checked crop by crop against Frigate's own crop: at a bath two birds sit
 within the anchor radius of the same path point, so an on-path box that does not look
@@ -71,16 +79,26 @@ seconds apart share background, light and perch, and their cosines measure 0.85�
 above the bar that keeps one bird's frames together — so each crop's own top-1 species
 is consulted: a crop that **agrees** with a subject joins at `SUBJECT_SIM_MERGE`; one
 that **disagrees** must clear `SUBJECT_SIM_PRIMARY` (the primary) or
-`SUBJECT_SIM_SECONDARY` (another bird). Crops that belong to no reported bird are listed
-under `unassigned`.
+`SUBJECT_SIM_SECONDARY` (another bird). A crop's top-1 counts as a *vote* only at or
+above `SUBJECT_VOTE_MIN`; below it the crop has no opinion and similarity alone places
+it. That matters most for Frigate's own crop: a blurred, infrared or two-bird snapshot
+scoring 15 % on some sparrow used to veto ten clear zoomed frames of a cardinal, leaving
+the primary with the junk crop and the cardinal itself as an "other bird in view".
 
 Each subject is then classified on **its own crops only**, with its own consensus, best
 crop and embedding. The response's top-level fields describe the primary; `subjects[]`
-carries all of them. A second bird needs `SUBJECT_MIN_CROPS` crops (or one crop the
-detector was at least `SUBJECT_SINGLE_DET` sure of) to be reported, so a reflection or
-a feeder ornament does not become a bird. Crop selection keeps room for a second bird
-too: when a frame's second-best box sits clearly apart from its best, up to two such
-boxes are classified alongside the primary's rather than after it.
+carries all of them. A second bird must have been *seen* to be a second bird — beside
+the tracked bird in a frame (`co_occurring` counts those frames), in a frame with two
+boxes, or off the tracked path — and then needs `SUBJECT_MIN_CROPS` crops, or one crop
+the detector was at least `SUBJECT_SINGLE_DET` sure of that also confidently names a
+species. A cluster that never shared a frame is kept only as several cohesive crops
+confidently naming a species other than the primary's; anything less is the same
+bird's appearance drift and is listed under `unassigned` rather than reported as a bird
+worth naming. Detector boxes are de-duplicated per frame first (one bird boxed twice is
+not two birds). Crop selection keeps room for a second bird too: when a frame's
+second-best box sits clearly apart from its best, up to two such boxes are classified
+alongside the primary's rather than after it — and Frigate's own crops are always taken
+first, whatever their rank.
 
 ### Escalation
 
@@ -216,8 +234,10 @@ All configuration is environment variables.
 | `CROP_PADDING` | `0.15` | Context added around the bird before cropping. |
 | `SUBJECT_SIM_MERGE` | `0.75` | Embedding cosine at or above which two crops (or clusters) that **agree on the species** (each crop's own top-1) are the same bird. Same bird seconds apart measures ≥ 0.93 on a wide camera, ≥ 0.84 zoomed. Tune with `tools/tune_subjects.py`. |
 | `SUBJECT_SIM_SPLIT` | `0.80` | An on-path box less like Frigate's own crop than this is not taken as the tracked bird on the path's say-so; judged per box. |
-| `SUBJECT_MIN_CROPS` | `2` | Crops a second bird needs to be reported — or one crop with detector score ≥ `SUBJECT_SINGLE_DET`. |
+| `SUBJECT_MIN_CROPS` | `2` | Crops a second bird needs to be reported — or one crop with detector score ≥ `SUBJECT_SINGLE_DET` that also confidently names a species. Either way the bird must have been seen beside the tracked bird, in a two-box frame, or off the path; a cluster that never shared a frame is reported only as several cohesive crops confidently naming another species. |
 | `SUBJECT_SINGLE_DET` | `0.5` | See above. |
+| `SUBJECT_VOTE_MIN` | `0.5` | A crop's own top-1 counts as a species vote only at or above this probability; below it the crop has no opinion. Every vote under 0.4 in the fixture corpus was junk; 0.6 silences real 0.5–0.6 votes. |
+| `SUBJECT_SIM_CROSS` | `0.90` | Cosine at which a wide-camera crop and a zoomed crop may be called one bird — and only when both hold agreeing confident votes. Cross-camera cosine is otherwise uninformative (same bird 0.70–0.99, two species 0.64–0.89); a wide seed is linked to zoomed footage by zoom anchoring, not similarity. `off` disables cross-camera joins. |
 | `SUBJECT_MAX` | `3` | Primary plus at most this many other birds per event. |
 | `SUBJECT_SIM_PRIMARY` | `0.92` | Cosine a crop or cluster needs to join the **primary** when it **disagrees** with it on the species. Two different birds at one bath measure 0.85–0.91 — above the merge bar — so agreement, not similarity, tells them apart. `off` = same as the merge bar. |
 | `SUBJECT_SIM_SECONDARY` | `0.90` | The same, for joining or merging a **secondary** cluster. Slightly looser than the primary's: a wrong crop there is a wrong chip, not a wrong answer. `off` = same as the merge bar. |
@@ -280,6 +300,12 @@ its answer — 0.5 on the primary means two birds were fused, whatever the score
 `cohesion` (minimum cosine among its crops) and `best_origin` (which frame `best_crop`
 and `embedding` came from). `unassigned` lists the per-frame verdicts of crops that
 belonged to no reported bird, and `/healthz` carries `version`.
+
+Since 0.13.0 each subject also reports `co_occurring` — how many frames it shared with
+the primary (0 for the primary itself; a secondary with `co_occurring > 0` was seen
+beside the tracked bird, a second bird for certain) — and `solo_frames` (its clip crops
+that were the only box in their frame). `debug.crops` gains `top1_score`, `zoomed` and
+`frame_boxes`, and `debug.settings` the `vote_min` / `sim_cross` knobs.
 
 **Choosing the frame for a label (`target`).** The embedding and `best_crop` are, by
 default, the frame that best backed the *winner*. When a human corrects the answer, that

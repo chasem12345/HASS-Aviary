@@ -419,6 +419,7 @@ a.badge-inat:hover { filter: brightness(1.1); }
 .idbadge-manual { color: var(--accent); border-style: dashed; }
 /* Frigate's own label, announced without aviary-id's second look (it was unreachable). */
 .idbadge-frigate { color: var(--frigate); }
+.idbadge-visit { color: var(--muted); border-style: dotted; }
 
 /* ------------------------------------------------------- what the model considered */
 .guesses {

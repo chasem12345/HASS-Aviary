@@ -30,6 +30,7 @@ __all__ = [
     "retained_missing_export",
     "oldest_detection",
     "recent_refs",
+    "mark_announced",
 ]
 
 
@@ -80,7 +81,7 @@ def upsert_detection(row: dict[str, Any], authoritative: bool = False) -> None:
                 -- arrives without a sub_label.
                 common_name     = CASE
                                       WHEN :authoritative = 0
-                                           AND detections.id_status IN ('ok', 'manual', 'frigate')
+                                           AND detections.id_status IN ('ok', 'manual', 'frigate', 'visit')
                                       THEN detections.common_name
                                       WHEN excluded.common_name = 'bird'
                                            AND detections.common_name != 'bird'
@@ -89,13 +90,13 @@ def upsert_detection(row: dict[str, Any], authoritative: bool = False) -> None:
                                   END,
                 scientific_name = CASE
                                       WHEN :authoritative = 0
-                                           AND detections.id_status IN ('ok', 'manual', 'frigate')
+                                           AND detections.id_status IN ('ok', 'manual', 'frigate', 'visit')
                                       THEN detections.scientific_name
                                       ELSE COALESCE(excluded.scientific_name, detections.scientific_name)
                                   END,
                 species_code    = CASE
                                       WHEN :authoritative = 0
-                                           AND detections.id_status IN ('ok', 'manual', 'frigate')
+                                           AND detections.id_status IN ('ok', 'manual', 'frigate', 'visit')
                                       THEN detections.species_code
                                       ELSE COALESCE(excluded.species_code, detections.species_code)
                                   END,
@@ -104,7 +105,7 @@ def upsert_detection(row: dict[str, Any], authoritative: bool = False) -> None:
                 -- person's NULL) must not be out-bid by Frigate's "is this a bird" score.
                 confidence      = CASE
                                       WHEN :authoritative = 0
-                                           AND detections.id_status IN ('ok', 'manual', 'frigate')
+                                           AND detections.id_status IN ('ok', 'manual', 'frigate', 'visit')
                                       THEN detections.confidence
                                       ELSE COALESCE(
                                           MAX(detections.confidence, excluded.confidence),
@@ -435,7 +436,25 @@ def recent_refs(since: float) -> list[tuple[str, str]]:
             SELECT source, source_ref FROM detections
             WHERE start_time >= ?
               AND (id_status IS NULL OR id_status NOT IN ('pending', 'confirming'))
+              -- A Frigate event still in progress (no end yet) has not been announced
+              -- either: that happens on its end message (or its verdict).
+              AND (announced_at IS NOT NULL OR source != 'frigate' OR end_time IS NOT NULL)
             """,
             (since,),
         ).fetchall()
     return [(r["source"], r["source_ref"]) for r in rows]
+
+
+def mark_announced(source: str, source_ref: str, when: Optional[float] = None) -> None:
+    """Stamp the moment a row's species was announced (or claimed for its visit).
+
+    Written by ``ingest._announce`` only — the one place a notification leaves from — so
+    "was this announced?" is a fact on the row rather than an inference from its name or
+    status. The visit link-time seed reads it (see ``upsert_visit``).
+    """
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE detections SET announced_at = COALESCE(announced_at, ?) "
+            "WHERE source = ? AND source_ref = ?",
+            (when if when is not None else time.time(), source, source_ref),
+        )

@@ -66,6 +66,10 @@ class Candidate:
     # this event about" — with two birds in frame, the detector finds both, and without
     # the anchor the pipeline would happily classify whichever is more photogenic.
     anchor: Optional[tuple[float, float]] = None
+    # From the zoomed PTZ recordings rather than the event's own camera. Zoomed crops are
+    # compared among themselves by the subject partition: cosine between a wide-camera
+    # crop and a zoomed one is not comparable to same-camera cosine.
+    zoomed: bool = False
 
 
 @dataclass
@@ -542,7 +546,8 @@ class EventMedia:
             anchor = (self._anchor_at(clip_t0 + offset)
                       if clip_t0 is not None else None)
             self.candidates.append(
-                Candidate(image=img, origin=f"clip@{offset:.2f}s", anchor=anchor))
+                Candidate(image=img, origin=f"clip@{offset:.2f}s", anchor=anchor,
+                          zoomed=self.zoom_used))
         timings.add(f"ffmpeg{'' if phase == 0.5 else '2'}", loop.time() - started)
         return len(frames)
 

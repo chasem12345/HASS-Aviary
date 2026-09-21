@@ -63,6 +63,14 @@ _QUEUE_MAX = 200
 # species with every frame voting the same way is a confident answer, not a doubtful one.
 _CONSENSUS_RESCUE = 0.5
 
+# Probability at or above which an uncertain fragment may take the name of a bird
+# identified seconds earlier in the same visit and zone (identify_visit_context).
+# Deliberately low: the fragment's own answer already failed the thresholds, and what is
+# being asked is only whether the sibling's species is at least plausible for these
+# pixels — a 2-second tail of a cardinal's stay scores the cardinal at 0.2–0.4 and some
+# sparrow at 0.3, not zero.
+_VISIT_MIN_CANDIDATE = 0.15
+
 # Minimum seconds between self-heal probe rebuilds, so a database with nothing to load
 # (fresh install) costs two SELECTs a minute, not two per event.
 _PROBE_HEAL_INTERVAL = 60.0
@@ -490,8 +498,10 @@ async def _process(row: dict[str, Any]) -> None:
         await asyncio.to_thread(db.set_has_crop, ref, True)
     # And every OTHER bird the service found in the event, each on its own crop and
     # embedding. Done on both branches below: a second bird can be perfectly clear while
-    # the tracked one is not — and a named one is announced as a sighting of its species.
-    await _store_subjects(row, result, embed_key, announce=True)
+    # the tracked one is not. Named ones are announced as sightings of their species
+    # AFTER the tracked bird's own verdict is recorded (_announce_others), so the
+    # tracked bird claims its visit-species first.
+    others = await _store_subjects(row, result, embed_key)
 
     if not passes and not rescued and row.get("source") == "frigate":
         # Frigate may have named this bird while we were looking (its classifier
@@ -516,9 +526,35 @@ async def _process(row: dict[str, Any]) -> None:
                     ref, name, score, margin, label,
                     f" ({late_score:.2f})" if late_score is not None else "",
                 )
+                await _announce_others(row, others, label)
             return
 
     if not passes and not rescued:
+        # Frigate tracks one stay as many short objects, and the two-second tail of a
+        # cardinal's visit comes back uncertain on its own footage. A settled sibling in
+        # the same visit, zone and moment names it — when its species is at least on
+        # this fragment's shortlist and no other named species was nearby.
+        ranked = list(blended["candidates"]) if blended else list(slim_candidates)
+        inherited = await _inherit_from_visit(row, ranked)
+        if inherited:
+            sibling, cand = inherited
+            gap = abs(float(row.get("start_time") or 0.0) - float(sibling.get("start_time") or 0.0))
+            log.info(
+                "Identification for %s below threshold (%s score=%.3f margin=%.3f), but %s "
+                "was identified %.0fs away in the same visit and zone and scores %.0f%% "
+                "here — same visit.",
+                ref, name, score, margin, sibling["common_name"], gap, float(cand["score"]) * 100,
+            )
+            await asyncio.to_thread(
+                db.set_identification, row["source"], ref, "visit",
+                float(cand["score"]), margin, model, embedding, True, shortlist,
+                embedding_model=embed_key, probe_weight=probe_weight,
+                probe_examples=probe_examples,
+                embedding_target=result.get("embedding_target") or result.get("common_name"),
+                confidence=float(cand["score"]),
+            )
+            await _announce_others(row, others, sibling["common_name"])
+            return
         log.info(
             "Identification for %s below threshold: %s score=%.3f margin=%.3f "
             "(runner-up %s) — queued for review.",
@@ -534,6 +570,7 @@ async def _process(row: dict[str, Any]) -> None:
             # species knows the stored frame is the wrong one to learn from.
             embedding_target=result.get("embedding_target") or result.get("common_name"),
         )
+        await _announce_others(row, others)
         return
 
     identified = dict(row)
@@ -574,6 +611,7 @@ async def _process(row: dict[str, Any]) -> None:
         f", probe:{probe_examples}" if probe_examples else "",
         result.get("elapsed_ms", "?"),
     )
+    await _announce_others(row, others, name)
 
 
 # ------------------------------------------------------------ Frigate confirmation
@@ -785,7 +823,7 @@ async def _process_confirm(row: dict[str, Any]) -> None:
 
     if await asyncio.to_thread(crops.save, ref, result.get("best_crop")):
         await asyncio.to_thread(db.set_has_crop, ref, True)
-    await _store_subjects(row, result, embed_key, announce=True)
+    others = await _store_subjects(row, result, embed_key)
 
     # Frigate's label stands with Frigate's own confidence in it; an override carries
     # the learned answer's score.
@@ -795,6 +833,7 @@ async def _process_confirm(row: dict[str, Any]) -> None:
                                 probe_weight=probe_weight, probe_examples=probe_examples,
                                 confidence=confidence):
         return
+    await _announce_others(row, others, verdict["name"])
     if verdict["override"]:
         log.info(
             "Overrode Frigate on %s: %s%s -> %s (score=%.3f margin=%.3f) on %d confirmed "
@@ -907,6 +946,81 @@ def resolve_late_label(det: dict[str, Any], label: str, score: Optional[float]) 
                  f" ({score:.2f})" if score is not None else "", verdict["runner_up"])
 
 
+async def _inherit_from_visit(row: dict[str, Any], ranked: list[dict], *,
+                              live: bool = True) -> Optional[tuple[dict, dict]]:
+    """Name an uncertain fragment after a settled sibling of its visit.
+
+    The rule (identify_visit_context, 0.36.0): the fragment belongs to a visit; exactly
+    ONE species was identified (by the identifier, by hand, by Frigate's confirmed
+    label, or itself inherited) among members in the same zone within
+    identify_visit_window_s of the fragment's span; and that species sits on the
+    fragment's own shortlist at ``_VISIT_MIN_CANDIDATE`` or better. Two named species
+    nearby means a genuinely mixed moment and nothing is inherited. Returns the
+    sibling row and the matching candidate, having stored the name through
+    ``ingest.store_row`` (authoritative; announced only if the visit has not already
+    claimed the species, which it normally has). None when nothing applies.
+    """
+    if _settings is None or not _settings.identify_visit_context:
+        return None
+    det = await asyncio.to_thread(db.detection_by_ref, row["source"], row["source_ref"])
+    if not det or det.get("visit_id") is None:
+        return None
+    siblings = await asyncio.to_thread(
+        db.visit_named_siblings, int(det["visit_id"]), det.get("id"), det.get("zone"),
+        det.get("start_time"), det.get("end_time"), _settings.identify_visit_window_s)
+    by_species: dict[str, dict] = {}
+    for sib in siblings:
+        by_species.setdefault((sib.get("common_name") or "").strip().lower(), sib)
+    if len(by_species) != 1:
+        if len(by_species) > 1:
+            log.debug("%s: %d species identified nearby in visit %s (%s); not inheriting.",
+                      row["source_ref"], len(by_species), det["visit_id"],
+                      ", ".join(sorted(by_species)))
+        return None
+    sibling = next(iter(by_species.values()))
+    cand = _lookup(ranked, sibling["common_name"])
+    if cand is None and sibling.get("scientific_name"):
+        cand = _lookup(ranked, sibling["scientific_name"])
+    if cand is None or float(cand.get("score") or 0.0) < _VISIT_MIN_CANDIDATE:
+        return None
+    identified = {k: v for k, v in row.items() if k != "_mode"}
+    identified["common_name"] = sibling["common_name"]
+    identified["scientific_name"] = sibling.get("scientific_name") or cand.get("sci")
+    identified["species_code"] = sibling.get("species_code") or cand.get("code")
+    identified["confidence"] = float(cand["score"])
+    stored = await asyncio.to_thread(ingest.store_row, identified, live, True, False, True)
+    if not stored:
+        return None
+    return sibling, cand
+
+
+async def inherit_backlog() -> int:
+    """Start-up pass over the review queue: uncertain fragments whose visit siblings
+    can name them (identify_visit_context). Database only — no GPU, no network — so it
+    runs before the service is even reachable. Returns how many were named."""
+    if _settings is None or not _settings.identify_visit_context:
+        return 0
+    days = _settings.identify_retain_days or 14
+    rows = await asyncio.to_thread(db.uncertain_rows_in_visits, time.time() - days * 86400)
+    named = 0
+    for det in rows:
+        ranked = _decode_candidates(det.get("id_candidates"))
+        got = await _inherit_from_visit(det, ranked, live=False)
+        if not got:
+            continue
+        sibling, cand = got
+        await asyncio.to_thread(
+            db.set_identification, det["source"], det["source_ref"], "visit",
+            float(cand["score"]), det.get("id_margin"), det.get("id_model"), None, True, None,
+            probe_weight=det.get("id_probe_weight"), probe_examples=det.get("id_probe_examples"),
+            confidence=float(cand["score"]),
+        )
+        named += 1
+    if named:
+        log.info("Named %d uncertain fragment(s) after birds identified in the same visit.", named)
+    return named
+
+
 # Old and new "other bird" subjects whose embeddings are at least this alike are the same
 # bird re-found on a re-identify, so a human label or rejection on the old one carries
 # over. BioCLIP puts the same crop set at ~0.9+; two different birds well below.
@@ -914,19 +1028,24 @@ _CARRY_SIMILARITY = 0.85
 
 
 async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str,
-                          announce: bool = False) -> None:
+                          announce: bool = False) -> list[dict]:
     """Persist the service's ``subjects[]`` for a detection (aviary-id 0.10.0+).
 
     The primary (idx 0) gets a row for uniform labelling but the detection row remains
     its source of truth. Each OTHER bird is put through the probe and the user's
-    thresholds exactly like a primary — no consensus rescue, to keep the rule simple —
-    and stored with its own crop and embedding. Labels and rejections the user already
+    thresholds exactly like a primary — frame-consensus rescue included (0.36.0) — and
+    stored with its own crop and embedding. One that fails the thresholds on a single
+    crop that was never in the same frame as the tracked bird is not stored at all: that
+    is the tracked bird's own appearance drift (or a service older than 0.13.0 reporting
+    it as a bird), not a second bird worth a name. Labels and rejections the user already
     gave to other birds in this event are carried to whichever new subject matches them.
-    With ``announce`` (a live identification, not a re-embed of history) every named other
-    bird is announced as a sighting of ITS species — once per species per visit, with its
-    own crop, and as a new species if Aviary has never recorded it.
+
+    Returns the stored OTHER birds' rows. With ``announce`` they are announced here;
+    the live paths pass False and call ``_announce_others`` once the tracked bird's own
+    verdict is recorded, so the tracked bird claims its visit-species first.
     Any failure here is logged and swallowed: subjects are a bonus on top of the answer.
     """
+    others: list[dict] = []
     try:
         det_id = row.get("id")
         if not det_id:
@@ -1000,6 +1119,17 @@ async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str,
                         name = None
                 passes = bool(name) and score >= _settings.identify_min_score \
                     and margin >= _settings.identify_min_margin
+                # The same frame-consensus rescue the tracked bird gets (see _process):
+                # a modest answer every frame independently backed. Only while the name
+                # is still the service's own winner — a probe rerank voids the votes.
+                agreed: Optional[bool] = None
+                consensus = sub.get("consensus")
+                if isinstance(consensus, dict) and name and name == sub.get("common_name"):
+                    agreed = bool(consensus.get("agreed"))
+                rescued = (not passes and bool(name) and agreed is True
+                           and score >= _CONSENSUS_RESCUE * _settings.identify_min_score
+                           and margin >= _CONSENSUS_RESCUE * _settings.identify_min_margin)
+                passes = passes or rescued
                 status = "ok" if passes else "low_confidence"
                 if not passes:
                     name = sci = code = None
@@ -1010,6 +1140,16 @@ async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str,
                         status = "manual"
                     elif match.get("id_status") == "rejected" and not passes:
                         status = "rejected"
+                # One crop, never in the same frame as the tracked bird, and no name for
+                # it: not a second bird, the tracked bird's own drift — no chip, no
+                # review item. (co_occurring is None from a service before 0.13.0; a
+                # lone unnamed crop is treated the same way either way.)
+                if (status == "low_confidence" and not match
+                        and int(sub.get("n_frames") or 0) <= 1
+                        and not sub.get("co_occurring")):
+                    log.debug("Event %s: other bird %d dropped — one crop, never beside "
+                              "the tracked bird, no confident name.", ref, idx)
+                    continue
                 await asyncio.to_thread(crops.save, ref, sub.get("best_crop"), idx)
             rows.append({
                 "idx": idx, "is_primary": primary, "common_name": name,
@@ -1025,6 +1165,7 @@ async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str,
                 "embedding_target": (sub.get("embedding_target") or sub.get("common_name")
                                      if embedding else None),
                 "purity": sub.get("purity"),
+                "co_occurring": sub.get("co_occurring"),
             })
         dropped = [o for o in old if not o.get("is_primary") and (o.get("manual_name")
                    or old_rejections.get(o["idx"])) and o["idx"] not in {c[0] for c in carried}]
@@ -1039,15 +1180,55 @@ async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str,
         if others:
             log.info("Event %s: %d other bird(s) in view: %s", ref, len(others),
                      ", ".join(f"{r['manual_name'] or r['common_name'] or 'unidentified'}"
-                               f" ({r['id_status']}, {r['score']:.2f})" for r in others))
+                               f" ({r['id_status']}, {r['score']:.2f}"
+                               f"{', beside the tracked bird in %d frame(s)' % r['co_occurring'] if r.get('co_occurring') else ''})"
+                               for r in others))
             # A named other bird is a sighting of ITS species too — maybe its first.
             for r in others:
                 if r["id_status"] in ("ok", "manual"):
                     ingest.touch_keepsake(r["manual_name"] or r["common_name"])
-                    if announce:
-                        await asyncio.to_thread(ingest.announce_subject, row, r)
+            if announce:
+                await _announce_others(row, others)
     except Exception:  # noqa: BLE001 — never let the bonus break the answer
         log.exception("Storing subjects for %s failed.", row.get("source_ref"))
+    return others
+
+
+async def _announce_others(row: dict[str, Any], others: list[dict],
+                           primary_name: Optional[str] = None) -> None:
+    """Announce the named OTHER birds of an event, after the tracked bird's own verdict.
+
+    Ordering is the point: the tracked bird claims its (visit, species) first, so a
+    second bird of the SAME species never takes the claim and silences the tracked
+    bird's notification — and, for an event with no visit, never announces the species
+    a second time. The parent row is re-read so the visit link is the current one, not
+    the one captured when the event was dispatched: the review message that links a
+    member often lands in between. Best-effort; never raises.
+    """
+    named = [r for r in others if r.get("id_status") in ("ok", "manual")]
+    if not named:
+        return
+    try:
+        det = await asyncio.to_thread(db.detection_by_ref, row["source"], row["source_ref"])
+        parent = dict(row)
+        if det:
+            for key in ("id", "visit_id", "zone", "location", "start_time", "end_time",
+                        "common_name"):
+                if det.get(key) is not None:
+                    parent[key] = det[key]
+        mine = (primary_name or parent.get("common_name") or "").strip().lower()
+        if ingest.is_unclassified({"common_name": mine}):
+            mine = ""
+        for r in named:
+            name = (r.get("manual_name") or r.get("common_name") or "").strip().lower()
+            if mine and name == mine:
+                log.debug("Event %s: other bird %d is also a %s — the tracked bird's "
+                          "announcement covers it.", row["source_ref"], r["idx"],
+                          r.get("manual_name") or r.get("common_name"))
+                continue
+            await asyncio.to_thread(ingest.announce_subject, parent, r)
+    except Exception:  # noqa: BLE001 — a notification must never break the answer
+        log.exception("Announcing other birds for %s failed.", row.get("source_ref"))
 
 
 def _match_old_subject(embedding: Optional[str], old: list[dict],
