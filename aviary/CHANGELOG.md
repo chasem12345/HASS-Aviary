@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.37.1
+
+- **Fixed: 🚫 not a bird started a re-identify.** The button shared the re-identify
+  button's class for its look, so the click also ran identification and redrew the card
+  while its menu was open. It now only opens the menu.
+- **Fixed: oversized week sparklines on Awaiting Review.** Days with no detections were
+  padded by the page's empty-state style, stretching each bar to about 60 px and spilling
+  across neighbouring tiles. The Species page had the same bug but clipped it, which also
+  squeezed its "last seen" text.
+
 ## 0.37.0
 
 - **Fixed: bursts of 2–6 notifications for one bird (regression in 0.36.0).** Frigate

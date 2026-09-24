@@ -398,6 +398,13 @@ a.badge-inat:hover { filter: brightness(1.1); }
   background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit;
 }
 .export-open:hover { color: var(--accent); }
+/* Styled like re-identify but deliberately NOT .reidentify: that class is the re-identify
+   click handler's hook, and sharing it made "not a bird" start a GPU run. */
+.notbird-open {
+  color: var(--muted); font-size: 12px; white-space: nowrap;
+  background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit;
+}
+.notbird-open:hover { color: var(--danger); }
 .reidentify[disabled] { opacity: .5; cursor: default; }
 .reidentify.reject:hover { color: var(--danger); }
 /* Its own row, and allowed to wrap — .meta is a no-wrap flex row and the cards go down to
@@ -1174,7 +1181,9 @@ img.overlay-img {
 .tile-name .tier-badge { font-size: 9px; vertical-align: 2px; }
 .spark { display: inline-flex; gap: 1px; height: 14px; align-items: flex-end; margin-left: auto; }
 .spark i { display: block; width: 4px; height: max(1px, var(--h, 0%)); background: var(--accent); opacity: .7; border-radius: 1px; }
-.spark i.empty { opacity: .25; }
+/* padding: 0 — the global .empty (empty-state message) rule would otherwise pad each
+   zero-day bar to 60 px; the Species page's tiles clipped it, Awaiting Review's don't. */
+.spark i.empty { opacity: .25; padding: 0; }
 .species-tools { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-left: auto; }
 .species-tools input[type="search"] {
   padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line);

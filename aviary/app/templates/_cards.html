@@ -239,7 +239,7 @@
       {% endif %}
       {% if d.id_status != 'not_bird' %}
       {# Teaches the identifier this crop is no bird at all, then removes the detection. #}
-      <button type="button" class="reidentify notbird-open"
+      <button type="button" class="notbird-open"
               title="Not a bird at all (a leaf, feeder, squirrel…) — learn it so similar crops are set aside, and remove this detection"
               data-id="{{ d.id }}" data-source="{{ d.source }}" data-notbird="1">🚫 not a bird</button>
       {% endif %}
