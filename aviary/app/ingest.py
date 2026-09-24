@@ -43,6 +43,14 @@ _tombstones: set[str] = set()
 _blacklist: set[str] = set()
 _ANNOUNCED_CAP = 4096
 _known_lock = threading.Lock()
+# Recently announced camera sightings: (camera, species) -> newest start time. Frigate
+# tracks one stay as several short objects; while their review item has not linked them
+# into a visit, each would announce on its own (the visit claim can't see them). A second
+# fragment of the same species on the same camera within this window of the last announced
+# one is the same stay: it is recorded as announced but sends nothing. Held in memory — a
+# restart inside a 60-second window is not worth persisting for.
+_recent_sightings: dict[tuple[str, str], float] = {}
+_UNLINKED_DEBOUNCE_S = 60.0
 _loop: Optional[asyncio.AbstractEventLoop] = None
 
 # Set by main() to identify.submit when external identification is configured. Injected
@@ -195,8 +203,12 @@ def announce_subject(parent: dict, subject: dict) -> None:
             is_new = lname not in _known_species
             if is_new:
                 _known_species.add(lname)
+            repeat = _repeat_of_recent_sighting(row, visit_id)
         _stats("species")
-        if _loop is not None and notify.enabled():
+        if repeat:
+            log.info("Other bird in view %s in %s is a repeat of the same stay; not notifying.",
+                     row["common_name"], row["source_ref"])
+        elif _loop is not None and notify.enabled():
             asyncio.run_coroutine_threadsafe(notify.send_detection(dict(row), is_new=is_new), _loop)
         if is_new and _new_species_hook is not None:
             try:
@@ -207,6 +219,28 @@ def announce_subject(parent: dict, subject: dict) -> None:
                  row["common_name"], row["source_ref"], idx, ", new species" if is_new else "")
     except Exception:  # noqa: BLE001 — a notification must never break the identification
         log.exception("Announcing an other bird in view failed for %s", parent.get("source_ref"))
+
+
+def _repeat_of_recent_sighting(row: dict, visit_id) -> bool:
+    """Record a live camera announcement; True when it should stay silent.
+
+    Every live Frigate announcement is recorded (visit or not), so an unlinked fragment
+    straight after a visit member of the same species is caught too, but only a row with
+    no visit is ever silenced — one with a visit already passed the persisted visit claim.
+    Caller holds ``_known_lock``.
+    """
+    if row.get("source") != "frigate":
+        return False
+    key = ((row.get("location") or "").lower(), row["common_name"].lower())
+    try:
+        start = float(row.get("start_time"))
+    except (TypeError, ValueError):
+        start = time.time()
+    prev = _recent_sightings.pop(key, None)
+    _recent_sightings[key] = start if prev is None else max(prev, start)
+    while len(_recent_sightings) > _ANNOUNCED_CAP:
+        _recent_sightings.pop(next(iter(_recent_sightings)))
+    return visit_id is None and prev is not None and abs(start - prev) <= _UNLINKED_DEBOUNCE_S
 
 
 def seed_notify_state() -> None:
@@ -388,7 +422,9 @@ def _announce(row: dict, live: bool) -> None:
     (visit, species) pair in the database, later members of the same species find it
     taken and stay silent, and a *different* species in the same visit still announces.
     Events with no visit (no review item retained, or visits disabled) fall back to the
-    per-event rule.
+    per-event rule, softened by ``_repeat_of_recent_sighting``: a same-species fragment on
+    the same camera within a minute of the last announcement is the same stay and stays
+    silent (it is still marked announced).
     """
     if is_unclassified(row):  # generic 'bird' is never a species
         return
@@ -410,6 +446,7 @@ def _announce(row: dict, live: bool) -> None:
         is_new = name not in _known_species
         if is_new:
             _known_species.add(name)
+        repeat = live and _repeat_of_recent_sighting(row, visit_id)
     # The fact of the announcement, on the row: what the visit link-time seed keys on.
     # Backfilled rows are stamped too — they claimed their visit's species just above.
     try:
@@ -421,7 +458,10 @@ def _announce(row: dict, live: bool) -> None:
         _stats("zones")    # and a visit's bird just became known
     # Accepted race: a live detection during a first-run backfill can announce a
     # species/ref the backfill was about to import — genuinely first-seen by Aviary.
-    if live and _loop is not None and notify.enabled():
+    if repeat:
+        log.info("%s in %s is a repeat of the same stay (no visit yet); not notifying.",
+                 row["common_name"], key)
+    elif live and _loop is not None and notify.enabled():
         asyncio.run_coroutine_threadsafe(notify.send_detection(dict(row), is_new=is_new), _loop)
     if live and is_new and _new_species_hook is not None:
         try:

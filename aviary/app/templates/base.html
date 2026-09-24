@@ -11,6 +11,12 @@
   <header class="topbar">
     <div class="brand"><span class="dex-led" aria-hidden="true"></span>🐦 <span>Aviary</span></div>
     <nav>
+      {# Only while the confirmation gate is on — with it off there is no queue. #}
+      {% if review_gated %}
+      <a href="{{ u('review') }}" class="{{ 'active' if page == 'review' }}">
+        Awaiting Review{% if review_count %} <span class="nav-badge" id="reviewNavBadge">{{ review_count }}</span>{% endif %}
+      </a>
+      {% endif %}
       <a href="{{ u('dashboard') }}" class="{{ 'active' if page == 'dashboard' }}">Dashboard</a>
       <a href="{{ u('recent') }}" class="{{ 'active' if page == 'recent' }}">Recent</a>
       <a href="{{ u('recap') }}" class="{{ 'active' if page == 'recap' }}">Recap</a>

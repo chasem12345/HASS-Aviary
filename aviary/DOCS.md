@@ -100,8 +100,9 @@ An unconfirmed species:
 - **still fires its new-species notification**, because that's what tells you there's
   something to review.
 
-To review: open **Awaiting review** (a dashboard tile and a button on the Species page,
-both shown only when something is pending). The species page gives you its detections,
+To review: open the **Awaiting Review** tab (first in the nav, with a count badge; the
+dashboard tile and the Species page's button lead there too). Each tile has **Confirm**
+and **Reject…** for a quick decision. For a closer look, open the species: its page gives you its detections,
 clips and spectrograms, plus [reference photos](#reference-photos) and recordings of
 what the bird should look and sound like. Then either:
 
@@ -141,6 +142,26 @@ before deleting and retries once if BirdNET-Go has since rotated it.
 
 > If a source deletion fails, Aviary still removes its own copy and reports the error, so
 > the two can end up out of step. The message tells you what the source said.
+
+### Not a bird
+
+When Frigate calls something a bird that isn't one (a leaf, a feeder part, a squirrel),
+use **🚫 not a bird** on the detection card instead of ×. Aviary keeps the crop's
+embedding as a *Not a bird* example, then removes the detection with the same choice
+× offers: everywhere (deleting the Frigate event) or Aviary only. For an other bird under
+*Also in view*, the chip's 🚫 does the same for just that bird.
+
+After that, any crop at least `identify_not_bird_similarity` (default 0.9) similar to one
+of your examples is **set aside** instead of being named. It sends no notification,
+isn't counted as a species, and stays out of Recent and the Unidentified queue. Matching
+other birds in view are dropped from the event. It works on both identification paths,
+including Frigate-confirmation.
+
+**Unidentified → Not a bird** shows what was set aside, with the example it matched.
+Name one on its card if it really was a bird. The page also lists every example with a
+**Forget** button, for one that turns out too broad. Set-aside rows expire with the
+other unidentified rows (`identify_retain_days`). An example needs an embedding, so a
+detection that was never identified can be removed but not learned.
 
 **A caveat on "stop BirdNET-Go learning from it":** deleting detections cleans up the
 history, but BirdNET-Go keeps its learned per-species **dynamic thresholds** in separate
@@ -1247,6 +1268,7 @@ refresh (at most 15 minutes, or immediately after a restart).
 | `identify_workers` | Concurrent identification requests (default `2`). The service serializes GPU work anyway. |
 | `identify_timeout` | Seconds to wait for an identification (default `60`). |
 | `identify_retain_days` | Days to keep unidentified detections before purging them (default `14`; `0` keeps forever). |
+| `identify_not_bird_similarity` | How similar (cosine, 0–1) a crop must be to one of your *Not a bird* examples to be set aside instead of named (default `0.9`). Lower catches more look-alikes but risks real birds; `0` turns the check off. See *Not a bird*. |
 | `identify_learn_from_auto` | Let the learning probe also learn from the identifier's own confident answers, not only from species you named by hand (default `false`). A Frigate label the identifier let stand counts as one of its answers. See *Learning from your own birds*. |
 | `identify_use_audio_priors` | Bias identification toward species BirdNET-Go heard around the same time (default `true`). |
 | `identify_exclude_blacklisted` | Rule blacklisted species out of the identifier's candidate list (default `true`). Turn off if you blacklisted a species that genuinely visits. |

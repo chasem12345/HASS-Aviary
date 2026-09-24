@@ -20,6 +20,7 @@ import base64
 import glob
 import logging
 import os
+import shutil
 from typing import Optional
 
 log = logging.getLogger("aviary.crops")
@@ -97,6 +98,33 @@ def exists(event_id: str, idx: int = 0) -> bool:
 def path_if_exists(event_id: str, idx: int = 0) -> Optional[str]:
     path = _path(event_id, idx)
     return path if path and os.path.isfile(path) else None
+
+
+def copy(event_id: str, idx: int, dest_id: str) -> Optional[str]:
+    """Copy an event's crop (subject ``idx``) to ``dest_id``'s primary slot. Returns the
+    new basename, or None when there was nothing to copy. Best-effort."""
+    src = path_if_exists(event_id, idx)
+    dest = _path(dest_id)
+    if not src or not dest:
+        return None
+    try:
+        shutil.copyfile(src, dest)
+    except OSError as exc:
+        log.debug("Could not copy the crop %s: %s", src, exc)
+        return None
+    return os.path.basename(dest)
+
+
+def remove_file(name: Optional[str]) -> None:
+    """Delete one stored crop by basename (e.g. a "Not a bird" example's copy)."""
+    if _dir is None or not name or os.path.basename(name) != name:
+        return
+    try:
+        os.remove(os.path.join(_dir, name))
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        log.debug("Could not remove the crop %s: %s", name, exc)
 
 
 def remove(event_id: str) -> None:

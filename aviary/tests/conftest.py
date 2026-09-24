@@ -32,6 +32,15 @@ def emb(seed: int, base: np.ndarray | None = None, noise: float = 0.0) -> str:
     return encode(v)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_sighting_debounce():
+    """The unlinked-fragment debounce is module state keyed by camera + species; tests
+    reuse both (and T0), so one test's announcement must not silence the next's."""
+    ingest._recent_sightings.clear()  # noqa: SLF001
+    yield
+    ingest._recent_sightings.clear()  # noqa: SLF001
+
+
 def make_settings(tmp_path, **override) -> Settings:
     kw = dict(
         data_dir=str(tmp_path), db_path=str(tmp_path / "aviary.db"), mqtt_host="", mqtt_port=1883,

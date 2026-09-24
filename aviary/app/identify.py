@@ -40,7 +40,7 @@ from typing import Any, Optional
 
 import httpx
 
-from . import crops, db, http, ingest, probe
+from . import crops, db, http, ingest, notbird, probe
 from .settings import Settings
 
 log = logging.getLogger("aviary.identify")
@@ -376,6 +376,36 @@ async def _zoom_allowed(row: dict[str, Any]) -> bool:
     return True
 
 
+async def _set_aside_if_not_bird(row: dict[str, Any], result: dict,
+                                  embed_key: Optional[str]) -> bool:
+    """True (and the row set aside) when the crop matches a learned "not a bird".
+
+    Checked before any name is written or announced, on both the full and the confirm
+    path. The crop and embedding are still stored: the audit list shows what was set
+    aside, and naming it by hand overrules (and learns from) it like any other row.
+    Other birds in view are not stored — the service's partition was about a non-bird.
+    """
+    hit = await asyncio.to_thread(notbird.match, result.get("embedding"), embed_key)
+    if not hit:
+        return False
+    example_id, sim = hit
+    ref = row["source_ref"]
+    if await asyncio.to_thread(crops.save, ref, result.get("best_crop")):
+        await asyncio.to_thread(db.set_has_crop, ref, True)
+    await asyncio.to_thread(
+        db.set_identification, row["source"], ref, db.NOT_BIRD, sim, None,
+        result.get("model_version"), result.get("embedding"), False,
+        _encode_candidates(result.get("candidates")), embedding_model=embed_key,
+        embedding_target=result.get("embedding_target") or result.get("common_name"),
+    )
+    await asyncio.to_thread(db.mark_not_bird, row["source"], ref, sim)
+    log.info("Set aside %s as not a bird: %.2f similar to \"Not a bird\" example #%d "
+             "(the identifier had said %s; Frigate %s).", ref, sim, example_id,
+             result.get("common_name") or "nothing",
+             row.get("frigate_label") or row.get("common_name") or "bird")
+    return True
+
+
 async def _process(row: dict[str, Any]) -> None:
     if row.get("_mode") == "confirm":
         await _process_confirm(row)
@@ -413,6 +443,8 @@ async def _process(row: dict[str, Any]) -> None:
     model = result.get("model_version")
     embed_key = result.get("embedding_key") or db.embedding_key_from(model or "")
     embedding = result.get("embedding")
+    if await _set_aside_if_not_bird(row, result, embed_key):
+        return
     name = result.get("common_name")
     # Tracked alongside name so the review log stays truthful after a probe rerank —
     # the service's runner-up says nothing about the blended ranking.
@@ -791,6 +823,8 @@ async def _process_confirm(row: dict[str, Any]) -> None:
     model = result.get("model_version")
     embed_key = result.get("embedding_key") or db.embedding_key_from(model or "")
     embedding = result.get("embedding")
+    if await _set_aside_if_not_bird(row, result, embed_key):
+        return
     service = _slim_candidates(result.get("candidates"))
     await _ensure_probe(embed_key)
     blended = probe.blend(embedding or "", service, embed_key, exclude=set(exclude or []))
@@ -1099,6 +1133,14 @@ async def _store_subjects(row: dict[str, Any], result: dict, embed_key: str,
             else:
                 # Match this bird to the old subjects the user has touched, by embedding.
                 match = _match_old_subject(embedding, old, carried)
+                # A crop like one the user marked "Not a bird" is no bird in view — unless
+                # they named this very one by hand, which outranks the lesson.
+                if not (match and match.get("manual_name")):
+                    hit = await asyncio.to_thread(notbird.match, embedding, embed_key)
+                    if hit:
+                        log.info("Event %s: other bird %d dropped — %.2f similar to \"Not "
+                                 "a bird\" example #%d.", ref, idx, hit[1], hit[0])
+                        continue
                 rejected = set(n.lower() for n in old_rejections.get(match["idx"], [])) if match else set()
                 exclude = rejected | {b.lower() for b in blacklist}
                 blended = probe.blend(embedding or "", slim, embed_key, exclude=exclude)

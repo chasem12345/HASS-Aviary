@@ -357,6 +357,22 @@ CREATE TABLE IF NOT EXISTS species_inat (
     posted_at       REAL
 );
 
+
+-- "Not a bird" (0.37.0): embeddings of crops the user said were no bird at all — a leaf,
+-- a feeder part, a squirrel. A later crop that sits this close to one is set aside
+-- (detections.id_status = 'not_bird') instead of being named and announced. Standalone
+-- rows, not keyed to a detection: marking one usually deletes the detection, and the
+-- lesson must outlive it. crop_file is a copy kept for the audit list.
+CREATE TABLE IF NOT EXISTS not_bird_examples (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    model      TEXT NOT NULL,       -- embedding key; vectors from other models don't compare
+    embedding  TEXT NOT NULL,
+    source_ref TEXT,
+    camera     TEXT,
+    label      TEXT,                -- what it had been called, for the audit list
+    crop_file  TEXT,
+    created_at REAL NOT NULL
+);
 """
 
 
@@ -407,7 +423,7 @@ CREATE VIEW species_sightings AS
            d.source, d.source_ref, d.common_name, d.scientific_name, d.species_code,
            d.confidence, d.location, d.zone, d.start_time, d.end_time,
            d.has_clip, d.has_snapshot, d.clip_ref, d.snapshot_ref, d.visit_id,
-           d.id_status, d.id_score, d.retained_at
+           d.id_status, d.id_score, d.retained_at, d.announced_at
     FROM detections d
     UNION ALL
     SELECT d.id, d.id AS detection_id, s.idx AS subject_idx,
@@ -417,7 +433,8 @@ CREATE VIEW species_sightings AS
            s.species_code,
            d.confidence, d.location, d.zone, d.start_time, d.end_time,
            d.has_clip, d.has_snapshot, d.clip_ref, d.snapshot_ref, d.visit_id,
-           s.id_status, s.score AS id_score, d.retained_at
+           s.id_status, s.score AS id_score, d.retained_at,
+           NULL AS announced_at  -- the parent's stamp is the tracked bird's, not this one's
     FROM detection_subjects s
     JOIN detections d ON d.id = s.detection_id
     WHERE s.is_primary = 0 AND s.id_status IN ('ok', 'manual')

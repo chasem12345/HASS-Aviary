@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.36.0"
+version: "0.37.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -55,6 +55,7 @@ options:
   identify_use_audio_priors: true
   identify_exclude_blacklisted: true
   identify_learn_from_auto: false
+  identify_not_bird_similarity: 0.9
   identify_confirm_frigate: true
   identify_visit_context: true
   identify_visit_window_s: 20.0
@@ -150,6 +151,10 @@ schema:
   # identify_confirm_frigate on, a Frigate label the identifier let stand counts as
   # one of its automatic answers.
   identify_learn_from_auto: "bool"
+  # A crop this similar (cosine) to one you marked "Not a bird" is set aside — no name, no
+  # notification — and listed under Unidentified → Not a bird, where naming it overrules.
+  # 0 turns the check off. Lower catches more look-alikes but risks real birds.
+  identify_not_bird_similarity: "float(0.0,1.0)?"
   # With Frigate's own bird classification ON, its label is not announced until
   # aviary-id (0.12.0+) has looked at Frigate's crop of the same bird — no clip, so it
   # is quick, and it can only ever be about the bird Frigate tracked. Frigate's label

@@ -30,7 +30,7 @@
     {% endif %}
     {# The review queue is only a thing while the confirmation gate is on. #}
     {% if gated and not reviewing and registry.unconfirmed %}
-      <a class="btn btn-sm" href="{{ u('species_index') }}?state=unconfirmed">Review {{ registry.unconfirmed }} awaiting</a>
+      <a class="btn btn-sm" href="{{ u('review') }}">Review {{ registry.unconfirmed }} awaiting</a>
     {% endif %}
     {# Client-side: filters and reorders the tiles already on the page, so it is instant
        and needs no round trip. The form's own selects still submit as before. #}

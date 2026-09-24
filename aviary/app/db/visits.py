@@ -377,6 +377,8 @@ def feed_page(
     # card with nothing to show is noise, but the bird's picture is still worth a card.
     # Direct pages (detection, visit, Kept) and every aggregate still see these rows.
     d_where += " AND (source != 'frigate' OR media_expired_at IS NULL OR has_crop = 1)"
+    # Crops set aside as not-a-bird (0.37.0) are not sightings; Unidentified lists them.
+    d_where += " AND (id_status IS NULL OR id_status != 'not_bird')"
     v_where += (" AND EXISTS (SELECT 1 FROM detections m WHERE m.visit_id = v.id"
                 " AND (m.media_expired_at IS NULL OR m.has_crop = 1))")
     if species:
@@ -420,7 +422,7 @@ def feed_page(
         v["kind"] = "visit"
     members = visits_with_members([v["id"] for v in visits])
     for v in visits:
-        v["members"] = members.get(v["id"], [])
+        v["members"] = [m for m in members.get(v["id"], []) if m.get("id_status") != "not_bird"]
     # A visit with no members (all deleted, or its events never imported) has nothing to
     # show; hide rather than render an empty shell. _settle_visits removes these on the
     # deletion paths, so this is belt-and-braces for import ordering.

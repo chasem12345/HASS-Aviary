@@ -368,15 +368,20 @@ def species_last_times(common_name: str, source: str, source_ref: str,
                        visit_id: Optional[int] = None,
                        start_time: Optional[float] = None) -> dict:
     """The species' most recent detection time — overall and per source — excluding
-    one row (already upserted), every other member of its visit, and any unlinked
-    Frigate fragment within a minute of it.
+    one row (already upserted), every other member of its visit, and any unlinked,
+    not-yet-announced Frigate fragment within a minute of it.
 
     Feeds the notification blueprint's per-species cooldown: 'how long has this
     species been quiet before this detection?', split by source so a camera cooldown
     isn't fed by audio detections (and vice versa). Siblings in the same visit are the
     same stay, not a previous one — without excluding them, the second tracked object of
     one visit would report the species as "last seen 4 seconds ago"; a sibling whose
-    review link has not arrived yet is excluded by time instead. Reads the sightings
+    review link has not arrived yet is excluded by time instead — but only while it is
+    unannounced (still being identified), so it cannot swallow the stay's one real
+    notification. Once a fragment HAS announced it counts: every later fragment of the
+    burst then reads "seconds ago" and the blueprint's cooldown drops it. (0.36.0 excluded
+    announced fragments too, so each one read the gap to the previous stay and a burst of
+    four fragments sent four notifications.) Reads the sightings
     view, so a species known only as an *other bird in view* has a last-seen time and
     is not "first sighting" forever.
     """
@@ -391,8 +396,8 @@ def species_last_times(common_name: str, source: str, source_ref: str,
             WHERE common_name = ? COLLATE NOCASE
               AND NOT (source = ? AND source_ref = ?)
               AND (? IS NULL OR visit_id IS NULL OR visit_id != ?)
-              AND NOT (source = 'frigate' AND visit_id IS NULL AND ? IS NOT NULL
-                       AND ABS(start_time - ?) <= ?)
+              AND NOT (source = 'frigate' AND visit_id IS NULL AND announced_at IS NULL
+                       AND ? IS NOT NULL AND ABS(start_time - ?) <= ?)
             """,
             (common_name, source, source_ref, visit_id, visit_id,
              start_time, start_time, _UNLINKED_SIBLING_S),

@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.37.0
+
+- **Fixed: bursts of 2–6 notifications for one bird (regression in 0.36.0).** Frigate
+  tracks one stay as several short objects, and until a review item links them into a
+  visit each announces on its own. The blueprint's per-species cooldown used to catch the
+  extras, because the second fragment reported "last seen 4 s ago". 0.36.0 left out every
+  unlinked fragment from the last minute when it measured that gap (to stop a fragment
+  still being identified from swallowing the real notification). So every fragment read
+  the gap to the previous *stay*: after a quiet spell, or on a first sighting (no gap at
+  all), every one of them passed the cooldown. Now only fragments that have **not been
+  announced** are left out. Once one fragment has notified, the rest read "seconds ago"
+  and the cooldown drops them, and the missed-oriole fix still holds. The add-on also no
+  longer depends on the blueprint for this: a same-species fragment on the same camera
+  within 60 s of the last announcement, with no visit yet, is recorded as announced but
+  sends nothing. This applies to other birds in view too.
+- **Fixed: identical duplicate notifications after a slow Home Assistant response.**
+  Firing `aviary_detection` was retried on any error, including a read timeout or a 504
+  that can arrive *after* Home Assistant already fired the event. It now retries only
+  when the event cannot have fired: a refused connection, or 502/503 from the Supervisor
+  proxy while Core restarts.
+- **Awaiting Review page.** Species waiting for confirmation have their own tab, first in
+  the nav, with a count badge. It is hidden when `require_species_confirmation` is off.
+  It lists the queue newest first, with **Confirm** and **Reject…** on each tile; a
+  decided tile leaves the list in place. The dashboard tile and the Species page's
+  "Review N awaiting" button open it, and `/species?state=unconfirmed` still works.
+  Notifications for a new species still open that species' page, where the reference
+  photos and recordings are.
+- **"Not a bird".** A detection card's **🚫 not a bird** (and a 🚫 on each chip under
+  *Also in view*) teaches the identifier that the crop was no bird at all, such as a leaf,
+  a feeder part or a squirrel, then removes it, with the same "everywhere / Aviary only"
+  choice as ×. A later crop at least `identify_not_bird_similarity` (new, default 0.9)
+  similar to one of these examples is set aside instead of named: no notification, no
+  species count, and it stays out of Recent and the Unidentified queue. Other birds in
+  view that match are dropped. **Unidentified → Not a bird** lists what was set aside
+  (name one to overrule) and the examples themselves, each with **Forget**. The check
+  runs on both the full and the Frigate-confirmation path, in the add-on, with no
+  aviary-id change.
+
 ## 0.36.0
 
 - **The bird in view is the tracked bird again.** Today's review queue held seven

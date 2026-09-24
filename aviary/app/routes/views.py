@@ -527,10 +527,15 @@ def unidentified(request: Request, before: Optional[float] = Query(None),
     so those controls would match either everything or nothing. ``scope=subjects`` swaps in
     the other queue: detections whose tracked bird HAS a name but some other bird in view
     does not — the same cards, with the unnamed bird's shortlist on its chip.
+    ``scope=notbird`` lists crops set aside as matching a "Not a bird" example (0.37.0),
+    and the examples themselves, so a lesson that is too broad can be seen and undone.
     """
     subjects_scope = scope == "subjects"
+    notbird_scope = scope == "notbird"
     if subjects_scope:
         rows = db.detections_with_unidentified_subjects(limit=PAGE_SIZE + 1, before=before)
+    elif notbird_scope:
+        rows = db.not_bird_detections(limit=PAGE_SIZE + 1, before=before)
     else:
         rows = db.unidentified_detections(limit=PAGE_SIZE + 1, before=before)
     has_more = len(rows) > PAGE_SIZE
@@ -539,14 +544,16 @@ def unidentified(request: Request, before: Optional[float] = Query(None),
     older_url = None
     if next_before is not None:
         q = {"before": f"{next_before:.6f}"}
-        if subjects_scope:
-            q["scope"] = "subjects"
+        if subjects_scope or notbird_scope:
+            q["scope"] = scope
         older_url = f"{ingress_url(request, 'unidentified')}?{urlencode(q)}"
     counts = db.unidentified_counts()
     ctx = {
         "request": request,
         "page": "unidentified",
-        "scope": "subjects" if subjects_scope else "detections",
+        "scope": scope if (subjects_scope or notbird_scope) else "detections",
+        "not_bird_examples": db.not_bird_list() if notbird_scope else [],
+        "not_bird_threshold": request.app.state.settings.identify_not_bird_similarity,
         "groups": _day_groups(rows),
         "counts": counts,
         "next_before": next_before,
@@ -604,6 +611,34 @@ def visit_detail(request: Request, visit_id: int):
         "request": request,
         "page": "recent",
         "v": visit,
+    })
+
+
+@router.get("/review", response_class=HTMLResponse)
+def review(request: Request):
+    """Species awaiting review: recorded, but not yet confirmed into the registry.
+
+    Its own page (first in the nav) rather than only a filter on Species, with Confirm and
+    Reject right on each tile — the queue is something to work through, not browse. The
+    species page is still where you compare detections against reference media. With the
+    confirmation gate off there is no queue, so this redirects to Species.
+    ``/species?state=unconfirmed`` keeps working for old links.
+    """
+    if not request.app.state.settings.require_species_confirmation:
+        return RedirectResponse(ingress_url(request, "species_index"), status_code=302)
+    species = db.species_list(only_unconfirmed=True)
+    today = date.today()
+    sparks = db.daily_counts_by_species(_midnight(today - timedelta(days=6)),
+                                        only_confirmed=False)
+    for s in species:
+        s["spark"], s["spark_max"] = recap_vm.sparkline(sparks.get(s["common_name"], {}), today)
+    # Newest first: the bird that just triggered a "New species!" notification is on top.
+    species.sort(key=lambda s: s.get("first_seen") or 0, reverse=True)
+    return render("review.html", {
+        "request": request,
+        "page": "review",
+        "species": species,
+        "heroes": heroes.for_species([s["common_name"] for s in species]),
     })
 
 

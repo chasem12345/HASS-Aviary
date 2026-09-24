@@ -53,6 +53,10 @@ _SNAPSHOT_POLL_S = 2.5
 
 _EVENT_ATTEMPTS = 3   # covers a short HA core restart window
 _EVENT_RETRY_S = 5.0
+# Proxy answers meaning "Core is not up, nothing was fired" — the only failures that are
+# safe to retry. A read timeout, a 504 or a 500 may come AFTER Core fired the event, and
+# retrying those is how one sighting became two or three identical notifications.
+_EVENT_RETRY_STATUS = frozenset({502, 503})
 
 _EXT_BY_TYPE = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
 
@@ -371,12 +375,17 @@ async def _fire_event(event_type: str, payload: dict) -> Optional[str]:
             await asyncio.sleep(_EVENT_RETRY_S)
         try:
             resp = await _http.client.post(_EVENTS_URL.format(event_type), json=payload, headers=headers)
-        except httpx.HTTPError as exc:
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             last = f"Supervisor API unreachable: {exc}"
-            continue
+            continue  # never sent: safe to try again
+        except httpx.HTTPError as exc:
+            # Sent, outcome unknown (e.g. read timeout): the event may well have fired.
+            return f"Supervisor API gave no answer (not retried, may have fired): {exc!r}"
         if resp.status_code < 400:
             return None
         last = f"Supervisor API returned {resp.status_code}: {resp.text[:200]}"
+        if resp.status_code not in _EVENT_RETRY_STATUS:
+            return last
     return last
 
 

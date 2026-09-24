@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    backfill, bootstrap, crops, db, http, identify, inat, ingest, keepsakes, kept, media_audit, notify, probe, proxy, seasonality, solar, species_audio, species_info, species_photos,
+    backfill, bootstrap, crops, db, http, identify, inat, ingest, keepsakes, kept, media_audit, notbird, notify, probe, proxy, seasonality, solar, species_audio, species_info, species_photos,
 )
 from . import hastats
 from .mqtt_client import MqttIngestor
@@ -156,6 +156,7 @@ def create_app() -> FastAPI:
     species_audio.configure(settings)
     identify.configure(settings)
     probe.configure(settings.identify_learn_from_auto)
+    notbird.configure(settings.identify_not_bird_similarity)
     keepsakes.configure(settings)
     if keepsakes.enabled():
         ingest.set_keepsake_hook(keepsakes.schedule)

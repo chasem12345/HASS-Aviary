@@ -415,6 +415,11 @@ a.badge-inat:hover { filter: brightness(1.1); }
 .idbadge-ok { color: var(--accent); }
 .idbadge-low { color: var(--warn); }
 .idbadge-failed { color: var(--danger); }
+.idbadge-notbird { color: var(--muted); text-decoration: line-through; }
+.notbird-examples { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+.notbird-example { display: flex; align-items: center; gap: 10px; }
+.notbird-example img { width: 64px; height: 48px; object-fit: cover; border-radius: 6px; }
+.notbird-example .muted { flex: 1; min-width: 0; }
 .idbadge-pending { color: var(--muted); opacity: .8; }
 .idbadge-manual { color: var(--accent); border-style: dashed; }
 /* Frigate's own label, announced without aviary-id's second look (it was unreachable). */
@@ -611,6 +616,14 @@ img.overlay-img {
 .stat-review .num { color: var(--accent); }
 /* Reuses .new-badge's shape; the wording is what distinguishes it. */
 .unconfirmed-badge { background: var(--accent); }
+/* Awaiting Review tiles carry buttons, so the tile itself is not a link, and it must not
+   clip the Reject menu that opens over it. */
+.review-tile { position: relative; overflow: visible; }
+.review-tile:hover { transform: none; }
+.review-tile .tile-thumb { border-radius: var(--radius) var(--radius) 0 0; overflow: hidden; }
+.review-tile a.tile-name { color: inherit; display: block; }
+.review-tile .review-actions { margin-top: 10px; }
+.review-tile .del-menu { top: auto; bottom: 44px; left: 6px; right: auto; }
 
 /* -------------------------------------------------------- reference photos */
 .ref-photos .ref-help { color: var(--muted); font-size: 13px; margin: 0 0 10px; }

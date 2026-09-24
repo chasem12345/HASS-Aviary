@@ -486,7 +486,8 @@ def unidentified_detections(limit: int = 100, before: Optional[float] = None,
     stays a to-do rather than a progress bar.
     """
     params: list = []
-    where = f"WHERE {_UNIDENTIFIED}"
+    # Set aside as not-a-bird: it has its own audit list, not a place in the to-do.
+    where = f"WHERE {_UNIDENTIFIED} AND (id_status IS NULL OR id_status != 'not_bird')"
     if not include_pending:
         where += " AND (id_status IS NULL OR id_status != 'pending')"
     if before is not None:
@@ -522,8 +523,9 @@ def unidentified_counts() -> dict:
             f"""
             SELECT
                 SUM(CASE WHEN id_status = 'pending' THEN 1 ELSE 0 END)  AS pending,
-                SUM(CASE WHEN id_status IS NULL OR id_status != 'pending'
-                         THEN 1 ELSE 0 END)                              AS actionable
+                SUM(CASE WHEN id_status IS NULL OR id_status NOT IN ('pending', 'not_bird')
+                         THEN 1 ELSE 0 END)                              AS actionable,
+                SUM(CASE WHEN id_status = 'not_bird' THEN 1 ELSE 0 END)  AS not_bird
             FROM detections WHERE {_UNIDENTIFIED}
             """
         ).fetchone()
@@ -531,6 +533,7 @@ def unidentified_counts() -> dict:
         "pending": int((row["pending"] if row else 0) or 0),
         # What the badge shows: things you can actually do something about.
         "actionable": int((row["actionable"] if row else 0) or 0),
+        "not_bird": int((row["not_bird"] if row else 0) or 0),
         # Other birds in view that still need a name — a separate queue, because the
         # detection itself already has a species and must not re-enter the main one.
         "subjects": unidentified_subject_count(),
@@ -557,7 +560,7 @@ def purge_unidentified(older_than: float) -> list[str]:
         rows = conn.execute(
             """
             SELECT id, source_ref FROM detections
-            WHERE id_status IN ('failed', 'low_confidence') AND start_time < ?
+            WHERE id_status IN ('failed', 'low_confidence', 'not_bird') AND start_time < ?
               -- A clip the user pinned as kept-forever must keep its row too: the
               -- video would survive at Frigate while the card vanished here.
               AND retained_at IS NULL

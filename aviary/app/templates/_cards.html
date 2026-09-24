@@ -88,6 +88,9 @@
         <span class="idbadge idbadge-pending" title="Waiting on the identification service">identifying…</span>
       {% elif d.id_status == 'failed' %}
         <span class="idbadge idbadge-failed" title="Identification could not be completed — retry with ↻ below">no ID</span>
+      {% elif d.id_status == 'not_bird' %}
+        <span class="idbadge idbadge-notbird"
+              title="Set aside: {{ d.id_score | fmt_pct }} similar to a crop you marked Not a bird{% if d.frigate_label %} (Frigate said {{ d.frigate_label }}){% endif %}. Not announced or counted. Name it below if it is a bird.">not a bird</span>
       {% endif %}
     </div>
     <div class="meta sub">
@@ -166,6 +169,11 @@
           <button type="button" class="guess guess-other" data-id="{{ d.id }}" data-subject="{{ s.idx }}"
                   title="Name this bird yourself">✎</button>
           {% endif %}
+          {% if identify_active %}
+          <button type="button" class="guess guess-other subject-notbird" data-id="{{ d.id }}"
+                  data-subject="{{ s.idx }}"
+                  title="Not a bird at all — learn it and remove it from this event">🚫</button>
+          {% endif %}
         </div>
       </div>
       {% endfor %}
@@ -204,7 +212,7 @@
       <span class="guesses-hint" title="The example kept for learning is the still shown above, re-chosen for the species you pick. The other bird in view is named on its own chip.">Naming this card names the bird in the still.</span>
       {% endif %}
     </div>
-    {% elif identify_active and d.common_name == 'bird' and d.id_status in ('failed', 'low_confidence') %}
+    {% elif identify_active and d.common_name == 'bird' and d.id_status in ('failed', 'low_confidence', 'not_bird') %}
     <div class="guesses">
       <span class="guesses-label">No candidates recorded.</span>
       <button type="button" class="guess guess-other" data-id="{{ d.id }}"
@@ -228,6 +236,12 @@
       <button type="button" class="reidentify reject"
               title="Not a {{ d.common_name }} — rule it out and try the next best match"
               data-id="{{ d.id }}" data-name="{{ d.common_name }}">✗ wrong</button>
+      {% endif %}
+      {% if d.id_status != 'not_bird' %}
+      {# Teaches the identifier this crop is no bird at all, then removes the detection. #}
+      <button type="button" class="reidentify notbird-open"
+              title="Not a bird at all (a leaf, feeder, squirrel…) — learn it so similar crops are set aside, and remove this detection"
+              data-id="{{ d.id }}" data-source="{{ d.source }}" data-notbird="1">🚫 not a bird</button>
       {% endif %}
       {% endif %}
       {% if other_cam %}

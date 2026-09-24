@@ -12,6 +12,13 @@
   // Frigate/BirdNET-Go too, not just hidden from Aviary. Removing locally only is still
   // offered, second, and says explicitly that the source keeps its copy.
   function deleteMenuItems(ds) {
+    // "Not a bird": the same removal choices, each also teaching the identifier.
+    if (ds.notbird) {
+      return [
+        ["Not a bird — learn it, remove everywhere (deletes the Frigate event)", "notbird:delete"],
+        ["Not a bird — learn it, remove from Aviary only", "notbird:none"],
+      ];
+    }
     if (ds.species) {
       return [
         ["Remove everywhere (Aviary + source)", "delete"],
@@ -33,13 +40,33 @@
     ];
   }
 
+  // On the Awaiting Review page a decided species leaves the queue in place — tile gone,
+  // counts down — instead of navigating away. False anywhere else.
+  function dropReviewTile(el) {
+    const tile = el && el.closest(".review-tile");
+    if (!tile) return false;
+    tile.remove();
+    const left = document.querySelectorAll(".review-tile").length;
+    const count = document.getElementById("reviewCount");
+    if (count) count.textContent = String(left);
+    const badge = document.getElementById("reviewNavBadge");
+    if (badge) {
+      if (left) badge.textContent = String(left);
+      else badge.remove();
+    }
+    const empty = document.getElementById("reviewEmpty");
+    if (empty && !left) empty.hidden = false;
+    return true;
+  }
+
   function closeDeleteMenu() {
     document.querySelectorAll(".del-menu").forEach((m) => m.remove());
   }
 
   function showDeleteMenu(btn) {
     closeDeleteMenu();
-    const host = btn.closest(".det-card") || btn.closest(".species-hero") || btn.parentElement;
+    const host = btn.closest(".det-card") || btn.closest(".species-hero") ||
+      btn.closest(".review-tile") || btn.parentElement;
     const menu = document.createElement("div");
     menu.className = "del-menu";
     deleteMenuItems(btn.dataset).forEach(([label, action]) => {
@@ -47,7 +74,7 @@
       b.type = "button";
       b.textContent = label;
       if (action !== "none") b.classList.add("danger");
-      b.addEventListener("click", () => { closeDeleteMenu(); doDelete(btn.dataset, action); });
+      b.addEventListener("click", () => { closeDeleteMenu(); doDelete(btn.dataset, action, btn); });
       menu.appendChild(b);
     });
     const cancel = document.createElement("button");
@@ -58,7 +85,7 @@
     host.appendChild(menu);
   }
 
-  async function doDelete(ds, action) {
+  async function doDelete(ds, action, btn) {
     const isSpecies = !!ds.species;
     // Blacklisting purges the same way "remove species" does, but also refuses the
     // species at ingest from then on — irreversible for the history, so confirm.
@@ -73,13 +100,16 @@
 
     // Blacklisting means "never record this again", so leaving the source's copies in
     // place would defeat the point — it deletes at the source like the menu's first entry.
+    const notBird = action.startsWith("notbird:");
     const path = blacklisting
       ? "/blacklist?species=" + encodeURIComponent(ds.species) + "&source_action=delete"
-      : (isSpecies
-        ? "/species/" + encodeURIComponent(ds.species) + "?source_action=" + action
-        : "/detections/" + ds.id + "?source_action=" + action);
+      : notBird
+        ? "/detections/" + ds.id + "/not-bird?source_action=" + action.slice(8)
+        : (isSpecies
+          ? "/species/" + encodeURIComponent(ds.species) + "?source_action=" + action
+          : "/detections/" + ds.id + "?source_action=" + action);
     try {
-      const res = await fetch(API + path, { method: blacklisting ? "POST" : "DELETE" });
+      const res = await fetch(API + path, { method: blacklisting || notBird ? "POST" : "DELETE" });
       const data = await res.json();
       if (!data.ok) {
         alert("Remove failed: " + (data.error || res.status));
@@ -92,8 +122,12 @@
         alert("Removed from Aviary; " + data.source_error_count + " source action(s) failed:\n" +
               data.source_errors.join("\n"));
       }
+      if (notBird && !data.learned) {
+        alert("Removed, but there was no stored embedding to learn from — re-identify a " +
+              "detection first if you want it learned.");
+      }
       if (isSpecies) {
-        window.location = (BASE || "") + "/species";
+        if (!dropReviewTile(btn)) window.location = (BASE || "") + "/species";
       } else {
         const b = document.querySelector('.det-delete[data-id="' + ds.id + '"]');
         const card = b && b.closest(".det-card");
@@ -105,7 +139,7 @@
   }
 
   document.addEventListener("click", (e) => {
-    const btn = e.target.closest(".det-delete, .species-delete");
+    const btn = e.target.closest(".det-delete, .species-delete, .notbird-open");
     if (btn) {
       e.preventDefault();
       e.stopPropagation();
@@ -132,7 +166,8 @@
         btn.disabled = false;
         return;
       }
-      window.location.reload();  // dex number, stats and banner all change at once
+      // Species page: dex number, stats and banner all change at once.
+      if (!dropReviewTile(btn)) window.location.reload();
     } catch (err) {
       alert("Confirm failed: " + err);
       btn.disabled = false;
@@ -217,6 +252,39 @@
     return true;
   }
 
+  // Forget one "Not a bird" example (Unidentified → Not a bird).
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".notbird-forget");
+    if (!btn) return;
+    e.preventDefault();
+    btn.disabled = true;
+    try {
+      const res = await fetch(API + "/not-bird/" + encodeURIComponent(btn.dataset.example),
+        { method: "DELETE" });
+      const data = await res.json();
+      if (!data.ok) { alert("Couldn't forget it: " + (data.error || res.status)); btn.disabled = false; return; }
+      const row = btn.closest(".notbird-example");
+      if (row) row.remove();
+    } catch (err) { alert("Couldn't forget it: " + err); btn.disabled = false; }
+  });
+
+  // "That other bird is not a bird at all": learned as a negative, dropped from the event.
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".subject-notbird");
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    btn.disabled = true;
+    try {
+      const res = await fetch(API + "/detections/" + encodeURIComponent(btn.dataset.id) +
+        "/subjects/" + encodeURIComponent(btn.dataset.subject) + "/not-bird", { method: "POST" });
+      const data = await res.json();
+      if (!data.ok) { alert("Couldn't mark it: " + (data.error || res.status)); btn.disabled = false; return; }
+      const chip = btn.closest(".subject-chip");
+      if (chip) chip.remove();
+    } catch (err) { alert("Couldn't mark it: " + err); btn.disabled = false; }
+  });
+
   // "That other bird is not a X": recorded for that bird only, no GPU call.
   document.addEventListener("click", async (e) => {
     const btn = e.target.closest(".subject-reject");
@@ -235,7 +303,8 @@
 
   document.addEventListener("click", async (e) => {
     const btn = e.target.closest(".guess");
-    if (!btn || btn.classList.contains("subject-reject")) return;
+    if (!btn || btn.classList.contains("subject-reject") ||
+        btn.classList.contains("subject-notbird")) return;
     e.preventDefault();
 
     let species = btn.dataset.species;

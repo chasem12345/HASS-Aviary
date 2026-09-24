@@ -9,7 +9,15 @@
   </span>
   {# The other queue: the tracked bird has a name but a second bird in the same event
      does not. Kept apart so a named detection never re-enters the main list. #}
-  {% if counts.subjects or scope == 'subjects' %}
+  {% if scope == 'notbird' %}
+  <span class="count"><a class="filter-chip" href="{{ u('unidentified') }}">← detections without a species</a></span>
+  {% elif counts.not_bird %}
+  <span class="count"><a class="filter-chip" href="{{ u('unidentified') }}?scope=notbird">
+    {{ counts.not_bird }} set aside as not a bird →</a></span>
+  {% else %}
+  <span class="count"><a class="filter-chip" href="{{ u('unidentified') }}?scope=notbird">Not a bird examples →</a></span>
+  {% endif %}
+  {% if scope != 'notbird' and (counts.subjects or scope == 'subjects') %}
   <span class="count">
     {% if scope == 'subjects' %}
       <a class="filter-chip" href="{{ u('unidentified') }}">← detections without a species</a>
@@ -31,6 +39,30 @@
 </p>
 {% endif %}
 
+{% if scope == 'notbird' %}
+<p class="setting-help">
+  Crops within <strong>{{ not_bird_threshold | fmt_pct }}</strong> similarity of one you
+  marked <strong>🚫 not a bird</strong> are set aside here instead of being named: no
+  notification, no species count, and they expire like other unidentified rows. If one is
+  a bird, name it on its card. If an example keeps catching real birds, forget it below.
+  {% if not not_bird_threshold %}<strong>The check is off</strong> (<code>identify_not_bird_similarity: 0</code>).{% endif %}
+</p>
+<h2>Examples <span class="count">{{ not_bird_examples | length }}</span></h2>
+<div class="notbird-examples">
+  {% for ex in not_bird_examples %}
+  <div class="notbird-example" data-example="{{ ex.id }}">
+    {% if ex.crop_file %}<img loading="lazy" alt="" src="{{ u('frigate_crop', event_id='notbird-' ~ ex.id) }}">{% endif %}
+    <span class="muted">{{ ex.label or 'bird' }}{% if ex.camera %} · {{ ex.camera }}{% endif %} · {{ ex.created_at | fmt_rel }}</span>
+    <button type="button" class="btn btn-sm notbird-forget" data-example="{{ ex.id }}"
+            title="Forget this example — similar crops will be identified normally again">Forget</button>
+  </div>
+  {% else %}
+  <p class="empty">No examples yet. Use <strong>🚫 not a bird</strong> on a detection card (or a chip under “Also in view”) to add one.</p>
+  {% endfor %}
+</div>
+<h2>Set aside</h2>
+{% endif %}
+
 {% if not identify_enabled %}
 {# Reachable with the feature off only if rows were left behind by a previous run, or if
    ignore_unclassified was turned off. Say so, rather than showing an inert page. #}
@@ -41,7 +73,7 @@
 {% endif %}
 
 {% if groups %}
-{% if scope != 'subjects' %}
+{% if scope == 'detections' %}
 <p class="setting-help">
   Frigate saw a bird here but no species could be confirmed — either the identification
   scored below your thresholds, or it could not be completed — and no bird identified
@@ -67,7 +99,7 @@
 {% include "_groups.html" %}
 {% else %}
 <p class="empty">
-  Nothing unidentified. Every bird Aviary has seen has a species.
+  {% if scope == 'notbird' %}Nothing set aside.{% else %}Nothing unidentified. Every bird Aviary has seen has a species.{% endif %}
 </p>
 {% endif %}
 

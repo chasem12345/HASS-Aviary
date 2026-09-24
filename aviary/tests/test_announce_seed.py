@@ -94,16 +94,65 @@ def test_startup_seed_skips_events_still_in_progress_and_repair_releases_prematu
     assert {r for _, r in db.recent_refs(T0 - 10)} == {"q"}
 
 
-def test_quiet_gap_excludes_unlinked_recent_siblings(fresh_db):
-    """A burst of fragments whose review message has not arrived yet is one stay: the
-    second fragment must not report the species as last seen four seconds ago."""
-    ingest.handle_frigate(event_msg("a", "end", T0, T0 + 3, label="Blue Jay"))
+def test_quiet_gap_excludes_only_unannounced_unlinked_siblings(fresh_db):
+    """A fragment still being identified (unannounced, no review link yet) is the same
+    stay and must not make the stay's real announcement read "last seen 4 seconds ago"."""
+    ingest.handle_frigate(event_msg("a", "update", T0, label="Blue Jay"))  # in progress
+    assert db.detection_by_ref("frigate", "a")["announced_at"] is None
     assert db.species_last_times("Blue Jay", "frigate", "b", None, T0 + 5)["seen"] is None
     # Far enough apart it IS a previous sighting.
-    assert db.species_last_times("Blue Jay", "frigate", "b", None, T0 + 300)["seen"] == \
-        pytest.approx(T0)
+    assert db.species_last_times("Blue Jay", "frigate", "b", None, T0 + 300)["seen"] ==         pytest.approx(T0)
     # Without a start time the old behaviour stands.
     assert db.species_last_times("Blue Jay", "frigate", "b")["seen"] == pytest.approx(T0)
+
+
+def test_quiet_gap_counts_an_announced_unlinked_sibling(fresh_db):
+    """0.37.0 regression fix: 0.36.0 excluded ANNOUNCED fragments too, so every fragment
+    of a burst read the gap to the previous stay (or none at all -> "First sighting!") and
+    passed the blueprint cooldown — four fragments, four notifications. Once one fragment
+    has announced, the rest must read "seconds ago" so the cooldown drops them."""
+    ingest.handle_frigate(event_msg("a", "end", T0, T0 + 3, label="Blue Jay"))
+    assert db.detection_by_ref("frigate", "a")["announced_at"] is not None
+    assert db.species_last_times("Blue Jay", "frigate", "b", None, T0 + 5)["seen"] ==         pytest.approx(T0)
+
+
+@pytest.fixture()
+def sends(fresh_db, monkeypatch):
+    """Count the notifications ingest actually schedules."""
+    sent: list[tuple[str, str]] = []
+
+    def fake_schedule(coro, loop):
+        coro.close()
+        return None
+
+    real_send = ingest.notify.send_detection
+
+    def fake_send(row, is_new=False, test=False):
+        sent.append((row["common_name"], row["source_ref"]))
+        return real_send(row, is_new=is_new, test=test)
+
+    monkeypatch.setattr(ingest.notify, "enabled", lambda: True)
+    monkeypatch.setattr(ingest.notify, "send_detection", fake_send)
+    monkeypatch.setattr(ingest.asyncio, "run_coroutine_threadsafe", fake_schedule)
+    monkeypatch.setattr(ingest, "_loop", object())
+    return sent
+
+
+def test_unlinked_fragments_of_one_stay_notify_once(sends):
+    """The field report: 4-6 notifications in quick succession for one bird. Fragments
+    whose review item has not linked them are silenced for a minute per camera + species,
+    but still marked announced (so a later link seeds the visit claim)."""
+    for i, ref in enumerate(["f1", "f2", "f3", "f4"]):
+        start = T0 + i * 12
+        ingest.handle_frigate(event_msg(ref, "end", start, start + 5, label="Northern Cardinal"))
+    assert sends == [("Northern Cardinal", "f1")]
+    assert all(db.detection_by_ref("frigate", r)["announced_at"] is not None
+               for r in ("f2", "f3", "f4"))
+    # A different species in the same burst is its own news.
+    ingest.handle_frigate(event_msg("w1", "end", T0 + 20, T0 + 25, label="Carolina Wren"))
+    # And the same species after a real gap notifies again.
+    ingest.handle_frigate(event_msg("f5", "end", T0 + 400, T0 + 405, label="Northern Cardinal"))
+    assert sends[1:] == [("Carolina Wren", "w1"), ("Northern Cardinal", "f5")]
 
 
 def test_species_known_only_as_an_other_bird_has_a_last_seen_time(env):

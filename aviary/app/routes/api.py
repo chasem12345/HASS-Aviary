@@ -13,7 +13,8 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from .. import (
-    backfill, bootstrap, crops, db, identify, inat, ingest, keepsakes, kept, notify, probe, proxy,
+    backfill, bootstrap, crops, db, identify, inat, ingest, keepsakes, kept, notbird, notify, probe,
+    proxy,
     seasonality, species_audio, species_info, species_photos, traits,
 )
 from .. import hastats
@@ -521,6 +522,87 @@ async def reject_subject_species(det_id: int, idx: int, species: str = Query(...
     remaining = [s for s in await run_in_threadpool(db.secondary_subjects_for, det_id)
                  if s["idx"] == idx]
     return {"ok": True, "subject": remaining[0] if remaining else None}
+
+
+# ------------------------------------------------------------------------ not a bird
+
+def _learn_not_bird(det: dict, idx: int, embedding: tuple[str, str], label: Optional[str]) -> int:
+    """Store one "Not a bird" example (with a copy of its crop). Returns its id."""
+    model, vec = embedding
+    ex_id = db.not_bird_add(model, vec, source_ref=det.get("source_ref"),
+                            camera=det.get("location"), label=label)
+    crop_file = crops.copy(det["source_ref"], idx, f"notbird-{ex_id}")
+    if crop_file:
+        with db._connect() as conn:  # noqa: SLF001 — one column, not worth a helper
+            conn.execute("UPDATE not_bird_examples SET crop_file = ? WHERE id = ?",
+                         (crop_file, ex_id))
+    notbird.invalidate()
+    return ex_id
+
+
+@router.post("/detections/{det_id}/not-bird")
+async def mark_detection_not_bird(det_id: int, request: Request,
+                                  source_action: Optional[str] = Query(None)):
+    """"That was not a bird": learn the crop as a negative, then remove the detection.
+
+    ``source_action`` is the delete menu's (none | clear | delete). A later crop this
+    close to it is set aside rather than named (identify_not_bird_similarity). Without
+    a stored embedding there is nothing to learn from; the detection is still removed and
+    ``learned`` says so.
+    """
+    det = await run_in_threadpool(db.detection_by_id, det_id)
+    if det is None:
+        return {"ok": False, "error": "detection not found"}
+    emb = await run_in_threadpool(db.embedding_for, det_id)
+    label = det.get("frigate_label") or det.get("common_name")
+    ex_id = None
+    if emb:
+        ex_id = await run_in_threadpool(_learn_not_bird, det, 0, emb, label)
+    out = await delete_detection(det_id, request, source_action)
+    out.update({"learned": ex_id is not None, "example_id": ex_id})
+    return out
+
+
+@router.post("/detections/{det_id}/subjects/{idx}/not-bird")
+async def mark_subject_not_bird(det_id: int, idx: int):
+    """"That other bird in view is not a bird": learn it and drop it from the event."""
+    if idx <= 0:
+        return {"ok": False, "error": "use Not a bird on the detection for the tracked bird"}
+    det = await run_in_threadpool(db.detection_by_id, det_id)
+    sub = next((s for s in await run_in_threadpool(db.subjects_for, det_id)
+                if s["idx"] == idx), None)
+    if det is None or sub is None:
+        return {"ok": False, "error": "no such bird in this detection"}
+    ex_id = None
+    if sub.get("embedding") and sub.get("embedding_model"):
+        ex_id = await run_in_threadpool(
+            _learn_not_bird, det, idx, (sub["embedding_model"], sub["embedding"]),
+            sub.get("manual_name") or sub.get("common_name"))
+    await run_in_threadpool(db.drop_subject, det_id, idx)
+    named = sub.get("manual_name") or sub.get("common_name")
+    await _refresh_probe()
+    if named:
+        keepsakes.schedule(named)
+    hastats.touch()
+    return {"ok": True, "learned": ex_id is not None, "example_id": ex_id}
+
+
+@router.get("/not-bird")
+async def list_not_bird():
+    """The "Not a bird" examples, newest first, with the gate's current threshold."""
+    rows = await run_in_threadpool(db.not_bird_list)
+    return {"ok": True, "threshold": notbird.threshold(), "examples": rows}
+
+
+@router.delete("/not-bird/{example_id}")
+async def forget_not_bird(example_id: int):
+    """Forget one example (it was a bird after all, or too broad)."""
+    row = await run_in_threadpool(db.not_bird_remove, example_id)
+    if row is None:
+        return {"ok": False, "error": "example not found"}
+    await run_in_threadpool(crops.remove_file, row.get("crop_file"))
+    notbird.invalidate()
+    return {"ok": True}
 
 
 def _spawn(coro) -> None:

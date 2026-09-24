@@ -105,6 +105,7 @@ def _ingress_context(request: Request) -> dict:
     # view's context dict and forgetting one.
     settings = getattr(request.app.state, "settings", None)
     active = bool(settings and settings.identify_active)
+    gated = bool(settings and settings.require_species_confirmation)
     # Camera pairs for the cards' "view on the other camera" button — the retain flow
     # shares the same property for the kept-footage export.
     camera_pairs = settings.camera_pairs if settings else {}
@@ -121,6 +122,9 @@ def _ingress_context(request: Request) -> dict:
         # Nav badge. One indexed COUNT on common_name, and only when the tab is shown at
         # all — the query is skipped entirely for everyone not using identification.
         "unidentified_count": db.unidentified_count() if active else 0,
+        # The Awaiting Review tab exists only while new species need confirming.
+        "review_gated": gated,
+        "review_count": db.unconfirmed_count() if gated else 0,
     }
 
 

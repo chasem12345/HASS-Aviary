@@ -29,3 +29,4 @@ from .prefs import *  # noqa: F401,F403
 from .lifelist import *  # noqa: F401,F403
 from .caches import *  # noqa: F401,F403
 from .stats import *  # noqa: F401,F403
+from .notbird import *  # noqa: F401,F403

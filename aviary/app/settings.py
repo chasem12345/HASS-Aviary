@@ -186,6 +186,9 @@ class Settings:
     # reinforces its own mistakes. With confirmation on (below), a Frigate label the
     # identifier let stand counts as one of its own answers.
     identify_learn_from_auto: bool = False
+    # Cosine at which a crop counts as one of the user's "Not a bird" examples (0.37.0);
+    # 0 disables the check. See app/notbird.py.
+    identify_not_bird_similarity: float = 0.9
     # With Frigate's own bird classification ON: hold its label until aviary-id (0.12.0+)
     # has looked at Frigate's crop of the same bird, and let the birds confirmed by hand
     # (the learning probe) override it when they confidently disagree. Off = announce
@@ -309,6 +312,8 @@ def load_settings() -> Settings:
             _pick("IDENTIFY_EXCLUDE_BLACKLISTED", opts, "identify_exclude_blacklisted", "true")),
         identify_learn_from_auto=_as_bool(
             _pick("IDENTIFY_LEARN_FROM_AUTO", opts, "identify_learn_from_auto", "false")),
+        identify_not_bird_similarity=_pick_float(
+            "IDENTIFY_NOT_BIRD_SIMILARITY", opts, "identify_not_bird_similarity", 0.9),
         identify_confirm_frigate=_as_bool(
             _pick("IDENTIFY_CONFIRM_FRIGATE", opts, "identify_confirm_frigate", "true")),
         identify_visit_context=_as_bool(

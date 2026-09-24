@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% from "_cards.html" import hero_img with context %}
+{% block title %} · Awaiting review{% endblock %}
+{% block content %}
+<h1 class="page-title">Awaiting review
+  <span class="count" id="reviewCount">{{ species | length }}</span></h1>
+<p class="ref-help">Species Aviary has recorded but you haven't confirmed yet. Newest first.
+  Confirm one to add it to the registry, or reject a misclassification. Open a species to
+  compare its detections against reference photos and recordings first.</p>
+
+<div class="species-grid" id="reviewGrid">
+  {% for s in species %}
+  {# A div, not the Species page's <a>: the tile carries buttons. #}
+  <div class="species-tile review-tile" data-name="{{ s.common_name }}">
+    <a class="tile-thumb" href="{{ u('species_detail', name=s.common_name) }}">
+      <span class="thumb-mark">🐦</span>
+      {{ hero_img(heroes.get(s.common_name), s.common_name) }}
+      <span class="new-badge unconfirmed-badge">UNCONFIRMED</span>
+    </a>
+    <div class="tile-body">
+      <a class="tile-name" href="{{ u('species_detail', name=s.common_name) }}">{{ s.common_name }}</a>
+      {% if s.scientific_name %}<div class="sci">{{ s.scientific_name }}</div>{% endif %}
+      <div class="tile-meta">
+        <span class="tile-count">{{ s.count }}</span>
+        {% if s.frigate_total %}<span class="badge badge-frigate badge-sm" title="On camera (Frigate) × {{ s.frigate_total }}">seen</span>{% endif %}
+        {% if s.birdnet_total %}<span class="badge badge-birdnet badge-sm" title="Audio (BirdNET-Go) × {{ s.birdnet_total }}">heard</span>{% endif %}
+        <span title="{{ s.first_seen | fmt_time }}">first {{ s.first_seen | fmt_rel }}</span>
+        <span class="spark" title="Last 7 days: {{ s.spark | join(' · ') }}" aria-label="Detections over the last 7 days: {{ s.spark | join(', ') }}">
+          {% for v in s.spark %}<i class="{{ 'empty' if not v }}" style="--h:{{ ((100 * v / s.spark_max) | round(0) | int) if s.spark_max else 0 }}%"></i>{% endfor %}
+        </span>
+      </div>
+      <div class="review-actions">
+        <button type="button" class="btn btn-sm species-confirm" data-species="{{ s.common_name }}">Confirm</button>
+        <button type="button" class="btn btn-sm species-delete" data-species="{{ s.common_name }}"
+                title="Remove this species and all {{ s.count or 0 }} of its detections">Reject…</button>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+<p class="empty" id="reviewEmpty" {{ 'hidden' if species }}>Nothing awaiting review.</p>
+{% endblock %}
