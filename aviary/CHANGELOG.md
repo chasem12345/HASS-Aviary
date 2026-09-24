@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.37.2
+
+- **Click an "Also in view" crop to enlarge it.** At 44 px an unidentified bird can't be
+  judged, so the thumbnail now opens full size in an overlay. Esc, ✕ or a click outside
+  closes it.
+
 ## 0.37.1
 
 - **Fixed: 🚫 not a bird started a re-identify.** The button shared the re-identify

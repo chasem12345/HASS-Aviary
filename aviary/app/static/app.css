@@ -459,7 +459,11 @@ a.badge-inat:hover { filter: brightness(1.1); }
   display: flex; align-items: center; gap: 8px; font-size: 12px;
   background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 4px 8px 4px 4px;
 }
-.subject-chip img { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; flex: none; background: #000; }
+.subject-chip img { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; flex: none; background: #000; cursor: zoom-in; }
+/* Enlarged crop: the whole crop, scaled up to fill the stage (crops are small). */
+.crop-zoom .clip-panel { width: min(720px, 100%); }
+.crop-zoom .clip-stage { display: flex; justify-content: center; }
+.crop-zoom .clip-stage img { display: block; width: 100%; max-height: 75vh; object-fit: contain; }
 .subject-body { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
 .subject-name { font-weight: 600; }
 .subject-how { color: var(--muted); font-size: 11px; }

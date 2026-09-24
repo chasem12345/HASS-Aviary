@@ -145,7 +145,7 @@
       <div class="subject-chip{{ ' subject-unnamed' if not s.display_name }}" data-id="{{ d.id }}" data-subject="{{ s.idx }}"
            {% if s.co_occurring %}title="Seen beside the tracked bird in {{ s.co_occurring }} frame{{ '' if s.co_occurring == 1 else 's' }}"{% elif s.co_occurring == 0 %}title="Never in the same frame as the tracked bird — kept on other evidence (off its path, or several frames naming another species)"{% endif %}>
         {% if has_crop(d.source_ref, s.idx) %}
-        <img loading="lazy" alt="" src="{{ u('frigate_subject_crop', event_id=d.source_ref, idx=s.idx) }}">
+        <img loading="lazy" alt="" title="Click to enlarge" src="{{ u('frigate_subject_crop', event_id=d.source_ref, idx=s.idx) }}">
         {% endif %}
         <div class="subject-body">
           {% if s.display_name %}

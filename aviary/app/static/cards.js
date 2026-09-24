@@ -252,6 +252,47 @@
     return true;
   }
 
+  // Enlarge an "Also in view" crop — at 44 px an unnamed bird is impossible to judge.
+  // Reuses the clip player's overlay chrome (page-level, since cards clip overflow).
+  function closeZoom() {
+    const z = document.querySelector(".crop-zoom");
+    if (!z) return;
+    z.remove();
+    document.body.classList.remove("player-open");
+    document.removeEventListener("keydown", zoomKey);
+  }
+
+  function zoomKey(e) {
+    if (e.key === "Escape") { e.preventDefault(); closeZoom(); }
+  }
+
+  document.addEventListener("click", (e) => {
+    const img = e.target.closest(".subject-chip img");
+    if (!img) return;
+    e.preventDefault();
+    closeZoom();
+    const chip = img.closest(".subject-chip");
+    const name = chip && chip.querySelector(".subject-name");
+    const z = document.createElement("div");
+    z.className = "clip-player crop-zoom";
+    z.innerHTML =
+      '<div class="clip-backdrop"></div>' +
+      '<div class="clip-panel" role="dialog" aria-modal="true" aria-label="Enlarged crop">' +
+        '<div class="clip-head"><span class="clip-title"></span>' +
+          '<button type="button" class="clip-close" title="Close (Esc)">✕</button></div>' +
+        '<div class="clip-stage"><img alt=""></div>' +
+      "</div>";
+    z.querySelector(".clip-title").textContent =
+      "Also in view: " + (name ? name.textContent.trim() : "bird");
+    z.querySelector(".clip-stage img").src = img.src;
+    z.addEventListener("click", (ev) => {
+      if (ev.target.closest(".clip-backdrop") || ev.target.closest(".clip-close")) closeZoom();
+    });
+    document.body.appendChild(z);
+    document.body.classList.add("player-open");
+    document.addEventListener("keydown", zoomKey);
+  });
+
   // Forget one "Not a bird" example (Unidentified → Not a bird).
   document.addEventListener("click", async (e) => {
     const btn = e.target.closest(".notbird-forget");
