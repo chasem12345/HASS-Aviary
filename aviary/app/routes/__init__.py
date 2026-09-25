@@ -13,6 +13,7 @@ header is absent (direct access, or local dev) the prefix is empty and URLs stil
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 import time
@@ -54,21 +55,29 @@ def set_theme(theme: str) -> str:
 
 
 def _asset_version() -> str:
-    """Cache-busting token: newest mtime among static files.
+    """Cache-busting token: the add-on version plus the newest mtime among static files.
 
-    Changes whenever any static asset changes (each Docker build re-COPYs them with a
-    fresh mtime), so browsers fetch new CSS/JS after an add-on update instead of serving
-    a stale cached copy. Recursive so assets in subdirectories (``static/fonts``) count —
-    a directory's own mtime doesn't track edits to the files inside it.
+    Static files are served ``immutable`` under ``/static-<token>/``, so the token MUST
+    change whenever any asset does. The add-on version (exported by run.sh from the
+    Supervisor) guarantees a new token on every release: Docker's COPY keeps the build
+    context's mtimes rather than stamping fresh ones, so an mtime alone is only as good
+    as the checkout it was built from. The mtime still covers local development, where
+    the version reads "dev" and files change without a release. Recursive so assets in
+    subdirectories (``static/fonts``) count — a directory's own mtime doesn't track
+    edits to the files inside it.
     """
+    version = "".join(
+        c for c in (os.environ.get("ADDON_VERSION", "").strip() or "dev")
+        if c.isalnum() or c in ".-_"
+    )
     try:
         newest = max(
             os.path.getmtime(p)
             for p in glob.glob(os.path.join(_STATIC_DIR, "**"), recursive=True)
         )
-        return str(int(newest))
+        return f"{version}-{int(newest)}"
     except ValueError:
-        return "0"
+        return f"{version}-0"
 
 
 ASSET_VER = _asset_version()
@@ -92,6 +101,10 @@ def ingress_url(request: Request, endpoint: str, /, **params) -> str:
     """
     prefix = request.headers.get("X-Ingress-Path", "").rstrip("/")
     return f"{prefix}{request.app.url_path_for(endpoint, **params)}"
+
+
+def _clean_token(afilter: str) -> str:
+    return hashlib.sha1(afilter.encode("utf-8")).hexdigest()[:10]
 
 
 def _ingress_context(request: Request) -> dict:
@@ -125,6 +138,11 @@ def _ingress_context(request: Request) -> dict:
         # The Awaiting Review tab exists only while new species need confirming.
         "review_gated": gated,
         "review_count": db.unconfirmed_count() if gated else 0,
+        # BirdNET-Go cards play the denoised clip and offer a Raw toggle (0.38.0). The
+        # token is a hash of the filter chain in the clip URL, so a browser holding last
+        # week's cleaned clip fetches a fresh one when the chain is edited.
+        "birdnet_clean": bool(settings and settings.birdnet_clean_audio),
+        "birdnet_clean_token": _clean_token(settings.birdnet_clean_filter if settings else ""),
     }
 
 

@@ -81,7 +81,7 @@
       window.parent.postMessage({ type: "home-assistant/subscribe-properties" }, "*");
     })();
   </script>
-  <script src="{{ u('static', path='/chart.umd.js') }}"></script>
+  {# chart.umd.js (206 KB) loads only on the pages that draw charts, before charts.js. #}
   <script src="{{ u('static', path='/core.js') }}"></script>
   <script src="{{ u('static', path='/player.js') }}"></script>
   <script src="{{ u('static', path='/cards.js') }}"></script>

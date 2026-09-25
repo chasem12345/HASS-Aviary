@@ -33,20 +33,55 @@ mimetypes.add_type("font/woff2", ".woff2")
 mimetypes.add_type("font/woff", ".woff")
 
 
-class NoCacheStaticFiles(StaticFiles):
-    """Serve static files with ``Cache-Control: no-cache``.
+class ImmutableStaticFiles(StaticFiles):
+    """Serve static files as cacheable forever (``immutable``, one year).
 
-    We already cache-bust asset URLs with a ``?v=`` build token, but a reverse proxy in
-    front of Home Assistant (e.g. nginx caching ``*.js``/``*.css`` by path) can serve a
-    stale body and ignore the query string. Sending an explicit ``no-cache`` tells
-    well-behaved caches to revalidate (via ETag) instead of storing, so an add-on update
-    is reflected immediately. ETag revalidation keeps this cheap (304s when unchanged).
+    Safe because the mount PATH carries the asset version (``/static-<ver>/``): an
+    add-on update is a brand-new URL, so no browser or path-caching reverse proxy can
+    hand back a stale body (the 0.2.8-0.3.1 bugs). Until 0.38.0 this sent ``no-cache``
+    on top of the versioned path, which bought nothing and cost every page switch a
+    304 round trip per asset through ingress.
     """
 
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = "no-cache"
+        if response.status_code < 400:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
+
+
+class HtmlNoCacheMiddleware:
+    """``Cache-Control: no-cache`` and ``Server-Timing`` on every HTML page.
+
+    The page is what names the versioned asset path, so IT must always be revalidated;
+    everything it links under ``/static-<ver>/`` can then be cached forever. The
+    ``Server-Timing: render`` duration (request in to response headers out, i.e. the
+    view plus its template render) shows in the browser's network panel — it separates
+    a slow server render from a slow network when a page feels sluggish.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        started = time.perf_counter()
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                ctype = next((v for k, v in headers if k.lower() == b"content-type"), b"")
+                if ctype.startswith(b"text/html"):
+                    headers = [(k, v) for k, v in headers if k.lower() != b"cache-control"]
+                    headers.append((b"cache-control", b"no-cache"))
+                    ms = (time.perf_counter() - started) * 1000
+                    headers.append((b"server-timing", f"render;dur={ms:.1f}".encode("latin-1")))
+                    message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 class IngressStripMiddleware:
@@ -266,13 +301,15 @@ def create_app() -> FastAPI:
     app.state.settings = settings
     app.state.ingestor = ingestor
     app.add_middleware(IngressStripMiddleware)
+    app.add_middleware(HtmlNoCacheMiddleware)
 
     # Version the static mount PATH (not just a ?v query) so a reverse proxy that
     # caches by path and ignores query strings still can't serve stale JS/CSS
-    # after an update — each build is a brand-new URL path.
+    # after an update — each build is a brand-new URL path, which is also what makes
+    # caching the files forever safe.
     app.mount(
         f"/static-{ASSET_VER}",
-        NoCacheStaticFiles(directory=os.path.join(_APP_DIR, "static")),
+        ImmutableStaticFiles(directory=os.path.join(_APP_DIR, "static")),
         name="static",
     )
     register_routes(app)

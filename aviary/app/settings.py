@@ -12,6 +12,40 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# ffmpeg -af chains behind the birdnet_clean_preset dropdown (0.38.0). All three cut rumble
+# below 150 Hz (Barred Owl hoots sit around 300-600 Hz) and hiss above 12 kHz, then run
+# afwtdn, wavelet denoising with an adaptive noise profile, at a different share of full
+# strength. Measured on real BirdNET-Go clips (a Barred Owl and a Black-capped Chickadee
+# over road-type noise below 3 kHz): the gaps between calls drop about 7 / 11 / 17 dB
+# and the calls well under 1 dB. afwtdn gates in ~170 ms blocks, so at full strength the
+# noise audibly switches on and off around each call; percent=50 hides that, which is why
+# "smooth" is the default. afftdn (assumes white noise) managed 2-6 dB whatever its
+# settings; anlmdn gates the same way and crashes some builds at end of stream. No gain
+# stage on purpose: normalizing would lift the residual noise straight back up.
+CLEAN_PRESETS = {
+    "smooth": "highpass=f=150,lowpass=f=12000,afwtdn=adaptive=1:percent=50",
+    "balanced": "highpass=f=150,lowpass=f=12000,afwtdn=adaptive=1:percent=70",
+    "strong": "highpass=f=150,lowpass=f=12000,afwtdn=adaptive=1",
+}
+DEFAULT_CLEAN_PRESET = "smooth"
+DEFAULT_CLEAN_FILTER = CLEAN_PRESETS[DEFAULT_CLEAN_PRESET]
+
+
+def _clean_audio(preset: str, custom: str) -> tuple[str, bool, str]:
+    """(preset, enabled, ffmpeg chain) from the dropdown and the custom-chain box.
+
+    An unknown preset reads as the default; ``custom`` with an empty box plays "smooth"
+    rather than silently turning cleanup off.
+    """
+    preset = (preset or "").strip().lower()
+    if preset == "off":
+        return preset, False, DEFAULT_CLEAN_FILTER
+    if preset == "custom":
+        return preset, True, custom.strip() or DEFAULT_CLEAN_FILTER
+    if preset not in CLEAN_PRESETS:
+        preset = DEFAULT_CLEAN_PRESET
+    return preset, True, CLEAN_PRESETS[preset]
+
 
 def _options_file(data_dir: str) -> dict:
     """Read the add-on options file if present (Supervisor writes it to /data)."""
@@ -181,6 +215,12 @@ class Settings:
     # construction in older callers/tests keeps working.
     keepsakes: bool = True
     keepsake_video: bool = True
+    # Denoise BirdNET-Go clips for playback only (0.38.0): BirdNET-Go analyses the raw
+    # audio and the card's Raw toggle still plays it. Resolved from the preset dropdown
+    # (or the custom ffmpeg -af chain) by _clean_audio, so tuning needs no release.
+    birdnet_clean_preset: str = DEFAULT_CLEAN_PRESET
+    birdnet_clean_audio: bool = True
+    birdnet_clean_filter: str = DEFAULT_CLEAN_FILTER
     # Whether the learning probe also learns from the identifier's own confident answers,
     # not only from labels a person typed. Off by default: that is how a classifier
     # reinforces its own mistakes. With confirmation on (below), a Frigate label the
@@ -276,6 +316,9 @@ def load_settings() -> Settings:
     except (TypeError, ValueError):
         mqtt_port = 1883
 
+    clean_preset, clean_on, clean_filter = _clean_audio(
+        _pick("BIRDNET_CLEAN_PRESET", opts, "birdnet_clean_preset", DEFAULT_CLEAN_PRESET),
+        _pick("BIRDNET_CLEAN_FILTER", opts, "birdnet_clean_filter", ""))
     return Settings(
         data_dir=data_dir,
         db_path=os.path.join(data_dir, "aviary.db"),
@@ -345,6 +388,9 @@ def load_settings() -> Settings:
         log_level=_pick("LOG_LEVEL", opts, "log_level", "info").lower(),
         keepsakes=_as_bool(_pick("KEEPSAKES", opts, "keepsakes", "true")),
         keepsake_video=_as_bool(_pick("KEEPSAKE_VIDEO", opts, "keepsake_video", "true")),
+        birdnet_clean_preset=clean_preset,
+        birdnet_clean_audio=clean_on,
+        birdnet_clean_filter=clean_filter,
         inat_app_id=_pick("INAT_APP_ID", opts, "inat_app_id", "").strip(),
         inat_app_secret=_pick("INAT_APP_SECRET", opts, "inat_app_secret", "").strip(),
         inat_username=_pick("INAT_USERNAME", opts, "inat_username", "").strip(),

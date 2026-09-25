@@ -24,6 +24,13 @@ log = logging.getLogger("aviary.media")
 
 _FFMPEG_TIMEOUT_S = 120
 
+# Browser cache lifetimes for proxied media (0.38.0). Frigate and BirdNET-Go send no
+# Cache-Control of their own, so every card re-fetched its picture through ingress on
+# every page view. A BirdNET-Go recording and its spectrogram never change; a Frigate
+# snapshot can still improve while its event is in progress, so it gets a short TTL.
+_CACHE_RECORDING = "private, max-age=604800"
+_CACHE_SNAPSHOT = "private, max-age=300"
+
 router = APIRouter()
 
 
@@ -41,7 +48,7 @@ async def frigate_snapshot(event_id: str, request: Request, thumbnail: bool = Fa
     if not base:
         return JSONResponse({"error": "frigate_url not configured"}, status_code=503)
     url = proxy.frigate_snapshot_url(base, event_id, thumbnail=thumbnail)
-    return await proxy.stream_upstream(request, url)
+    return await proxy.stream_upstream(request, url, cache_control=_CACHE_SNAPSHOT)
 
 
 @router.get("/frigate/{event_id}/crop.jpg")
@@ -345,9 +352,64 @@ async def _serve_export(request: Request, base: str, export_id: str, filename: O
         request, proxy.frigate_export_video_url(base, filename))
 
 
+async def _cleaned_audio(urls: list[str], afilter: str, label: str) -> Optional[tuple[str, str]]:
+    """Fetch a BirdNET-Go clip and denoise it into a 16-bit WAV. Returns (path, tmpdir).
+
+    Same shape as ``_remuxed_clip``, but None on ANY failure (no ffmpeg, a filter chain
+    this ffmpeg build rejects, a clip that won't download): the caller then streams the
+    original clip, so a mistyped ``birdnet_clean_filter`` can only cost the cleanup,
+    never playback. ``afilter`` goes to ffmpeg as one argv element — no shell sees it.
+    WAV because it needs no encoder and a browser can seek it from its header.
+    """
+    if not shutil.which("ffmpeg"):
+        log.debug("ffmpeg not found; playing the original clip for %s", label)
+        return None
+    tmpdir = tempfile.mkdtemp(prefix="aviary-audio-")
+    src = os.path.join(tmpdir, "src")
+    out = os.path.join(tmpdir, "clean.wav")
+    # fetch_to_file takes one URL; walk BirdNET-Go's per-version endpoints ourselves.
+    for url in urls:
+        if await proxy.fetch_to_file(url, src):
+            break
+    else:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return None
+
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-hide_banner", "-y", "-i", src, "-af", afilter,
+            "-c:a", "pcm_s16le", out,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_FFMPEG_TIMEOUT_S)
+        if proc.returncode == 0 and os.path.getsize(out) > 0:
+            return out, tmpdir
+        log.warning("Audio clean-up failed for %s (rc=%s): %s",
+                    label, proc.returncode, (stderr or b"")[-300:])
+    except asyncio.TimeoutError:
+        log.warning("Audio clean-up timed out for %s after %ss", label, _FFMPEG_TIMEOUT_S)
+        if proc is not None:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.kill()
+            with contextlib.suppress(Exception):  # noqa: BLE001 - reaping is best-effort
+                await proc.communicate()
+    except OSError as exc:
+        log.warning("Audio clean-up errored for %s: %s", label, exc)
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    return None
+
+
 @router.get("/birdnet/{det_id}/clip")
-async def birdnet_clip(det_id: int, request: Request):
-    base = request.app.state.settings.birdnet_url
+async def birdnet_clip(det_id: int, request: Request, raw: int = 0):
+    """A BirdNET-Go clip for the card's player — denoised unless ``raw=1`` (0.38.0).
+
+    Cleaning is for the listener only: BirdNET-Go analysed the original, the iNaturalist
+    upload sends the original, and the card's Raw toggle plays it. Any clean-up failure
+    falls through to the original stream.
+    """
+    settings = request.app.state.settings
+    base = settings.birdnet_url
     if not base:
         return JSONResponse({"error": "birdnet_url not configured"}, status_code=503)
     # SQLite access is blocking (up to its lock timeout); keep it off the event loop.
@@ -355,7 +417,17 @@ async def birdnet_clip(det_id: int, request: Request):
     urls = proxy.birdnet_audio_urls(base, det) if det else []
     if not urls:
         return JSONResponse({"error": "no clip for detection"}, status_code=404)
-    return await proxy.stream_upstream(request, urls[0], fallbacks=tuple(urls[1:]))
+    if settings.birdnet_clean_audio and not raw:
+        result = await _cleaned_audio(urls, settings.birdnet_clean_filter, f"birdnet {det_id}")
+        if result is not None:
+            path, tmpdir = result
+            return FileResponse(
+                path, media_type="audio/wav",
+                headers={"Cache-Control": _CACHE_RECORDING},
+                background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True),
+            )
+    return await proxy.stream_upstream(
+        request, urls[0], fallbacks=tuple(urls[1:]), cache_control=_CACHE_RECORDING)
 
 
 @router.get("/birdnet/{det_id}/spectrogram")
@@ -367,4 +439,5 @@ async def birdnet_spectrogram(det_id: int, request: Request):
     urls = proxy.birdnet_spectrogram_urls(base, det) if det else []
     if not urls:
         return JSONResponse({"error": "no spectrogram for detection"}, status_code=404)
-    return await proxy.stream_upstream(request, urls[0], fallbacks=tuple(urls[1:]))
+    return await proxy.stream_upstream(
+        request, urls[0], fallbacks=tuple(urls[1:]), cache_control=_CACHE_RECORDING)

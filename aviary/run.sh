@@ -25,6 +25,12 @@ export XENO_CANTO_API_KEY="$(bashio::config 'xeno_canto_api_key')"
 export CLIP_PAD_SECONDS="$(bashio::config 'clip_pad_seconds')"
 export KEEPSAKES="$(bashio::config 'keepsakes')"
 export KEEPSAKE_VIDEO="$(bashio::config 'keepsake_video')"
+export BIRDNET_CLEAN_PRESET="$(bashio::config 'birdnet_clean_preset')"
+clean_filter="$(bashio::config 'birdnet_clean_filter')"
+if [ "${clean_filter}" = "null" ]; then
+    clean_filter=""
+fi
+export BIRDNET_CLEAN_FILTER="${clean_filter}"
 # --- Life list on iNaturalist (optional credentials: "null" when unset) --------
 for opt in inat_app_id inat_app_secret inat_username inat_password; do
     val="$(bashio::config "${opt}")"

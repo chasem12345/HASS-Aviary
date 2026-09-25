@@ -3,6 +3,32 @@
 (function () {
   const { API, BASE, getJson } = window.Aviary;
 
+  // --------------------------------------------------------- clean / raw audio
+  // BirdNET-Go cards play a denoised clip by default; the toggle swaps to the original
+  // (and back) at the same position, resuming if it was playing. Delegated so cards
+  // injected by the live refresh keep working.
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".audio-mode");
+    if (!btn) return;
+    const audio = btn.parentElement.querySelector("audio[data-raw-src]");
+    if (!audio) return;
+    const raw = btn.getAttribute("aria-pressed") !== "true";
+    const at = audio.currentTime, playing = !audio.paused;
+    audio.src = raw ? audio.dataset.rawSrc : audio.dataset.cleanSrc;
+    btn.setAttribute("aria-pressed", raw ? "true" : "false");
+    btn.textContent = raw ? "Raw" : "Clean";
+    btn.title = raw
+      ? "Playing the original BirdNET-Go audio — click for the cleaned-up clip"
+      : "Playing the cleaned-up clip — click to hear the original BirdNET-Go audio";
+    if (at > 0 || playing) {
+      audio.addEventListener("loadedmetadata", () => {
+        audio.currentTime = Math.min(at, audio.duration || at);
+        if (playing) audio.play().catch(() => {});
+      }, { once: true });
+      audio.load();
+    }
+  });
+
   // --------------------------------------------------------- remove detections
   // Delete buttons open a small menu: remove from Aviary only, or also clear the
   // species label / delete the event at the source (Frigate / BirdNET-Go).

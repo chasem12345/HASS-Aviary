@@ -48,6 +48,7 @@ async def stream_upstream(
     url: str,
     fallbacks: tuple[str, ...] = (),
     headers: Optional[dict[str, str]] = None,
+    cache_control: Optional[str] = None,
 ):
     """Proxy ``url``, forwarding Range and relaying media headers as a streaming response.
 
@@ -55,6 +56,8 @@ async def stream_upstream(
     BirdNET-Go, where the working audio endpoint differs across versions). ``headers``
     adds request headers for the upstream call — the client sets none by default, and
     public APIs (e.g. iNaturalist) ask to be sent a descriptive User-Agent.
+    ``cache_control`` replaces the upstream's Cache-Control on a successful response, for
+    media we know doesn't change (a recording) even when the source sends no header.
     """
     if _http.client is None:
         return JSONResponse({"error": "proxy client not initialized"}, status_code=500)
@@ -84,6 +87,9 @@ async def stream_upstream(
     out_headers = {
         k: v for k, v in resp.headers.items() if k.lower() in _PASS_RESPONSE_HEADERS
     }
+    if cache_control and resp.status_code < 400:
+        out_headers = {k: v for k, v in out_headers.items() if k.lower() != "cache-control"}
+        out_headers["Cache-Control"] = cache_control
 
     async def body_iter():
         try:

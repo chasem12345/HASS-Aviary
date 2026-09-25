@@ -1,5 +1,5 @@
 name: Aviary
-version: "0.37.2"
+version: "0.38.0"
 slug: aviary
 description: Aggregate bird detections from Frigate and BirdNET-Go with analytics and clip preview
 url: https://github.com/chasem12345/HASS-Aviary/tree/main/aviary
@@ -66,6 +66,8 @@ options:
   clip_pad_seconds: 10.0
   keepsakes: true
   keepsake_video: true
+  birdnet_clean_preset: "smooth"
+  birdnet_clean_filter: ""
   inat_app_id: ""
   inat_app_secret: ""
   inat_username: ""
@@ -213,6 +215,20 @@ schema:
   # recording behind a clip — only an export survives retention. A few MB per keepsake;
   # released exports are deleted. Needs Frigate 0.18+.
   keepsake_video: "bool"
+  # --- Cleaned BirdNET-Go playback -----------------------------------------------
+  # Denoise BirdNET-Go clips when you PLAY them in Aviary. BirdNET-Go still analyses the
+  # original audio, iNaturalist uploads stay original, and every card has a Raw toggle to
+  # hear the untouched clip. Every preset cuts rumble below 150 Hz and hiss above 12 kHz,
+  # then applies wavelet denoising that learns the background as it goes:
+  #   smooth   - background about 7 dB quieter between calls; natural, no pumping
+  #   balanced - about 11 dB
+  #   strong   - about 17 dB, but the noise audibly switches on and off around each
+  #              call (a "crunchy" edge)
+  #   custom   - your own ffmpeg -af chain in birdnet_clean_filter (blank = smooth)
+  #   off      - play the original clips
+  # A custom chain ffmpeg rejects plays the original clip and logs ffmpeg's error.
+  birdnet_clean_preset: "list(off|smooth|balanced|strong|custom)"
+  birdnet_clean_filter: "str?"
   # --- Life list on iNaturalist ---------------------------------------------------
   # Post each species' first sighting to your iNaturalist account, so iNaturalist's Life
   # List is the one place your list lives. Create an application at

@@ -36,7 +36,18 @@
           <img loading="lazy" class="spectrogram" alt="Spectrogram of {{ d.common_name }}"
                src="{{ u('birdnet_spectrogram', det_id=d.id) }}"
                onerror="this.closest('.audio-wrap').classList.add('no-spec')">
-          <audio controls preload="none" src="{{ u('birdnet_clip', det_id=d.id) }}"></audio>
+          {# Cleaned playback (0.38.0): the default src is the denoised clip — the token
+             names the filter settings so a cached clip refreshes when they change — and
+             the toggle swaps to the untouched original to check a faint call. #}
+          {% set clip = u('birdnet_clip', det_id=d.id) %}
+          {% if birdnet_clean %}
+          <audio controls preload="none" src="{{ clip }}?c={{ birdnet_clean_token }}"
+                 data-clean-src="{{ clip }}?c={{ birdnet_clean_token }}" data-raw-src="{{ clip }}?raw=1"></audio>
+          <button type="button" class="audio-mode" aria-pressed="false"
+                  title="Playing the cleaned-up clip — click to hear the original BirdNET-Go audio">Clean</button>
+          {% else %}
+          <audio controls preload="none" src="{{ clip }}"></audio>
+          {% endif %}
         </div>
       {% else %}
         <div class="nomedia"><span class="bird-mark">🔊</span><span>audio detection</span></div>

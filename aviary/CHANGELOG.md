@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.38.0
+
+- **Cleaned-up BirdNET-Go playback.** The player on a BirdNET-Go card now plays a
+  denoised copy of the clip, so wind, traffic and hum no longer drown out the call.
+  BirdNET-Go still analyses the original audio, and iNaturalist uploads stay original.
+  A **Raw / Clean** toggle on each card switches to the untouched clip at the same
+  position.
+  - `birdnet_clean_preset` is a dropdown in the Configuration tab: `smooth`
+    (default), `balanced`, `strong`, `custom` or `off`. Changing it needs a restart,
+    not an add-on update.
+  - Each preset cuts rumble below 150 Hz and hiss above 12 kHz, then runs adaptive
+    wavelet denoising at a different strength. On real clips (a Barred Owl and a
+    Black-capped Chickadee over road noise) the gaps between calls dropped about 7,
+    11 and 17 dB, and the calls themselves lost well under 1 dB.
+  - `smooth` is the default because at full strength the filter's ~0.17 s blocks make
+    the noise audibly switch on and off around each call, a "crunchy" edge.
+  - `custom` runs any ffmpeg `-af` chain from `birdnet_clean_filter`.
+  - See *Cleaned-up BirdNET-Go audio* in the docs.
+  - If ffmpeg rejects a custom chain or fails, the card plays the original.
+- **Faster page switching.**
+  - JS/CSS are now cached by the browser instead of re-checked on every page. Since
+    0.2.9 every static file was sent with `no-cache`, so each page switch sent five to
+    eight round trips through ingress just to hear "unchanged". The protection against
+    stale files after an update was never that header. It is the versioned path
+    (`/static-<version>/`, since 0.3.1), and that stays. Files under it are now
+    `immutable` for a year, HTML pages are explicitly `no-cache`, and the version token
+    now includes the add-on version. Docker keeps the checkout's file times, so the file
+    times alone were not a reliable signal.
+  - Chart.js (206 KB) loads only on the dashboard and species pages.
+  - BirdNET-Go clips and spectrograms are cached by the browser for a week, and Frigate
+    snapshots and thumbnails for five minutes. Revisiting a page no longer re-fetches
+    every card's picture from the source.
+- **`Server-Timing` on pages.** Each HTML response reports its server render time
+  (`render;dur=…`) in the browser's network panel. That shows whether a slow page is the
+  server or the network.
+
 ## 0.37.2
 
 - **Click an "Also in view" crop to enlarge it.** At 44 px an unidentified bird can't be

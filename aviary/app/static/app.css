@@ -134,11 +134,18 @@ table.leaders .num-cell .zero { color: var(--muted); opacity: .5; }
   align-items: center; gap: 6px;
 }
 .det-media .bird-mark { font-size: 30px; opacity: .55; filter: grayscale(1); }
-.audio-wrap { width: 100%; height: 100%; display: flex; flex-direction: column; }
+.audio-wrap { width: 100%; height: 100%; display: flex; flex-direction: column; position: relative; }
 .audio-wrap .spectrogram { flex: 1; min-height: 0; width: 100%; object-fit: cover; }
 .audio-wrap.no-spec .spectrogram { display: none; }
 .audio-wrap.no-spec { justify-content: center; }
 .audio-wrap audio { flex: none; }
+/* Clean / Raw playback toggle. Top-right, left of .det-delete (which owns the corner). */
+.audio-mode {
+  position: absolute; top: 6px; right: 36px; z-index: 5;
+  border: none; border-radius: 10px; padding: 2px 9px; font-size: 11px; line-height: 18px;
+  background: rgba(0, 0, 0, .55); color: #fff; cursor: pointer;
+}
+.audio-mode[aria-pressed="true"] { background: var(--accent); }
 .det-body { padding: 12px 14px; }
 .det-body h3 { margin: 0 0 2px; font-size: 15px; }
 .det-body .sci { color: var(--muted); font-style: italic; font-size: 12px; margin-bottom: 8px; }

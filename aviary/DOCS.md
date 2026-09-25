@@ -85,6 +85,73 @@ Aviary already uses for `/api/` — it is, on the default add-on URL. The HLS pl
 (hls.js, Apache-2.0) ships inside the add-on and loads the first time you play a window;
 nothing is fetched from the internet.
 
+## Cleaned-up BirdNET-Go audio
+
+BirdNET-Go clips pick up a lot of background: wind, traffic and hum show up as the bright
+band along the bottom of the spectrogram, and they can bury a distant owl. When you press
+play on a BirdNET-Go card, Aviary sends a **denoised copy**, cleaned by ffmpeg.
+
+- **Only playback changes.** BirdNET-Go still analyses the original audio, the
+  spectrogram is still BirdNET-Go's own, and iNaturalist uploads send the original clip.
+- **Raw / Clean toggle.** The pill at the top-right of the spectrogram switches to the
+  untouched clip and back, at the same position. Check the raw clip when a faint call
+  seems to have gone missing.
+- **Presets.** Pick one from the `birdnet_clean_preset` dropdown in the Configuration
+  tab, then restart the add-on. No add-on update is needed, and cached clips refresh on
+  their own.
+
+  | Preset | Background between calls | Sound |
+  |---|---|---|
+  | `smooth` (default) | about 7 dB quieter | Natural. The background just sits lower. |
+  | `balanced` | about 11 dB quieter | A little switching around calls. |
+  | `strong` | about 17 dB quieter | Quietest gaps, but the noise audibly switches on and off around each call, which gives a "crunchy" edge. |
+  | `custom` | — | Your own chain in `birdnet_clean_filter`. |
+  | `off` | — | Original clips. |
+
+  Figures are from a Barred Owl and a Black-capped Chickadee recorded over road noise.
+  On both, the calls themselves lost well under 1 dB at every preset.
+
+- **How the presets work.** Each runs `highpass=f=150,lowpass=f=12000,afwtdn=adaptive=1`,
+  which cuts rumble below 150 Hz (Barred Owl hoots sit around 300–600 Hz, well clear)
+  and hiss above 12 kHz, then applies wavelet noise reduction that learns the
+  background as the clip plays. The presets differ only in `percent`, the share of full
+  strength: 50, 70 and 85 (`afwtdn`'s default). The filter works in blocks of about
+  0.17 s, so at high strength the noise drops to near-silence in the gaps and returns in
+  a hard-edged block around every call. Lower strength keeps the change small enough
+  not to hear.
+
+  Two limits apply to every preset:
+
+  - Noise under a call stays. While the bird is singing, the background at the same
+    moment remains. None of ffmpeg's built-in denoisers removed it on the test clips
+    without also thinning the call.
+  - The noise profile needs a quiet moment to learn from. A clip that opens with
+    calling keeps its noise until the first gap.
+
+- **Custom chains.** Set the preset to `custom` and put anything you would pass to
+  `ffmpeg -af` in `birdnet_clean_filter`. A good starting point is a preset's chain:
+
+  ```
+  highpass=f=150,lowpass=f=12000,afwtdn=adaptive=1:percent=50
+  ```
+
+  Things to turn:
+
+  - Raise the high-pass for heavy rumble, but stay well under your lowest bird.
+  - Lower the low-pass (around 10000) for high hiss. Kinglets and some warblers reach
+    8–9 kHz, so don't go far below that.
+  - Set `percent` anywhere from 0 to 100.
+  - `afwtdn=sigma=0.01` uses a fixed noise level instead of learning one. It's steadier
+    from the first second, but at `0.02` it started eating a quiet chickadee's call.
+  - `afftdn=nr=12:nf=-40:tn=1` is FFT denoising. It's weak on road noise and better on
+    even hiss.
+
+  See the [FFmpeg filter docs](https://ffmpeg.org/ffmpeg-filters.html). Leaving the box
+  blank while on `custom` plays `smooth`. To try a chain before saving it, run
+  `ffmpeg -i clip.wav -af "<chain>" clean.wav` on any machine with ffmpeg.
+- **Failures fall back.** If ffmpeg is missing, rejects a custom chain (a typo) or fails
+  on a clip, the card plays the original, and ffmpeg's error goes to the add-on log.
+
 ## Confirming new species
 
 By default (`require_species_confirmation`, on) a newly detected species does **not** join
@@ -1278,6 +1345,8 @@ refresh (at most 15 minutes, or immediately after a restart).
 | `clip_pad_seconds` | Seconds of recordings played before and after a detection when viewing it — the ⤢ player and the ⇄ other-camera button — and either side of a kept export (default `10.0`, 0–300). Birds arrive before tracking starts and linger after it ends. Needs the camera's recordings to cover the padding; falls back to the bare event clip when they don't. See *Padded clips* under [Species keepsakes](#species-keepsakes). |
 | `keepsakes` | Keep each species' first and latest camera sighting at Frigate (`retain_indefinitely`; "latest" moves at most once a day, the previous one is released) (default `true`). See [Species keepsakes](#species-keepsakes). |
 | `keepsake_video` | Also export the padded clip of each keepsake — the event's camera and the paired PTZ camera — the only footage Frigate never expires (default `true`). Needs Frigate 0.18+. |
+| `birdnet_clean_preset` | Cleaned BirdNET-Go playback: `smooth` (default, background about 7 dB quieter, natural), `balanced` (about 11 dB), `strong` (about 17 dB, audible switching around calls), `custom` (your chain in `birdnet_clean_filter`) or `off`. The card's Raw toggle always plays the original, and BirdNET-Go still analyses the original. See [Cleaned-up BirdNET-Go audio](#cleaned-up-birdnet-go-audio). |
+| `birdnet_clean_filter` | The ffmpeg `-af` chain used when `birdnet_clean_preset` is `custom`, applied as-is. Blank plays `smooth`. A chain ffmpeg rejects plays the original clip. |
 | `inat_app_id` / `inat_app_secret` / `inat_username` / `inat_password` | Credentials for posting to iNaturalist — an OAuth application of your own plus your login. All four are needed; blank keeps the feature off. See [Life list on iNaturalist](#life-list-on-inaturalist). |
 | `inat_auto_post` | Post a species automatically once it is confirmed (default `false`: the species page has a button that shows what will be sent and asks). |
 | `inat_geoprivacy` | `open`, `obscured` (default) or `private` for the observations' coordinates — they are your Home Assistant location, i.e. your house. |
